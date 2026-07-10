@@ -9865,6 +9865,9 @@ class CompressorGUI:
             state="readonly"
         ).pack(side="left", padx=(6, 0))
 
+        ttk.Button(ctrl, text="Estimate", style="Ghost.TButton",
+                   command=lambda: getattr(self, "_estimate_queue", lambda: None)()).pack(side="left", padx=(0, 16))
+
         ttk.Label(ctrl, text="Save to:").pack(side="left")
         self.save_entry = ttk.Entry(ctrl, textvariable=self.save_path, style="Dark.TEntry")
         self.save_entry.pack(side="left", padx=6, fill="x", expand=True)
@@ -14096,6 +14099,190 @@ class CompressorGUI:
             return default
         return box.get("r", default)
 
+    # ---- Learning UI: pre-flight estimate (F2) + result dashboard (F3) ----
+    def _current_target_bytes(self) -> int:
+        """Target size the queue is set to, in bytes (honours the unit combo)."""
+        try:
+            _v = float(self.target_size_var.get())
+        except Exception:
+            _v = 10.0
+        unit = (self.size_unit_var.get() if hasattr(self, "size_unit_var") else "MB")
+        mult = {"KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}.get(unit, 1024 ** 2)
+        return max(1, int(_v * mult))
+
+    def _estimate_queue(self):
+        """F2 pre-flight panel: predict size/VMAF/worst/time per codec for the
+        queued files at the current target, from the ledger — no encoding."""
+        import tkinter as tk
+        from tkinter import ttk
+        try:
+            from outcome_ledger import estimate_encode as _est
+            from ml_heuristics import extract_media_features as _emf
+        except Exception:
+            return
+        files = list(getattr(self, "file_list", []) or [])[:8]
+        if not files:
+            try:
+                self.update_status("Add files to the queue first to estimate.")
+            except Exception:
+                pass
+            return
+        tgt = self._current_target_bytes()
+        model = resolve_vmaf_model() or "version=vmaf_v0.6.1"
+        stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
+
+        win = tk.Toplevel(self.root)
+        win.title("Pre-flight estimate (from the ledger)")
+        win.transient(self.root)
+        win.geometry("640x360")
+        ttk.Label(win, text=f"Predicted outcome at {human_bytes(tgt)} — no encoding, "
+                            f"learned from past encodes.").pack(anchor="w", padx=12, pady=(12, 4))
+        cols = ("codec", "size", "vmaf", "worst", "time", "n")
+        tree = ttk.Treeview(win, columns=cols, show="tree headings", height=12)
+        tree.heading("#0", text="File")
+        tree.column("#0", width=200, stretch=True)
+        for c, txt, w in (("codec", "Codec", 70), ("size", "~Size", 80),
+                          ("vmaf", "VMAF", 70), ("worst", "Worst", 70),
+                          ("time", "~Time", 70), ("n", "n", 40)):
+            tree.heading(c, text=txt)
+            tree.column(c, width=w, anchor="e", stretch=False)
+        tree.pack(fill="both", expand=True, padx=12, pady=6)
+
+        any_data = False
+        for f in files:
+            parent = tree.insert("", "end", text=os.path.basename(f), open=True)
+            try:
+                feats = _emf(f) or {}
+            except Exception:
+                feats = {}
+            w = int(feats.get("width") or 0)
+            h = int(feats.get("height") or 0)
+            fps = float(feats.get("fps") or 30.0)
+            dur = float(feats.get("duration") or 0.0)
+            if not (w and h and dur):
+                tree.insert(parent, "end", text="", values=("—", "not video / no probe", "", "", "", ""))
+                continue
+            v_bps = max(24_000, int((tgt * 8.0 / max(1.0, dur) - 128_000) * 0.94))
+            for enc in ("x264", "x265", "av1"):
+                est = _est(stats_dir, feats, enc, w, h, fps, v_bps, tgt, dur, vmaf_model=model)
+                if est["n"] < 1:
+                    tree.insert(parent, "end", text="",
+                                values=(enc, "no history", "", "", "", "0"))
+                    continue
+                any_data = True
+                tree.insert(parent, "end", text="", values=(
+                    est["encoder"],
+                    f"{est['size_bytes'] / 1048576.0:.2f} MB",
+                    (f"{est['mean']:.1f}" if est["mean"] is not None else "—"),
+                    (f"{est['worst']:.0f}" if est["worst"] is not None else "—"),
+                    (f"{est['seconds']:.0f}s" if est["seconds"] is not None else "—"),
+                    str(est["n"])))
+        if not any_data:
+            ttk.Label(win, text="No comparable history in the ledger yet — estimates appear "
+                                "as you encode similar content.").pack(anchor="w", padx=14, pady=(0, 6))
+        ttk.Button(win, text="Close", command=win.destroy).pack(side="right", padx=12, pady=(0, 12))
+
+    def _latest_ledger_record(self, input_path: str):
+        """Newest ledger record whose input basename matches (for the dashboard)."""
+        try:
+            import outcome_ledger as ol
+            base = os.path.basename(str(input_path or "")).lower()
+            recs = ol.ledger_load(os.path.join(USER_SETTINGS_DIR, "stats"))
+            match = [r for r in recs
+                     if os.path.basename(str(r.get("input") or "")).lower() == base]
+            return match[-1] if match else None
+        except Exception:
+            return None
+
+    def _show_result_dashboard(self, input_path: str):
+        """F3 result dashboard: VMAF-over-time sparkline with the worst window
+        flagged + a codec-race scoreboard, for one finished file."""
+        import tkinter as tk
+        from tkinter import ttk
+        try:
+            import dashboard as _db
+        except Exception:
+            return
+        rec = self._latest_ledger_record(input_path)
+        if not rec:
+            try:
+                self.update_status("No ledger record for that file yet.")
+            except Exception:
+                pass
+            return
+        m = _db.build_dashboard_model(rec)
+
+        win = tk.Toplevel(self.root)
+        win.title(f"Result — {os.path.basename(str(input_path))}")
+        win.transient(self.root)
+        win.geometry("720x430")
+        accent = "#4caf7d"
+        danger = "#d9655b"
+        muted = "#8a8a96"
+
+        head = (f"{m['encoder'] or '-'}   •   mean VMAF "
+                f"{m['mean'] if m['mean'] is not None else '—'}   •   "
+                f"worst {m['worst'] if m['worst'] is not None else '—'} ({m['band']})"
+                + (f"   •   {human_bytes(m['size_bytes'])}" if m.get('size_bytes') else "")
+                + (f"   •   {m['encode_seconds']:.0f}s" if m.get('encode_seconds') else ""))
+        ttk.Label(win, text=head).pack(anchor="w", padx=14, pady=(12, 2))
+        ttk.Label(win, text="VMAF over time — red marks the worst window",
+                  foreground=muted).pack(anchor="w", padx=14, pady=(6, 2))
+
+        cw, ch = 680, 170
+        c = tk.Canvas(win, width=cw, height=ch, bg=APP_BG, highlightthickness=0, bd=0)
+        c.pack(padx=14, pady=(0, 8))
+        series = m.get("series") or []
+        if series:
+            lo = max(0.0, min(series) - 3.0)
+            hi = min(100.0, max(series) + 3.0)
+            pts = _db.sparkline_points(series, cw, ch, y_min=lo, y_max=hi, pad=16.0)
+            for g in (lo + (hi - lo) * 0.25, lo + (hi - lo) * 0.75):
+                yy = 16.0 + (ch - 32.0) * (1.0 - (g - lo) / max(1e-6, hi - lo))
+                c.create_line(16, yy, cw - 16, yy, fill="#2a2a34")
+                c.create_text(cw - 18, yy - 7, text=f"{g:.0f}", fill=muted, anchor="e", font=("", 8))
+            flat = [coord for xy in pts for coord in xy]
+            if len(flat) >= 4:
+                c.create_line(*flat, fill=accent, width=2, smooth=True)
+            mk = m.get("worst_marker")
+            if mk and pts:
+                mx, my = pts[min(mk["index"], len(pts) - 1)]
+                c.create_line(mx, 12, mx, ch - 12, fill=danger, dash=(2, 2))
+                c.create_oval(mx - 4, my - 4, mx + 4, my + 4, fill=danger, outline="")
+                c.create_text(mx, 20, text=f"worst {mk['value']:.0f}", fill=danger, font=("", 9))
+        else:
+            c.create_text(cw / 2, ch / 2, text="no VMAF series for this encode",
+                          fill=muted)
+
+        board = m.get("scoreboard") or []
+        if board:
+            ttk.Label(win, text="Codec race — VMAF-per-bit on the probe clip",
+                      foreground=muted).pack(anchor="w", padx=14, pady=(4, 4))
+            bf = tk.Frame(win, bg=APP_BG)
+            bf.pack(fill="x", padx=14)
+            best = board[0]["score"]
+            worst_s = board[-1]["score"]
+            span = max(1e-6, best - worst_s)
+            for r in board:
+                row = tk.Frame(bf, bg=APP_BG)
+                row.pack(fill="x", pady=2)
+                tk.Label(row, text=r["encoder"], width=7, anchor="w", bg=APP_BG,
+                         fg=("#e6e6ee" if r["is_winner"] else muted)).pack(side="left")
+                bar = tk.Canvas(row, width=380, height=16, bg=APP_BG, highlightthickness=0)
+                bar.pack(side="left", padx=6)
+                frac = (r["score"] - worst_s) / span
+                bar.create_rectangle(0, 2, 380, 14, fill="#22222c", outline="")
+                bar.create_rectangle(0, 2, max(6, 380 * frac), 14,
+                                     fill=(accent if r["is_winner"] else "#3a3a46"), outline="")
+                lbl = (f"{r['score']:.1f}  best" if r["is_winner"]
+                       else f"{r['score']:.1f}  {r['delta']:.1f}")
+                tk.Label(row, text=lbl, width=14, anchor="e", bg=APP_BG,
+                         fg=(accent if r["is_winner"] else muted)).pack(side="left")
+        else:
+            ttk.Label(win, text="No codec race ran for this encode (pinned / cached path).",
+                      foreground=muted).pack(anchor="w", padx=14, pady=(4, 4))
+        ttk.Button(win, text="Close", command=win.destroy).pack(side="right", padx=12, pady=10)
+
     def _show_batch_summary(self):
         """Post-queue summary: per-file results + totals (main thread only)."""
         results = list(getattr(self, "batch_results", []) or [])
@@ -14124,6 +14311,7 @@ class CompressorGUI:
 
         tot_in = tot_out = 0
         vmafs = []
+        item_paths = {}
         for r in results:
             i_b, o_b = int(r.get("in_bytes") or 0), int(r.get("out_bytes") or 0)
             if r.get("ok"):
@@ -14132,14 +14320,23 @@ class CompressorGUI:
             v = r.get("vmaf")
             if isinstance(v, (int, float)):
                 vmafs.append(float(v))
-            tree.insert("", "end",
+            _item = tree.insert("", "end",
                         text=os.path.basename(str(r.get("path") or "")),
                         values=((human_bytes(i_b) if i_b else "—"),
                                 (human_bytes(o_b) if o_b else ("FAILED" if not r.get("ok") else "—")),
                                 (f"{o_b * 100.0 / i_b:.0f}%" if (i_b and o_b) else "—"),
                                 (f"{float(v):.1f}" if isinstance(v, (int, float)) else "—"),
                                 f"{float(r.get('secs') or 0.0):.0f}s"))
+            item_paths[_item] = str(r.get("path") or "")
         tree.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+
+        # Double-click / Details -> per-file result dashboard (F3).
+        def _open_details(_evt=None):
+            sel = tree.focus()
+            p = item_paths.get(sel)
+            if p:
+                self._show_result_dashboard(p)
+        tree.bind("<Double-1>", _open_details)
 
         saved = max(0, tot_in - tot_out)
         parts = []
@@ -14156,6 +14353,14 @@ class CompressorGUI:
         btns.pack(fill="x", padx=12, pady=(0, 12))
         ttk.Button(btns, text="Open Save Folder",
                    command=getattr(self, "open_save_folder", lambda: None)).pack(side="left")
+
+        def _details_selected():
+            sel = tree.focus()
+            p = item_paths.get(sel)
+            if p:
+                self._show_result_dashboard(p)
+        ttk.Button(btns, text="View Details",
+                   command=_details_selected).pack(side="left", padx=(8, 0))
         ttk.Button(btns, text="Close", command=win.destroy).pack(side="right")
 
     # ---- Queue persistence ----------------------------------------------
