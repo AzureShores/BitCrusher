@@ -15,6 +15,7 @@ output/
 logs/
 tmp/
 test_pipeline/out/
+test_pipeline/*.log
 
 # Vendored binary tools
 tools/*.exe
