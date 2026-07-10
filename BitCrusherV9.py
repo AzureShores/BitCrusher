@@ -1165,10 +1165,6 @@ def _codec_video_args(
         return v, (_abr() if use_bitrate else ["-crf", str(crf_i)])
 
     _max_mode = str(opts.get("quality_mode") or "").lower() == "max"
-    try:
-        _grain = float(opts.get("graininess_score") or 0.0)
-    except Exception:
-        _grain = 0.0
 
     if vcodec == "libsvtav1":
         _svt_p = _SVT_PRESET_MAP.get(str(preset).lower(), "6")
@@ -1177,10 +1173,13 @@ def _codec_video_args(
         # Never let a long clip run a glacial preset (see _svt_preset_for_duration).
         _svt_p = str(_svt_preset_for_duration(_svt_p, opts.get("duration_s")))
         _svt_params = "tune=0:enable-overlays=1:scd=1"
-        if _max_mode and _grain >= 0.30:
-            # Film-grain synthesis: strip noise before encoding, re-synthesize
-            # on playback — large size win on grainy content at equal quality.
-            _svt_params += f":film-grain={int(min(50, 8 + 30 * _grain))}"
+        # Film-grain synthesis: strip the grain before encoding (film-grain-denoise)
+        # so bits go to the real signal, then re-synthesize grain from a model on
+        # playback. Enabled by the MEASURED grain probe (_probe_film_grain) via
+        # advanced_options["_film_grain"], not the unreliable graininess feature.
+        _fg_lvl = int((opts.get("_film_grain") or {}).get("level") or 0)
+        if _fg_lvl > 0:
+            _svt_params += f":film-grain={_fg_lvl}:film-grain-denoise=1"
         v = ["-preset", _svt_p, "-g", str(g_frames), "-svtav1-params", _svt_params]
         if ten_bit:
             v += pix10
@@ -1203,8 +1202,11 @@ def _codec_video_args(
         v = ["-cpu-used", _cpu,
              "-row-mt", "1", "-tile-columns", "1", "-lag-in-frames", "35",
              "-aq-mode", "1", "-g", str(g_frames)]
-        if _max_mode and _grain >= 0.30:
-            v += ["-denoise-noise-level", str(int(min(50, 10 + 40 * _grain)))]
+        # libaom denoises AND writes a grain table when -denoise-noise-level is
+        # set (its own grain-synthesis path). Driven by the measured grain probe.
+        _fg_aom = int((opts.get("_film_grain") or {}).get("level") or 0)
+        if _fg_aom > 0:
+            v += ["-denoise-noise-level", str(int(min(50, max(10, _fg_aom))))]
         if ten_bit:
             v += pix10
         if use_bitrate:
@@ -1518,12 +1520,11 @@ def _ffmpeg_two_pass_encode(
             # multi-pass encoding"), so the single-pass params can't be reused
             # verbatim here. scd + film-grain ARE 2-pass-safe (verified).
             _svt_params = "tune=0:scd=1"
-            try:
-                _svt_grain = float((_adv or {}).get("graininess_score") or 0.0)
-            except Exception:
-                _svt_grain = 0.0
-            if _svt_max and _svt_grain >= 0.30:
-                _svt_params += f":film-grain={int(min(50, 8 + 30 * _svt_grain))}"
+            # Film-grain synthesis (denoise + re-synthesize) from the measured
+            # grain probe — see advanced_options["_film_grain"]; 2-pass-safe.
+            _fg_lvl2 = int(((_adv or {}).get("_film_grain") or {}).get("level") or 0)
+            if _fg_lvl2 > 0:
+                _svt_params += f":film-grain={_fg_lvl2}:film-grain-denoise=1"
             _svt_v = ["-c:v", "libsvtav1", "-preset", _svt_p, "-g", "300",
                       "-svtav1-params", _svt_params, "-pix_fmt", "yuv420p10le"]
             # SVT rejects -maxrate/-bufsize with -b:v (VBR); target bitrate only.
@@ -2886,6 +2887,10 @@ ADVANCED_DEFAULTS = {
     # Learned first-attempt bitrate seeding from the outcome ledger (stage 2a).
     # Acts only with >=3 similar past encodes, clamped, controller-corrected.
     "learned_seed": True,
+    # AV1 film-grain synthesis: auto = probe the source and enable when grain is
+    # measurably compressible (denoise + re-synthesize = better quality at the
+    # same size on film grain / old cartoons); off = never; force = always.
+    "film_grain": "auto",
     # Advisory pre-flight guardrail (stage 2b): warns on predicted quality
     # collapse / size-cap overshoot and suggests a better codec on race-skipped
     # paths, from the ledger. Advisory only — never changes the encode itself.
@@ -4517,6 +4522,72 @@ def best_av1_encoder() -> str | None:
         if enc in have:
             return enc
     return None
+
+
+# Grain probe: denoise must save at least this fraction of bytes for the source
+# to count as "grainy enough" to synthesize. Measured discrimination on probes:
+# clean content lands ~0.97, real grain ~0.60-0.80.
+_FILM_GRAIN_RATIO_THR = 0.90
+
+
+def _probe_film_grain(input_path: str, *, scale_width: int, duration_s: float,
+                      cancel_cb=None, status_cb=None) -> dict | None:
+    """
+    Decide whether to synthesize film grain, by MEASUREMENT rather than the
+    graininess feature (which doesn't track real grain — the synthetic-grain
+    torture clip scored lower than clean footage). Encode short probe segments
+    with SVT-AV1 twice at the same CRF — with vs without film-grain-denoise —
+    and compare size: grainy content shrinks a lot when the grain is stripped,
+    clean content barely moves. Returns {"level": int, "size_ratio": float}
+    when grain is worth re-synthesizing (denoise saved >10%), else None. Grain
+    is AV1-only (SVT), so this no-ops on other encoders.
+    """
+    ff = FFMPEG
+    if not ff or best_av1_encoder() != "libsvtav1":
+        return None
+    dur = float(duration_s or 0.0)
+    if dur < 3.0:
+        return None
+    seg = max(3.0, min(6.0, 0.06 * dur))
+    starts = ([max(0.0, dur * 0.35 - seg / 2.0), max(0.0, dur * 0.70 - seg / 2.0)]
+              if dur >= 4.0 * seg else [max(0.0, dur * 0.5 - seg / 2.0)])
+    _scale = (["-vf", f"scale={int(scale_width)}:-2"] if int(scale_width or 0) > 0 else [])
+    work = tempfile.mkdtemp(prefix="bc_grain_")
+    tot_plain = tot_den = 0
+    try:
+        for i, t0 in enumerate(starts):
+            if callable(cancel_cb) and cancel_cb():
+                return None
+            for tag, params in (("p", "tune=0:film-grain=8"),
+                                ("d", "tune=0:film-grain=8:film-grain-denoise=1")):
+                out = os.path.join(work, f"g{i}{tag}.mp4")
+                cmd = ([ff, "-y", "-hide_banner", "-loglevel", "error",
+                        "-ss", f"{t0:.3f}", "-t", f"{seg:.3f}",
+                        "-i", os.path.abspath(input_path), "-an"] + _scale
+                       + ["-c:v", "libsvtav1", "-preset", "8", "-crf", "32",
+                          "-svtav1-params", params, "-pix_fmt", "yuv420p10le", out])
+                r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   startupinfo=si, creationflags=NO_WIN)
+                if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+                    return None
+                sz = os.path.getsize(out)
+                if tag == "p":
+                    tot_plain += sz
+                else:
+                    tot_den += sz
+        if tot_plain <= 0:
+            return None
+        ratio = tot_den / tot_plain
+        if ratio >= _FILM_GRAIN_RATIO_THR:
+            return None
+        # More savings = more grain = stronger re-synthesis. ratio 0.88 -> ~14,
+        # 0.77 -> ~28, <=0.67 -> capped at 40.
+        level = int(min(40, max(8, round((1.0 - ratio) * 120))))
+        return {"level": level, "size_ratio": round(ratio, 3)}
+    except Exception:
+        return None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def _probe_codec_args(codec_tag: str, av1_enc: str | None, video_bps: int):
@@ -6898,6 +6969,42 @@ def compress_video(input_path: str, save_path: str, status_cb,
         except Exception as _pp_e:
             status_cb(f"[Preproc] Skipped: {type(_pp_e).__name__}", "DEBUG")
 
+    # === Film-grain synthesis decision (AV1 only, measured) =================
+    # Grain is incompressible: at a fixed size cap it steals bits from the real
+    # signal. SVT/libaom AV1 can strip it before encoding and re-synthesize it
+    # from a model on playback — the bits go to the picture, the grain comes back
+    # for free. Decide by MEASUREMENT (a probe that compares denoise-on vs -off
+    # size), not the graininess feature (which doesn't track real grain). Skipped
+    # when the encoder isn't AV1, in fast mode, or when the preproc chain already
+    # denoises (don't strip grain twice). NOTE: VMAF reads a grain-denoised encode
+    # slightly lower (it counts grain as detail), so the win shows as picture
+    # quality at size, not as a higher VMAF number — perceptual validation is the
+    # planned SSIMULACRA2 work.
+    advanced_options.pop("_film_grain", None)
+    _fg_mode = str((advanced_options or {}).get(
+        "film_grain", ADVANCED_DEFAULTS.get("film_grain", "auto"))).lower()
+    _enc_is_av1 = ("av1" in str(encoder).lower()
+                   and best_av1_encoder() in ("libsvtav1", "libaom-av1"))
+    _pre_denoises = "denoise" in str((advanced_options or {}).get("_preproc_label") or "").lower()
+    if _enc_is_av1 and _fg_mode != "off" and _qmode != "fast" and not _pre_denoises:
+        try:
+            if _fg_mode == "force":
+                advanced_options["_film_grain"] = {"level": 14, "size_ratio": None}
+                status_cb("[Grain] Film-grain synthesis forced (level 14).", "INFO")
+            else:
+                _fg = _probe_film_grain(
+                    input_path, scale_width=int(new_w or 0),
+                    duration_s=float(dur or 0.0), cancel_cb=cancel_cb, status_cb=status_cb)
+                if _fg:
+                    advanced_options["_film_grain"] = _fg
+                    status_cb(
+                        f"[Grain] Grainy source (stripping grain saves "
+                        f"{(1 - _fg['size_ratio']) * 100:.0f}% on the probe); synthesizing "
+                        f"film grain at level {_fg['level']} — bits go to the picture, grain "
+                        f"is re-added on playback.", "INFO")
+        except Exception as _fg_e:
+            status_cb(f"[Grain] Probe skipped: {type(_fg_e).__name__}", "DEBUG")
+
     # === Outcome-ledger prediction (learning stage 2a: LIVE) ================
     # Predict this content's first-attempt size deviation from past outcomes
     # and seed the first attempt with it. Promoted from shadow mode after the
@@ -7731,6 +7838,8 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 "preset": str((advanced_options or {}).get("preset") or ""),
                 "quality_mode": str((advanced_options or {}).get("quality_mode") or ""),
                 "preproc": (str((advanced_options or {}).get("_preproc_label") or "") or None),
+                "film_grain": ((advanced_options or {}).get("_film_grain") or {}).get("level"),
+                "film_grain_ratio": ((advanced_options or {}).get("_film_grain") or {}).get("size_ratio"),
                 "spotlight": bool((advanced_options or {}).get("_spotlight_secs")),
                 "dur": float(dur or 0.0)},
             attempts=_ol_attempts,
@@ -16418,6 +16527,8 @@ def _build_adv_from_args(args) -> dict:
         adv["smart_preproc"] = False
     if getattr(args, "no_learned_seed", False):
         adv["learned_seed"] = False
+    if getattr(args, "film_grain", None):
+        adv["film_grain"] = str(args.film_grain)
     if getattr(args, "trim", None):
         adv["trim_range"] = str(args.trim)
     if getattr(args, "trim_fade", False):
@@ -16516,6 +16627,10 @@ def build_arg_parser():
                    help="Disable artifact-aware preprocessing (validated deband/deblock/denoise prefilters)")
     p.add_argument("--no-learned-seed", action="store_true",
                    help="Disable learned first-attempt bitrate seeding from the outcome ledger")
+    p.add_argument("--film-grain", choices=["auto", "off", "force"], default=None,
+                   help="AV1 film-grain synthesis: auto (probe & enable on grainy sources, "
+                        "default), off, or force. Denoises grain before encoding and re-adds it "
+                        "on playback — better picture at the same size on film grain / old cartoons.")
     p.add_argument("--trim", default=None, metavar="START-END",
                    help="Compress only this range (e.g. 1:42-2:05 or 12-31). The whole size "
                         "budget goes to the kept range; the source file is never modified.")
