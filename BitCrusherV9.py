@@ -2886,6 +2886,10 @@ ADVANCED_DEFAULTS = {
     # Learned first-attempt bitrate seeding from the outcome ledger (stage 2a).
     # Acts only with >=3 similar past encodes, clamped, controller-corrected.
     "learned_seed": True,
+    # Advisory pre-flight guardrail (stage 2b): warns on predicted quality
+    # collapse / size-cap overshoot and suggests a better codec on race-skipped
+    # paths, from the ledger. Advisory only — never changes the encode itself.
+    "preflight_advice": True,
     "auto_codec": True,        # VMAF-probe the chosen codec vs AV1 and keep the winner
     "scene_zones": True,       # per-scene bitrate zones for x264/x265 two-pass
     "hw_decode": True,         # GPU-accelerated decode of the source (encode stays as chosen)
@@ -4285,6 +4289,16 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
     _mw_at = (round(float(_mw_idx) / max(1.0, float(sample_fps)), 1)
               if _mw_idx is not None else None)
 
+    # Downsampled VMAF-over-time series (<= 64 points) for the result-dashboard
+    # sparkline. Averaged into buckets so a single dip isn't lost; kept small so
+    # it's cheap to store in the ledger and render.
+    _series = _downsample_series(vals, 64) if vals else None
+    # Time the series spans (source seconds of the measured region), so a
+    # renderer can map min_window_at back onto the downsampled points regardless
+    # of how many buckets survived.
+    _series_span = (round(len(vals) / max(1.0, float(sample_fps)), 3)
+                    if _series else None)
+
     return {"vmaf": round(float(mean), 2),
             "harmonic": (round(float(harmonic), 2) if harmonic is not None else None),
             "p1": (round(float(p1), 2) if p1 is not None else None),
@@ -4292,7 +4306,31 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
             "min_window": (round(float(min_window), 2) if min_window is not None else None),
             "min_window_at": _mw_at,
             "spread": _spread,
+            "series": _series,
+            "series_span_s": _series_span,
             "label": vmaf_quality_label(mean)}
+
+
+def _downsample_series(vals: list, max_points: int) -> list:
+    """Bucket-average a per-frame series down to <= max_points values (rounded),
+    preserving overall shape for a sparkline without storing every frame."""
+    try:
+        n = len(vals)
+        if n == 0:
+            return []
+        if n <= max_points:
+            return [round(float(v), 1) for v in vals]
+        step = n / float(max_points)
+        out = []
+        for i in range(max_points):
+            a = int(i * step)
+            b = max(a + 1, int((i + 1) * step))
+            chunk = vals[a:b]
+            if chunk:
+                out.append(round(sum(float(x) for x in chunk) / len(chunk), 1))
+        return out
+    except Exception:
+        return []
 
 
 def _vmaf_low_metrics(vals: list, win: int):
@@ -6877,6 +6915,48 @@ def compress_video(input_path: str, save_path: str, status_cb,
     except Exception:
         advanced_options["_ledger_shadow"] = None
 
+    # === Pre-flight guardrail (learning stage 2b: ADVISORY) =================
+    # With the encoder, bitrate and delivery resolution now final, ask the
+    # ledger how this content/codec has fared before at a comparable operating
+    # point. Two signals, both advisory (this NEVER changes the encode on its
+    # own — the codec race already MEASURES when it can; prediction only speaks
+    # up on race-skipped paths and honours an explicit/pinned encoder):
+    #   - warn when the worst-scene quality is predicted to collapse, or the
+    #     content/encoder historically overshoots the size cap (the old-film-at-
+    #     3MB failure mode the cold-start batch surfaced);
+    #   - suggest a better-scoring codec when the encoder is free to change and
+    #     no race ran to settle it.
+    if bool((advanced_options or {}).get(
+            "preflight_advice", ADVANCED_DEFAULTS.get("preflight_advice", True))):
+        try:
+            from outcome_ledger import preflight_advice as _ol_advice
+            _race_ran = bool((advanced_options or {}).get("_race_scores"))
+            _enc_locked = bool(_codec_pinned or _race_ran
+                               or str(encoder).lower() not in ("x264", "x265", "libx265", "hevc"))
+            _pf_model = resolve_vmaf_model() or "version=vmaf_v0.6.1"
+            _adv = _ol_advice(
+                os.path.join(USER_SETTINGS_DIR, "stats"), _feats_ctx or {},
+                str(encoder), int(new_w or w or 0), int(new_h or h or 0),
+                float(fps or fr or 30.0), float(target_bitrate),
+                float(target_bytes), candidates=["x264", "x265", "av1"],
+                vmaf_model=_pf_model, encoder_locked=_enc_locked)
+            for _w in _adv.get("warnings", []):
+                status_cb(f"[Preflight] {_w}", "WARNING")
+            if _adv.get("codec_suggestion"):
+                _cs = _adv["codec_suggestion"]
+                _csw = (_adv.get("scores", {}).get(_cs) or {}).get("worst")
+                status_cb(
+                    f"[Preflight] History favours {_cs} for this content at this size"
+                    + (f" (predicted worst-scene VMAF ~{_csw:.0f})" if _csw is not None else "")
+                    + f"; current encoder is {encoder}. Enable auto-codec or pick {_cs} to use it.",
+                    "INFO")
+            advanced_options["_preflight"] = {
+                "warnings": _adv.get("warnings", []),
+                "codec_suggestion": _adv.get("codec_suggestion"),
+                "chosen": _adv.get("chosen"), "scores": _adv.get("scores")}
+        except Exception:
+            advanced_options["_preflight"] = None
+
     # === Encode ===
     ok = False
     seeded_from_bitrate_observation = False
@@ -7635,6 +7715,8 @@ def compress_video(input_path: str, save_path: str, status_cb,
                      "min_window": (vmaf_result or {}).get("min_window"),
                      "min_window_at": (vmaf_result or {}).get("min_window_at"),
                      "spread": (vmaf_result or {}).get("spread"),
+                     "series": (vmaf_result or {}).get("series"),
+                     "series_span_s": (vmaf_result or {}).get("series_span_s"),
                      "encode_seconds": round(time.time() - t_start, 1)},
             shadow=(advanced_options or {}).get("_ledger_shadow"),
             vmaf_model=_vm_tag)
@@ -16184,6 +16266,10 @@ def build_arg_parser():
                    help="Quality mode: fast (quick), balanced, or max (pack the size cap, measured)")
     p.add_argument("--no-auto-codec", action="store_true",
                    help="Disable the VMAF-measured codec auto-pick (x265 vs AV1)")
+    p.add_argument("--estimate", action="store_true",
+                   help="Predict delivered size / VMAF / worst-scene / encode time from the "
+                        "outcome ledger for each input WITHOUT encoding, then exit. "
+                        "Estimates one codec (--encoder) or x264/x265/av1 when unset.")
     p.add_argument("--min-vmaf", type=int, default=0,
                    help="Spend spare budget until output reaches this VMAF (0 = off)")
     p.add_argument("--no-measure", action="store_true",
@@ -16309,6 +16395,43 @@ def cli_main():
             _any = True
             for i, c in enumerate(cands, 1):
                 print(f"  {i}) --trim {c['range']}   ({c['why']}, score {c['score']})")
+        return 0 if _any else 1
+
+    # Prediction-only mode: estimate size/VMAF/time from the ledger, no encode.
+    if getattr(args, "estimate", False):
+        from outcome_ledger import estimate_encode as _ol_est
+        _model = resolve_vmaf_model() or "version=vmaf_v0.6.1"
+        _tgt_bytes = max(1, int(round(args.target_size))) * 1024 * 1024
+        _encs = ([args.encoder] if getattr(args, "encoder", None)
+                 else ["x264", "x265", "av1"])
+        _stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
+        _any = False
+        for src in files:
+            feats = extract_media_features(src) or {}
+            w = int(feats.get("width") or 0)
+            h = int(feats.get("height") or 0)
+            fps = float(feats.get("fps") or 30.0)
+            dur = float(feats.get("duration") or 0.0)
+            if not (w and h and dur):
+                print(f"{os.path.basename(src)}: not a video / probe failed - estimate unavailable")
+                continue
+            _aud = 128_000
+            v_bps = max(24_000, int((_tgt_bytes * 8.0 / max(1.0, dur) - _aud) * 0.94))
+            print(f"{os.path.basename(src)}  ({w}x{h} {fps:.3g}fps {dur:.0f}s)"
+                  f"  ->  target {args.target_size:g} MB")
+            for enc in _encs:
+                est = _ol_est(_stats_dir, feats, enc, w, h, fps, v_bps,
+                              _tgt_bytes, dur, vmaf_model=_model)
+                fam = est["encoder"]
+                if est["n"] < 1:
+                    print(f"   {fam:5}  no comparable history yet")
+                    continue
+                _any = True
+                sz = est["size_bytes"] / 1048576.0
+                vm = f"VMAF ~{est['mean']:.1f}" if est["mean"] is not None else "VMAF n/a"
+                wo = f"worst ~{est['worst']:.0f}" if est["worst"] is not None else "worst n/a"
+                tm = f"~{est['seconds']:.0f}s" if est["seconds"] is not None else "time n/a"
+                print(f"   {fam:5}  ~{sz:5.2f} MB  {vm:11}  {wo:10}  enc {tm:8}  (n={est['n']})")
         return 0 if _any else 1
 
     out_dir = _infer_save_dir(args.output, files[0])

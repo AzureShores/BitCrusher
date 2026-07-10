@@ -272,6 +272,229 @@ def seed_adjust(v_bps: float, dev_pred: float, n: int, *, min_n: int = 3,
         return int(v_bps), False
 
 
+# -------------------------------------------------------- codec-winner prior --
+# Quality floors used by the pre-flight guardrail (VMAF v1 scale). Below the
+# collapse floor a delivery is visibly broken; the warn floor is "gritty but
+# watchable". Tuned against the cold-start corpus (betty_boop @3MB x265 landed
+# min_window ~44 = collapse; ~70 worst = warn).
+QUALITY_COLLAPSE_WORST = 60.0
+QUALITY_WARN_WORST = 75.0
+OVERSHOOT_WARN_RATIO = 1.06     # predicted achieved-size / target above this = cap risk
+_MIN_PRIOR_N = 3                # neighbors required before the prior will speak
+
+
+def _scale_key(vmaf_model: str) -> str:
+    """Collapse a vmaf_model tag to its quality SCALE. v0.6.1 and v1 numbers are
+    not interchangeable (the poisoned-scale scar), so quality predictions may
+    only borrow from records measured on the same scale."""
+    m = str(vmaf_model or "").lower()
+    if "v0.6.1" in m or "0.6.1" in m:
+        return "v0.6.1"
+    if "v1" in m or "_v1" in m or "vmaf_v1" in m:
+        return "v1"
+    return m or "unknown"
+
+
+def _op_feature_vector(r: dict) -> list[float]:
+    """Feature vector for a stored record at its own operating point."""
+    op = r.get("op") or {}
+    try:
+        r_bpp = float(op.get("v_bps") or 0.0) / max(
+            1.0, float(op.get("width") or 1) * float(op.get("height") or 1)
+            * max(1.0, float(op.get("fps") or 30.0)))
+    except Exception:
+        r_bpp = 0.05
+    return feature_vector(r.get("features") or {}, op.get("width") or 0,
+                          op.get("height") or 0, op.get("fps") or 30.0, r_bpp)
+
+
+def predict_quality(stats_dir: str, features: dict, encoder: str,
+                    width: int, height: int, fps: float, v_bps: float,
+                    target_bytes: float, *, vmaf_model: str | None = None,
+                    k_neighbors: int = 5) -> dict:
+    """
+    Predict how a given encoder family will fare on this content at this
+    operating point, from the k nearest same-family, same-scale ledger records.
+    Returns {"worst", "mean", "size_ratio", "n"} — distance-weighted means of
+    neighbour worst-window VMAF, mean VMAF, and achieved-size/target ratio.
+    Values are None (and n == 0) when there is no comparable history; the
+    caller must treat that as "no opinion", never as a good score.
+    """
+    fam = encoder_family(encoder)
+    scale = _scale_key(vmaf_model) if vmaf_model else None
+    recs = ledger_load(stats_dir, encoder_fam=fam)
+    try:
+        bpp = float(v_bps) / max(1.0, float(width) * float(height) * max(1.0, float(fps)))
+    except Exception:
+        bpp = 0.05
+    q = feature_vector(features, width, height, fps, bpp)
+
+    cands = []
+    for r in recs:
+        if scale and _scale_key(r.get("vmaf_model")) != scale:
+            continue
+        outc = r.get("outcome") or {}
+        worst = outc.get("min_window")
+        mean = outc.get("vmaf")
+        if worst is None and mean is None:
+            continue
+        op = r.get("op") or {}
+        size = outc.get("size")
+        tgt = op.get("target_bytes")
+        try:
+            ratio = (float(size) / float(tgt)) if size and tgt else None
+        except Exception:
+            ratio = None
+        # encode time normalised per source-second, so neighbours of different
+        # clip lengths can be blended and re-scaled to this job's duration.
+        secs = outc.get("encode_seconds")
+        try:
+            rdur = float(op.get("dur") or (r.get("src") or {}).get("dur") or 0.0)
+            secs_per_s = (float(secs) / rdur) if secs and rdur > 0 else None
+        except Exception:
+            secs_per_s = None
+        cands.append((_dist(q, _op_feature_vector(r)), worst, mean, ratio, secs_per_s))
+    if not cands:
+        return {"worst": None, "mean": None, "size_ratio": None,
+                "secs_per_src_s": None, "n": 0}
+    cands.sort(key=lambda t: t[0])
+    top = cands[:max(1, int(k_neighbors))]
+
+    def _wmean(idx):
+        wsum = vsum = 0.0
+        for row in top:
+            val = row[idx]
+            if val is None:
+                continue
+            w = 1.0 / (0.05 + row[0])
+            wsum += w
+            vsum += w * float(val)
+        return (vsum / wsum) if wsum > 0 else None
+
+    worst_p, mean_p, ratio_p, secs_p = _wmean(1), _wmean(2), _wmean(3), _wmean(4)
+    return {"worst": (round(worst_p, 2) if worst_p is not None else None),
+            "mean": (round(mean_p, 2) if mean_p is not None else None),
+            "size_ratio": (round(ratio_p, 3) if ratio_p is not None else None),
+            "secs_per_src_s": (round(secs_p, 3) if secs_p is not None else None),
+            "n": len(top)}
+
+
+def estimate_encode(stats_dir: str, features: dict, encoder: str,
+                    width: int, height: int, fps: float, v_bps: float,
+                    target_bytes: float, duration_s: float, *,
+                    vmaf_model: str | None = None) -> dict:
+    """
+    Pre-flight estimate for ONE operating point, for the prediction panel /
+    CLI --estimate: predicted delivered size, mean & worst-scene VMAF, and
+    encode time, from the ledger — no encoding performed. Size is the target
+    scaled by the learned achieved/target ratio (falls back to the target when
+    unknown). Fields are None when history is too thin; n is the neighbour count
+    behind the estimate so the UI can show confidence.
+    """
+    pq = predict_quality(stats_dir, features, encoder, width, height, fps,
+                         v_bps, target_bytes, vmaf_model=vmaf_model)
+    ratio = pq.get("size_ratio")
+    try:
+        size_bytes = int(float(target_bytes) * float(ratio)) if ratio else int(target_bytes)
+    except Exception:
+        size_bytes = int(target_bytes)
+    spp = pq.get("secs_per_src_s")
+    try:
+        secs = round(float(spp) * float(duration_s), 1) if spp and duration_s else None
+    except Exception:
+        secs = None
+    return {"encoder": encoder_family(encoder), "size_bytes": size_bytes,
+            "size_ratio": ratio, "mean": pq.get("mean"), "worst": pq.get("worst"),
+            "seconds": secs, "n": pq.get("n")}
+
+
+def codec_prior(stats_dir: str, features: dict, width: int, height: int,
+                fps: float, v_bps: float, target_bytes: float,
+                candidates, *, vmaf_model: str | None = None,
+                k_neighbors: int = 5) -> dict:
+    """
+    Per-codec-family quality/size prediction for a set of candidate encoders,
+    plus a recommendation. Feeds two callers: the race-skipped path (pick the
+    likely winner without spending encodes) and the pre-flight guardrail.
+    Returns {"scores": {family: predict_quality(...)},
+             "recommended": family|None, "n_max": int}.
+    'recommended' is the family with the highest predicted worst-window VMAF
+    among those with >= _MIN_PRIOR_N neighbours and no predicted cap overshoot;
+    None when no family has earned an opinion yet.
+    """
+    fams, scores = [], {}
+    for c in (candidates or []):
+        fam = encoder_family(c)
+        if fam in scores:
+            continue
+        fams.append(fam)
+        scores[fam] = predict_quality(stats_dir, features, fam, width, height,
+                                      fps, v_bps, target_bytes,
+                                      vmaf_model=vmaf_model, k_neighbors=k_neighbors)
+    eligible = []
+    for fam in fams:
+        s = scores[fam]
+        if s["n"] >= _MIN_PRIOR_N and s["worst"] is not None:
+            if s["size_ratio"] is not None and s["size_ratio"] > OVERSHOOT_WARN_RATIO:
+                continue          # would blow the size cap — not a valid winner
+            eligible.append((s["worst"], fam))
+    recommended = max(eligible)[1] if eligible else None
+    return {"scores": scores, "recommended": recommended,
+            "n_max": max((scores[f]["n"] for f in fams), default=0)}
+
+
+def preflight_advice(stats_dir: str, features: dict, encoder: str,
+                     width: int, height: int, fps: float, v_bps: float,
+                     target_bytes: float, *, candidates=None,
+                     vmaf_model: str | None = None,
+                     encoder_locked: bool = False) -> dict:
+    """
+    Advisory-only pre-flight check (never acts on its own). Predicts the chosen
+    encoder's worst-window quality and size feasibility from history and, when
+    the codec is free to change, whether a different candidate is predicted to
+    do better. Returns {"warnings": [str], "codec_suggestion": family|None,
+    "chosen": predict_quality(...), "scores": {...}, "n": int}.
+    """
+    fam = encoder_family(encoder)
+    cands = candidates or [fam]
+    prior = codec_prior(stats_dir, features, width, height, fps, v_bps,
+                        target_bytes, cands, vmaf_model=vmaf_model)
+    chosen = prior["scores"].get(fam) or predict_quality(
+        stats_dir, features, fam, width, height, fps, v_bps, target_bytes,
+        vmaf_model=vmaf_model)
+
+    warnings: list[str] = []
+    if chosen["n"] >= _MIN_PRIOR_N:
+        w = chosen["worst"]
+        if w is not None and w < QUALITY_COLLAPSE_WORST:
+            warnings.append(
+                f"quality likely to COLLAPSE at this target: predicted worst-scene "
+                f"VMAF ~{w:.0f} from {chosen['n']} similar encodes. Raise the target "
+                f"or trim to the essential part.")
+        elif w is not None and w < QUALITY_WARN_WORST:
+            warnings.append(
+                f"gritty result expected: predicted worst-scene VMAF ~{w:.0f} "
+                f"from {chosen['n']} similar encodes.")
+        sr = chosen["size_ratio"]
+        if sr is not None and sr > OVERSHOOT_WARN_RATIO:
+            warnings.append(
+                f"this content/encoder tends to OVERSHOOT the size cap "
+                f"(~{(sr - 1) * 100:.0f}% over on {chosen['n']} similar encodes); "
+                f"a smaller resolution or different codec may be needed.")
+
+    suggestion = None
+    rec = prior["recommended"]
+    if not encoder_locked and rec and rec != fam:
+        rs = prior["scores"].get(rec) or {}
+        cw = chosen["worst"]
+        rw = rs.get("worst")
+        # Only suggest when the alternative is meaningfully better on the floor.
+        if rw is not None and (cw is None or rw >= cw + 2.0):
+            suggestion = rec
+    return {"warnings": warnings, "codec_suggestion": suggestion,
+            "chosen": chosen, "scores": prior["scores"], "n": chosen["n"]}
+
+
 def build_record(*, input_path: str, features: dict, src: dict, op: dict,
                  attempts: list, race: dict | None, outcome: dict,
                  shadow: dict | None, vmaf_model: str) -> dict:
