@@ -74,10 +74,27 @@ def ledger_append(stats_dir: str, record: dict) -> bool:
         return False
 
 
-def ledger_load(stats_dir: str, encoder_fam: str | None = None,
-                max_records: int = _MAX_RECORDS) -> list[dict]:
-    out: list[dict] = []
-    p = ledger_path(stats_dir)
+# Parse cache: the ledger is append-only, so a (size, mtime) key is a safe
+# invalidation signal. A single pre-flight fans out to predict_quality once per
+# candidate codec family; without this, each call re-read and re-parsed the
+# whole jsonl (up to _MAX_RECORDS) from disk. Key on the resolved path so
+# different stats dirs don't collide.
+_PARSE_CACHE: dict[str, tuple[tuple[int, int], list[dict]]] = {}
+
+
+def _load_all_records(p: str) -> list[dict]:
+    """Parse every valid record in the ledger file at path `p`, memoized by the
+    file's (size, mtime_ns). Returns the shared list — callers must not mutate."""
+    try:
+        st = os.stat(p)
+        key = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        _PARSE_CACHE.pop(p, None)
+        return []
+    cached = _PARSE_CACHE.get(p)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    recs: list[dict] = []
     try:
         with open(p, "r", encoding="utf-8") as f:
             for ln in f:
@@ -90,13 +107,20 @@ def ledger_load(stats_dir: str, encoder_fam: str | None = None,
                     continue
                 if not isinstance(d, dict) or d.get("schema") != SCHEMA_VERSION:
                     continue
-                if encoder_fam and encoder_family(
-                        (d.get("op") or {}).get("encoder_eff")) != encoder_fam:
-                    continue
-                out.append(d)
-    except Exception:
-        return out
-    return out[-max_records:]
+                recs.append(d)
+    except OSError:
+        return []
+    _PARSE_CACHE[p] = (key, recs)
+    return recs
+
+
+def ledger_load(stats_dir: str, encoder_fam: str | None = None,
+                max_records: int = _MAX_RECORDS) -> list[dict]:
+    recs = _load_all_records(ledger_path(stats_dir))
+    if encoder_fam:
+        recs = [d for d in recs if encoder_family(
+            (d.get("op") or {}).get("encoder_eff")) == encoder_fam]
+    return recs[-max_records:]
 
 
 # ---------------------------------------------------------------- deviation --
