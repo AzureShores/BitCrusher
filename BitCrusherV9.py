@@ -2891,6 +2891,10 @@ ADVANCED_DEFAULTS = {
     # measurably compressible (denoise + re-synthesize = better quality at the
     # same size on film grain / old cartoons); off = never; force = always.
     "film_grain": "auto",
+    # Second perceptual metric (XPSNR, built into ffmpeg) measured alongside VMAF
+    # as a cross-check — flags encodes where VMAF and XPSNR disagree (VMAF being
+    # fooled). Never gates the encode; logged for the ledger. Off = VMAF only.
+    "perceptual_crosscheck": True,
     # Advisory pre-flight guardrail (stage 2b): warns on predicted quality
     # collapse / size-cap overshoot and suggests a better codec on race-skipped
     # paths, from the ledger. Advisory only — never changes the encode itself.
@@ -4356,6 +4360,115 @@ def _downsample_series(vals: list, max_points: int) -> list:
         return out
     except Exception:
         return []
+
+
+def compute_xpsnr(reference_path: str, distorted_path: str, *,
+                  sample_fps: float = 12.0, duration_s: float = 0.0,
+                  ffmpeg: str | None = None) -> dict | None:
+    """
+    Second-opinion perceptual metric: XPSNR (extended perceptually-weighted PSNR,
+    ITU-T standardized, built into ffmpeg — no external binary). Orthogonal to
+    VMAF: it weights error by local perceptual masking rather than a learned
+    model, so it disagrees with VMAF exactly where VMAF is weakest/gameable
+    (anime, screen/text, over-sharpening). Same stream alignment as compute_vmaf
+    (setpts=PTS-STARTPTS + fps rebase — see that function's fix). Returns the
+    luma channel as {"xpsnr", "min_window", "min_window_at", "spread", "series",
+    "series_span_s", "reliable"} (dB; higher is better), or None.
+    """
+    ff = ffmpeg or FFMPEG
+    if not ff or not _ffmpeg_has_filter("xpsnr"):
+        return None
+    try:
+        if not (os.path.exists(reference_path) and os.path.exists(distorted_path)):
+            return None
+    except Exception:
+        return None
+    try:
+        _vst = _probe_video_stream(reference_path)
+        ref_w = int(_vst.get("width") or 0)
+        ref_h = int(_vst.get("height") or 0)
+    except Exception:
+        return None
+    if ref_w <= 0 or ref_h <= 0:
+        return None
+
+    fps = max(1.0, float(sample_fps))
+    _sync = f"setpts=PTS-STARTPTS,fps={fps:g}"
+    work = tempfile.mkdtemp(prefix="bc_xpsnr_")
+    stats_name = "xpsnr.log"
+    stats_path = os.path.join(work, stats_name)
+    lavfi = (
+        f"[0:v]scale={ref_w}:{ref_h}:flags=bicubic,{_sync},format=yuv420p[d];"
+        f"[1:v]{_sync},format=yuv420p[r];"
+        f"[d][r]xpsnr=stats_file={stats_name}"
+    )
+    _t_cap = (["-t", "120"] if (duration_s and duration_s > 180.0) else [])
+    _null_dev = "NUL" if os.name == "nt" else "/dev/null"
+    cmd = [ff, "-hide_banner", "-loglevel", "error"] \
+        + _t_cap + ["-i", os.path.abspath(distorted_path)] \
+        + _t_cap + ["-i", os.path.abspath(reference_path)] \
+        + ["-lavfi", lavfi, "-an", "-sn", "-f", "null", _null_dev]
+    vals: list[float] = []
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             cwd=work, startupinfo=si, creationflags=NO_WIN)
+        if getattr(res, "returncode", 1) != 0:
+            return None
+        with open(stats_path, "r", encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                m = re.search(r"XPSNR\s+y:\s*([0-9.]+|inf)", ln)
+                if not m:
+                    continue
+                tok = m.group(1)
+                # Identical frames report 'inf'; cap so they don't skew the mean.
+                vals.append(60.0 if tok == "inf" else float(tok))
+    except Exception:
+        return None
+    finally:
+        try:
+            shutil.rmtree(work, ignore_errors=True)
+        except Exception:
+            pass
+
+    if not vals:
+        return None
+    mean = sum(vals) / len(vals)
+    win = max(4, int(round(2.0 * max(1.0, float(sample_fps)))))
+    _p1, _p5, min_window, _mw_idx = _vmaf_low_metrics(vals, win)
+    _spread = (round(float(mean) - float(min_window), 2)
+               if min_window is not None else None)
+    _mw_at = (round(float(_mw_idx) / max(1.0, float(sample_fps)), 1)
+              if _mw_idx is not None else None)
+    _series = _downsample_series(vals, 64)
+    _series_span = round(len(vals) / max(1.0, float(sample_fps)), 3) if _series else None
+    # A block of ~0 dB frames is misalignment, same signature as the VMAF guard.
+    _zero_frac = sum(1 for v in vals if v < 5.0) / len(vals)
+    return {"xpsnr": round(float(mean), 2),
+            "min_window": (round(float(min_window), 2) if min_window is not None else None),
+            "min_window_at": _mw_at,
+            "spread": _spread,
+            "series": _series,
+            "series_span_s": _series_span,
+            "reliable": bool(_zero_frac < 0.02),
+            "label": xpsnr_quality_label(mean)}
+
+
+def xpsnr_quality_label(db: float) -> str:
+    """Rough perceptual bucket for an XPSNR-Y value (dB). Calibrated loosely —
+    XPSNR is used as a relative cross-check, not an absolute gate."""
+    try:
+        d = float(db)
+    except Exception:
+        return "unknown"
+    if d >= 42.0:
+        return "visually lossless"
+    if d >= 37.0:
+        return "excellent"
+    if d >= 32.0:
+        return "good"
+    if d >= 27.0:
+        return "fair"
+    return "poor"
 
 
 def _vmaf_low_metrics(vals: list, win: int):
@@ -7655,6 +7768,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
     except Exception:
         _min_vmaf = 0.0
     _obj = resolve_vmaf_objective(advanced_options)
+    xpsnr_result = None
     if _measure_quality:
         try:
             status_cb("[Quality] Measuring VMAF against the original...", "INFO")
@@ -7676,6 +7790,29 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 _fl_txt = (f", worst-scene {_fl:.1f}{_at_txt}"
                            if (_fl is not None and _obj != "mean") else "")
                 status_cb(f"[Quality] VMAF {vmaf_result['vmaf']:.1f} ({vmaf_result['label']}){_fl_txt}.", "INFO")
+                # Second-opinion perceptual metric (XPSNR): orthogonal to VMAF and
+                # built into ffmpeg. Cross-check only — never gates or packs. When
+                # VMAF rates high but XPSNR rates low, VMAF is probably being fooled
+                # (over-sharpening / anime / screen-text — its known weak spots).
+                if bool((advanced_options or {}).get(
+                        "perceptual_crosscheck", ADVANCED_DEFAULTS.get("perceptual_crosscheck", True))):
+                    try:
+                        xpsnr_result = compute_xpsnr(input_path, out_file, duration_s=float(dur or 0.0))
+                    except Exception:
+                        xpsnr_result = None
+                    if xpsnr_result and xpsnr_result.get("reliable"):
+                        status_cb(f"[Quality] XPSNR {xpsnr_result['xpsnr']:.1f} dB "
+                                  f"({xpsnr_result['label']}) — perceptual cross-check.", "INFO")
+                        try:
+                            _vm = float(vmaf_result.get("vmaf") or 0.0)
+                            _xp = float(xpsnr_result.get("xpsnr") or 0.0)
+                        except Exception:
+                            _vm = _xp = 0.0
+                        if _vm >= 90.0 and _xp < 28.0:
+                            status_cb(
+                                "[Quality] Metrics DISAGREE: VMAF rates this encode high but XPSNR "
+                                "rates it low — VMAF may be over-scoring (sharpening / anime / "
+                                "screen-text are its blind spots). Worth an eyeball.", "WARNING")
         except Exception as _vm_e:
             status_cb(f"[Quality] VMAF measurement skipped: {type(_vm_e).__name__}", "DEBUG")
 
@@ -7795,6 +7932,8 @@ def compress_video(input_path: str, save_path: str, status_cb,
         "vmaf_min_window": (vmaf_result.get("min_window") if vmaf_result else None),
         "vmaf_min_window_at": (vmaf_result.get("min_window_at") if vmaf_result else None),
         "vmaf_spread": (vmaf_result.get("spread") if vmaf_result else None),
+        "xpsnr": (xpsnr_result.get("xpsnr") if xpsnr_result else None),
+        "xpsnr_min_window": (xpsnr_result.get("min_window") if xpsnr_result else None),
         "vmaf_objective": _obj,
         "preproc": (str((advanced_options or {}).get("_preproc_label") or "") or None),
         "encoder": str(encoder or ""),
@@ -7853,6 +7992,8 @@ def compress_video(input_path: str, save_path: str, status_cb,
                      "spread": (vmaf_result or {}).get("spread"),
                      "series": (vmaf_result or {}).get("series"),
                      "series_span_s": (vmaf_result or {}).get("series_span_s"),
+                     "xpsnr": (xpsnr_result or {}).get("xpsnr"),
+                     "xpsnr_min_window": (xpsnr_result or {}).get("min_window"),
                      "encode_seconds": round(time.time() - t_start, 1)},
             shadow=(advanced_options or {}).get("_ledger_shadow"),
             vmaf_model=_vm_tag)
