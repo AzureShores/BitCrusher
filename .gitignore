@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Backups / restores
+backups/
+*.bak
+
+# Test/output artifacts (large binaries)
+shootout_out/
+compression_testing_videos/
+output/
+logs/
+tmp/
+test_pipeline/out/
+
+# Vendored binary tools
+tools/*.exe
+
+# Local tooling / state
+.claude/
+user_settings/
