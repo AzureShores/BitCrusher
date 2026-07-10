@@ -4200,12 +4200,22 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
 
     n_threads = max(1, min(16, (os.cpu_count() or 4)))
     fps = max(1.0, float(sample_fps))
-    # Frame-INDEX decimation, not timestamp-based fps= sampling: a re-encode
-    # maps source frames 1:1, but VFR sources (phone footage) have irregular
-    # timestamps, so fps= picked DIFFERENT frames from each side and VMAF
-    # collapsed to garbage (measured 19.8 on a visually-lossless encode).
-    # select(mod(n,step)) keeps the same frame indices on both sides.
-    step = max(1, int(round((ref_fps if ref_fps > 0 else 30.0) / fps)))
+    # Align BOTH streams to a common timeline before sampling:
+    #   setpts=PTS-STARTPTS  — rebase to t=0. Critical: many downloaded/re-muxed
+    #     files carry a start-PTS offset (e.g. one-frame 0.04s delay from an edit
+    #     list). The encoder strips it, so distorted starts at 0 while the source
+    #     starts at 0.04 — libvmaf's framesync then pairs every distorted frame
+    #     against the reference frame one position off, scoring rapid-cut scenes
+    #     ~0 and dragging a genuinely-fine encode down by 20-30 VMAF (a real file
+    #     measured 57 instead of ~82). Frame-INDEX decimation (select mod n) did
+    #     NOT fix this: the offset frame is decoded asymmetrically between the two
+    #     inputs, so the indices themselves drift.
+    #   fps=sample_fps      — resample both to the SAME fixed rate off that common
+    #     origin, so identical wall-clock frames are compared even on VFR sources
+    #     (the case index-decimation was originally meant to protect — the missing
+    #     piece was the PTS rebase, not the sampling method). Also cheaper than
+    #     full-rate scoring, with negligible accuracy loss.
+    _sync = f"setpts=PTS-STARTPTS,fps={fps:g}"
     # Write the log to a bare filename inside a temp working dir: a full Windows
     # path like C:/... contains a colon that libvmaf's filter-option parser
     # treats as an option separator, so we run with cwd set to the temp dir.
@@ -4215,10 +4225,9 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
     ref_abs = os.path.abspath(reference_path)
     dist_abs = os.path.abspath(distorted_path)
     # 0 = distorted (first input), 1 = reference (second input).
-    _sel = f"select=not(mod(n\\,{step})),setpts=N/({fps:g}*TB)"
     lavfi = (
-        f"[0:v]scale={ref_w}:{ref_h}:flags=bicubic,{_sel},format=yuv420p[dist];"
-        f"[1:v]{_sel},format=yuv420p[ref];"
+        f"[0:v]scale={ref_w}:{ref_h}:flags=bicubic,{_sync},format=yuv420p[dist];"
+        f"[1:v]{_sync},format=yuv420p[ref];"
         f"[dist][ref]libvmaf={_vmaf_model_opt(ff, work_dir)}n_threads={n_threads}:log_fmt=json:log_path={log_name}"
     )
     cmd = [ff, "-hide_banner", "-loglevel", "error"]
@@ -4274,6 +4283,15 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
         except Exception:
             return None
 
+    # Reliability guard: near-zero per-frame VMAF is almost never real (even a
+    # heavily-crushed encode scores 20-40, not ~0). A non-trivial fraction of
+    # ~0 frames means the two streams were misaligned (start-PTS offset, VFR
+    # drift, wrong-length inputs) — a MEASUREMENT fault, not quality. Flag it so
+    # callers can distrust the number and, crucially, keep it out of the learning
+    # ledger instead of poisoning quality predictions with a phantom collapse.
+    _zero_frac = (sum(1 for v in vals if v < 2.0) / len(vals)) if vals else 0.0
+    _reliable = _zero_frac < 0.02
+
     # Worst rolling ~2s window + low percentiles (scene-floor proxies, no re-encode).
     p1 = p5 = min_window = None
     _mw_idx = None
@@ -4308,6 +4326,8 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
             "spread": _spread,
             "series": _series,
             "series_span_s": _series_span,
+            "reliable": bool(_reliable),
+            "zero_frac": round(_zero_frac, 4),
             "label": vmaf_quality_label(mean)}
 
 
@@ -7533,6 +7553,13 @@ def compress_video(input_path: str, save_path: str, status_cb,
             status_cb("[Quality] Measuring VMAF against the original...", "INFO")
             _emit("vmaf")
             vmaf_result = compute_vmaf(input_path, out_file, duration_s=float(dur or 0.0))
+            if vmaf_result and vmaf_result.get("reliable") is False:
+                status_cb(
+                    f"[Quality] VMAF measurement looks UNRELIABLE "
+                    f"({vmaf_result.get('zero_frac', 0) * 100:.0f}% of frames scored ~0 — "
+                    f"usually a source timestamp/frame-alignment quirk, not real quality). "
+                    f"Ignoring this score (not used for gating or learning).", "WARNING")
+                vmaf_result = None
             if vmaf_result:
                 _fl = vmaf_floor_score(vmaf_result, _obj)
                 _at = vmaf_result.get("min_window_at")
