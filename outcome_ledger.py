@@ -43,6 +43,14 @@ _FEATURE_NORM = {
 _SHRINK_K = 3.0          # pseudo-samples pulling predictions toward the prior
 _MAX_RECORDS = 5000      # newest records kept in memory when loading
 
+# Soft weight for the categorical operating-point flags (film-grain synthesis,
+# preprocessing, spotlight) added to the neighbour distance. These op modes
+# change size/quality materially, so a mismatch should PENALISE a neighbour --
+# but softly, so the thin cold-start pool is not fragmented into empty buckets
+# the way a hard filter would. A mismatch on one flag adds (_OP_FLAG_WEIGHT**2)
+# to the squared distance; content features (scaled to ~0..2) still dominate.
+_OP_FLAG_WEIGHT = 0.6
+
 
 def encoder_family(name: str) -> str:
     e = str(name or "").lower()
@@ -160,8 +168,18 @@ def record_deviation(rec: dict) -> float | None:
 
 
 # --------------------------------------------------------------- similarity --
+def _op_flags_from_record(r: dict) -> dict:
+    """Extract the categorical operating-point flags from a stored record's op
+    block. All fields are already persisted by build_record; records predating
+    them yield falsey values (== a plain, no-grain/no-preproc encode)."""
+    op = r.get("op") or {}
+    return {"film_grain": op.get("film_grain"),
+            "preproc": op.get("preproc"),
+            "spotlight": op.get("spotlight")}
+
+
 def feature_vector(features: dict, width: int, height: int, fps: float,
-                   target_bpp: float) -> list[float]:
+                   target_bpp: float, op_flags: dict | None = None) -> list[float]:
     v = []
     f = features or {}
     for k, norm in _FEATURE_NORM.items():
@@ -182,7 +200,33 @@ def feature_vector(features: dict, width: int, height: int, fps: float,
         v.append(min(2.0, max(0.0, (math.log10(max(1e-4, target_bpp)) + 2.0) / 2.0)))
     except Exception:
         v.append(0.5)
+    # Categorical op-mode flags (weighted soft-penalty dims). Only appended when
+    # the caller supplies op_flags, so legacy callers keep the old vector length
+    # and _dist (which truncates to the shorter vector) ignores them.
+    if op_flags is not None:
+        fg = 1.0 if _flag_active("film_grain", op_flags.get("film_grain")) else 0.0
+        pp = 1.0 if _flag_active("preproc", op_flags.get("preproc")) else 0.0
+        sp = 1.0 if _flag_active("spotlight", op_flags.get("spotlight")) else 0.0
+        v.append(_OP_FLAG_WEIGHT * fg)
+        v.append(_OP_FLAG_WEIGHT * pp)
+        v.append(_OP_FLAG_WEIGHT * sp)
     return v
+
+
+def _flag_active(name: str, val) -> bool:
+    """Normalise a stored/queried op flag to on/off. film_grain is a level int
+    (>0 == on); preproc is a label string (non-empty == on); spotlight is a
+    truthy seconds/bool value."""
+    if val is None:
+        return False
+    if name == "film_grain":
+        try:
+            return float(val) > 0
+        except (TypeError, ValueError):
+            return bool(val)
+    if name == "preproc":
+        return bool(str(val).strip())
+    return bool(val)
 
 
 def _dist(a: list[float], b: list[float]) -> float:
@@ -192,7 +236,8 @@ def _dist(a: list[float], b: list[float]) -> float:
 
 def predict_deviation(stats_dir: str, features: dict, encoder: str,
                       width: int, height: int, fps: float,
-                      v_bps: float, k_neighbors: int = 5) -> tuple[float, int]:
+                      v_bps: float, k_neighbors: int = 5,
+                      op_flags: dict | None = None) -> tuple[float, int]:
     """
     SHADOW-MODE predictor: expected first-attempt deviation for this content at
     this operating point, from the k nearest ledger records of the same encoder
@@ -206,7 +251,7 @@ def predict_deviation(stats_dir: str, features: dict, encoder: str,
         bpp = float(v_bps) / max(1.0, float(width) * float(height) * max(1.0, float(fps)))
     except Exception:
         bpp = 0.05
-    q = feature_vector(features, width, height, fps, bpp)
+    q = feature_vector(features, width, height, fps, bpp, op_flags=op_flags)
 
     cands = []
     for r in recs:
@@ -221,7 +266,8 @@ def predict_deviation(stats_dir: str, features: dict, encoder: str,
         except Exception:
             r_bpp = 0.05
         rv = feature_vector(r.get("features") or {}, op.get("width") or 0,
-                            op.get("height") or 0, op.get("fps") or 30.0, r_bpp)
+                            op.get("height") or 0, op.get("fps") or 30.0, r_bpp,
+                            op_flags=(_op_flags_from_record(r) if op_flags is not None else None))
         cands.append((_dist(q, rv), dev))
     if not cands:
         return 1.0, 0
@@ -305,6 +351,13 @@ QUALITY_COLLAPSE_WORST = 60.0
 QUALITY_WARN_WORST = 75.0
 OVERSHOOT_WARN_RATIO = 1.06     # predicted achieved-size / target above this = cap risk
 _MIN_PRIOR_N = 3                # neighbors required before the prior will speak
+# Below this a min_window reading isn't "hard content", it's a black leader/
+# title-card frame tanking one VMAF window to near-zero (real worst-content
+# collapse bottoms around ~44, see QUALITY_COLLAPSE_WORST above) - untrustworthy
+# as a worst-window training signal. The record's mean VMAF is unaffected (a
+# few black frames barely move a whole-clip average) so only worst is dropped,
+# not the whole record.
+_WORST_WINDOW_TRUST_FLOOR = 5.0
 
 
 def _scale_key(vmaf_model: str) -> str:
@@ -329,13 +382,14 @@ def _op_feature_vector(r: dict) -> list[float]:
     except Exception:
         r_bpp = 0.05
     return feature_vector(r.get("features") or {}, op.get("width") or 0,
-                          op.get("height") or 0, op.get("fps") or 30.0, r_bpp)
+                          op.get("height") or 0, op.get("fps") or 30.0, r_bpp,
+                          op_flags=_op_flags_from_record(r))
 
 
 def predict_quality(stats_dir: str, features: dict, encoder: str,
                     width: int, height: int, fps: float, v_bps: float,
                     target_bytes: float, *, vmaf_model: str | None = None,
-                    k_neighbors: int = 5) -> dict:
+                    k_neighbors: int = 5, op_flags: dict | None = None) -> dict:
     """
     Predict how a given encoder family will fare on this content at this
     operating point, from the k nearest same-family, same-scale ledger records.
@@ -351,7 +405,7 @@ def predict_quality(stats_dir: str, features: dict, encoder: str,
         bpp = float(v_bps) / max(1.0, float(width) * float(height) * max(1.0, float(fps)))
     except Exception:
         bpp = 0.05
-    q = feature_vector(features, width, height, fps, bpp)
+    q = feature_vector(features, width, height, fps, bpp, op_flags=op_flags)
 
     cands = []
     for r in recs:
@@ -360,6 +414,8 @@ def predict_quality(stats_dir: str, features: dict, encoder: str,
         outc = r.get("outcome") or {}
         worst = outc.get("min_window")
         mean = outc.get("vmaf")
+        if worst is not None and worst < _WORST_WINDOW_TRUST_FLOOR:
+            worst = None  # black-leader-frame collapse, not a real worst-window signal
         if worst is None and mean is None:
             continue
         op = r.get("op") or {}
@@ -406,7 +462,8 @@ def predict_quality(stats_dir: str, features: dict, encoder: str,
 def estimate_encode(stats_dir: str, features: dict, encoder: str,
                     width: int, height: int, fps: float, v_bps: float,
                     target_bytes: float, duration_s: float, *,
-                    vmaf_model: str | None = None) -> dict:
+                    vmaf_model: str | None = None,
+                    op_flags: dict | None = None) -> dict:
     """
     Pre-flight estimate for ONE operating point, for the prediction panel /
     CLI --estimate: predicted delivered size, mean & worst-scene VMAF, and
@@ -416,7 +473,8 @@ def estimate_encode(stats_dir: str, features: dict, encoder: str,
     behind the estimate so the UI can show confidence.
     """
     pq = predict_quality(stats_dir, features, encoder, width, height, fps,
-                         v_bps, target_bytes, vmaf_model=vmaf_model)
+                         v_bps, target_bytes, vmaf_model=vmaf_model,
+                         op_flags=op_flags)
     ratio = pq.get("size_ratio")
     try:
         size_bytes = int(float(target_bytes) * float(ratio)) if ratio else int(target_bytes)
@@ -435,7 +493,7 @@ def estimate_encode(stats_dir: str, features: dict, encoder: str,
 def codec_prior(stats_dir: str, features: dict, width: int, height: int,
                 fps: float, v_bps: float, target_bytes: float,
                 candidates, *, vmaf_model: str | None = None,
-                k_neighbors: int = 5) -> dict:
+                k_neighbors: int = 5, op_flags: dict | None = None) -> dict:
     """
     Per-codec-family quality/size prediction for a set of candidate encoders,
     plus a recommendation. Feeds two callers: the race-skipped path (pick the
@@ -454,7 +512,8 @@ def codec_prior(stats_dir: str, features: dict, width: int, height: int,
         fams.append(fam)
         scores[fam] = predict_quality(stats_dir, features, fam, width, height,
                                       fps, v_bps, target_bytes,
-                                      vmaf_model=vmaf_model, k_neighbors=k_neighbors)
+                                      vmaf_model=vmaf_model, k_neighbors=k_neighbors,
+                                      op_flags=op_flags)
     eligible = []
     for fam in fams:
         s = scores[fam]
@@ -471,7 +530,8 @@ def preflight_advice(stats_dir: str, features: dict, encoder: str,
                      width: int, height: int, fps: float, v_bps: float,
                      target_bytes: float, *, candidates=None,
                      vmaf_model: str | None = None,
-                     encoder_locked: bool = False) -> dict:
+                     encoder_locked: bool = False,
+                     op_flags: dict | None = None) -> dict:
     """
     Advisory-only pre-flight check (never acts on its own). Predicts the chosen
     encoder's worst-window quality and size feasibility from history and, when
@@ -482,10 +542,11 @@ def preflight_advice(stats_dir: str, features: dict, encoder: str,
     fam = encoder_family(encoder)
     cands = candidates or [fam]
     prior = codec_prior(stats_dir, features, width, height, fps, v_bps,
-                        target_bytes, cands, vmaf_model=vmaf_model)
+                        target_bytes, cands, vmaf_model=vmaf_model,
+                        op_flags=op_flags)
     chosen = prior["scores"].get(fam) or predict_quality(
         stats_dir, features, fam, width, height, fps, v_bps, target_bytes,
-        vmaf_model=vmaf_model)
+        vmaf_model=vmaf_model, op_flags=op_flags)
 
     warnings: list[str] = []
     if chosen["n"] >= _MIN_PRIOR_N:
@@ -517,6 +578,34 @@ def preflight_advice(stats_dir: str, features: dict, encoder: str,
             suggestion = rec
     return {"warnings": warnings, "codec_suggestion": suggestion,
             "chosen": chosen, "scores": prior["scores"], "n": chosen["n"]}
+
+
+def build_op(*, target_bytes, encoder_req, encoder_eff, width, height, fps,
+             v_bps, audio_bps, audio_copy, preset, quality_mode, preproc,
+             film_grain, film_grain_ratio, spotlight, dur) -> dict:
+    """Assemble the EFFECTIVE operating-point block for a ledger record.
+
+    `encoder_eff` is the encoder that ACTUALLY ran (the codec-race winner, if a
+    race happened); `encoder_req` is what the user asked for. Keeping these
+    separate — and always attributing the outcome to `encoder_eff` — is the fix
+    for the old poisoned-cache scar where a raced-away encoder's result was
+    credited to the requested one. Pure and unit-testable; the monolith supplies
+    the values, this guarantees the mapping.
+    """
+    return {"target_bytes": int(target_bytes or 0),
+            "encoder_req": str(encoder_req or ""),
+            "encoder_eff": str(encoder_eff or ""),
+            "width": int(width or 0), "height": int(height or 0),
+            "fps": float(fps or 0.0),
+            "v_bps": int(v_bps or 0),
+            "audio_bps": int(audio_bps or 0), "audio_copy": bool(audio_copy),
+            "preset": str(preset or ""),
+            "quality_mode": str(quality_mode or ""),
+            "preproc": (str(preproc) if preproc else None),
+            "film_grain": film_grain,
+            "film_grain_ratio": film_grain_ratio,
+            "spotlight": bool(spotlight),
+            "dur": float(dur or 0.0)}
 
 
 def build_record(*, input_path: str, features: dict, src: dict, op: dict,

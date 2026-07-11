@@ -131,6 +131,48 @@ def test_size_controller_retry_progresses_directionally():
     assert v_next > 300_000
 
 
+def test_next_lower_std_width():
+    """The ceiling downscale-retry ladder steps to the next standard width,
+    then falls back to 80%, then bottoms out at 0 (stop downscaling)."""
+    import BitCrusherV9 as bc
+
+    assert bc.next_lower_std_width(1920) == 1600
+    assert bc.next_lower_std_width(1280) == 1024
+    assert bc.next_lower_std_width(1921) == 1920      # not equal-or-above
+    assert bc.next_lower_std_width(426) == 340        # below ladder -> 80% even
+    assert bc.next_lower_std_width(300) == 0          # too small -> stop
+    assert bc.next_lower_std_width(0) == 0
+    # Every step strictly decreases (loop-termination guarantee).
+    w, seen = 3840, []
+    while w:
+        nxt = bc.next_lower_std_width(w)
+        assert nxt < w
+        seen.append(nxt)
+        w = nxt
+    assert seen[-1] == 0
+
+
+def test_size_controller_never_accepts_overshoot():
+    """The size target is a hard ceiling. Neither the default-constructed
+    controller nor the explicit legacy policy may report an overshoot as
+    'close enough' to stop retrying."""
+    # Default policy (now no_overshoot_near_max): an over-target result must retry.
+    c = SizeController(target_bytes=1_000_000, duration_s=10.0, audio_bps=96_000)
+    c.set_initial(seed_v_bps=1_200_000, seed_bytes=1_050_000)  # 5% over the ceiling
+    assert c.should_retry(1_050_000)
+    # Even a whisker over (1 byte) is not accepted.
+    assert c.should_retry(1_000_001)
+    # An under-ceiling result inside the window stops the loop.
+    c2 = SizeController(target_bytes=1_000_000, duration_s=10.0, audio_bps=96_000)
+    c2.set_initial(seed_v_bps=980_000, seed_bytes=999_000)
+    assert not c2.should_retry(999_000)
+    # Legacy policy is likewise clamped strictly under the ceiling.
+    lg = SizeController(target_bytes=1_000_000, duration_s=10.0, audio_bps=96_000,
+                        target_policy="legacy")
+    lg.set_initial(seed_v_bps=1_200_000, seed_bytes=1_050_000)
+    assert lg.should_retry(1_050_000)
+
+
 def test_audio_encode_preserves_tags_and_cover(monkeypatch, tmp_path):
     """The old audio path used -vn (drops album art) + the privacy default
     -map_metadata -1 (drops title/artist/album), so every compressed track came
@@ -827,11 +869,15 @@ def test_themelab_wheel_builds_fast():
 
 
 def _mk_ledger_rec(dev, entropy, encoder="x264", vmaf_model="vmaf_v1.0.16_3d0h",
-                   pred=None, n=0):
+                   pred=None, n=0, film_grain=None, preproc=None, spotlight=None,
+                   worst=None):
     """Synthetic ledger record whose first attempt lands at `dev` x the naive
     size model (720p30 @ 1 Mbps video + 128k audio for 10s)."""
     v_bps, a_bps, dur = 1_000_000, 128_000, 10.0
     got = int((v_bps + a_bps) * dur / 8.0 * dev)
+    outcome = {"size": got}
+    if worst is not None:
+        outcome["min_window"] = worst
     return {
         "schema": 1, "vmaf_model": vmaf_model, "input": "x.mp4",
         "features": {"entropy_p95": entropy, "spatial_complexity": 5.0,
@@ -839,9 +885,10 @@ def _mk_ledger_rec(dev, entropy, encoder="x264", vmaf_model="vmaf_v1.0.16_3d0h",
                      "blockiness": 1.0, "edge_p95": 100.0},
         "src": {"dur": dur},
         "op": {"encoder_eff": encoder, "width": 1280, "height": 720, "fps": 30.0,
-               "v_bps": v_bps, "audio_bps": a_bps, "dur": dur},
+               "v_bps": v_bps, "audio_bps": a_bps, "dur": dur, "target_bytes": got,
+               "film_grain": film_grain, "preproc": preproc, "spotlight": spotlight},
         "attempts": [[v_bps, got]],
-        "outcome": {"size": got},
+        "outcome": outcome,
         "shadow": ({"dev_pred": pred, "n": n} if pred is not None else None),
     }
 
@@ -895,6 +942,56 @@ def test_ledger_shadow_predictor(tmp_path):
     assert dev1 < 1.35                                # not dragged to 2.0 by one record
 
 
+def test_ledger_records_effective_encoder():
+    """The poisoned-cache scar: when the codec race switches the encoder, the
+    outcome must be attributed to the encoder that ACTUALLY ran (encoder_eff),
+    never to the request (encoder_req)."""
+    import outcome_ledger as ol
+
+    # Requested x264, race switched to AV1 -> the effective op must say av1.
+    op = ol.build_op(target_bytes=5_000_000, encoder_req="x264", encoder_eff="av1",
+                     width=1920, height=1080, fps=30.0, v_bps=1_000_000,
+                     audio_bps=128_000, audio_copy=False, preset="slow",
+                     quality_mode="max", preproc=None, film_grain=None,
+                     film_grain_ratio=None, spotlight=None, dur=60.0)
+    assert op["encoder_req"] == "x264"
+    assert op["encoder_eff"] == "av1"
+    assert op["encoder_eff"] != op["encoder_req"]
+    assert ol.encoder_family(op["encoder_eff"]) == "av1"
+
+    # A record built from this op is filtered/attributed by the effective family.
+    rec = ol.build_record(input_path="x.mp4", features={}, src={}, op=op,
+                          attempts=[[1_000_000, 4_900_000]], race=None,
+                          outcome={"size": 4_900_000}, shadow=None,
+                          vmaf_model="vmaf_v1")
+    assert ol.encoder_family(rec["op"]["encoder_eff"]) == "av1"
+
+
+def test_ledger_neighbor_op_flags(tmp_path):
+    """Operating-point flags steer neighbour matching: two clusters with
+    identical content but opposite film-grain settings and opposite size
+    deviations must each pull the same-flag query toward its own cluster,
+    instead of blending (the grain-synth vs plain cross-contamination bug)."""
+    import outcome_ledger as ol
+
+    d = str(tmp_path)
+    feats = {"entropy_p95": 6.0, "spatial_complexity": 5.0, "graininess": 0.1,
+             "text_edge_density": 0.1, "blockiness": 1.0, "edge_p95": 100.0}
+    for _ in range(6):                                # grain-on encodes overshoot
+        ol.ledger_append(d, _mk_ledger_rec(1.4, 6.0, film_grain=14))
+    for _ in range(6):                                # grain-off encodes undershoot
+        ol.ledger_append(d, _mk_ledger_rec(0.9, 6.0, film_grain=None))
+
+    dev_on, n_on = ol.predict_deviation(d, feats, "x264", 1280, 720, 30.0,
+                                        1_000_000, op_flags={"film_grain": 14})
+    dev_off, n_off = ol.predict_deviation(d, feats, "x264", 1280, 720, 30.0,
+                                          1_000_000, op_flags={"film_grain": None})
+    assert n_on > 0 and n_off > 0
+    assert dev_on > dev_off                           # flag separates the clusters
+    assert dev_on > 1.15                              # pulled toward the 1.4 cluster
+    assert dev_off < 1.05                             # pulled toward the 0.9 cluster
+
+
 def test_ledger_seed_adjust_guardrails():
     """Stage 2a live seeding: acts only with enough neighbors, clamps the
     correction, respects the feasibility cap, and skips sub-1% nudges."""
@@ -942,3 +1039,239 @@ def test_resolve_vmaf_objective(monkeypatch):
     monkeypatch.setenv("BC_VMAF_OBJECTIVE", "harmonic")
     assert bc.resolve_vmaf_objective({}) == "harmonic"                     # env
     monkeypatch.delenv("BC_VMAF_OBJECTIVE", raising=False)
+
+
+# Pictographic-emoji ranges. Logs/status messages must stay plain ASCII with
+# [Tag] prefixes (the codebase has an emoji-mojibake corruption history); this
+# guard makes that invariant self-enforcing instead of discipline-only. Arrows
+# are intentionally NOT included: the i18n table maps a literal arrow key.
+# Emoji/dingbat/symbol blocks. Excludes arrows (U+2190-21FF), math, punctuation
+# and box-drawing/geometric shapes (U+2500-25FF) which are legit UI glyphs.
+_EMOJI_RE = __import__("re").compile("[℀-⅏⌀-⏿☀-➿⬀-⯿\U0001F000-\U0001FAFF]")
+# C1 control chars are the reliable fingerprint of UTF-8 bytes misdecoded as
+# cp1252/latin-1 (the mojibake that once corrupted 52 strings). They are never
+# legitimate in source, so a whole-file scan is the strongest guard.
+_C1_RE = __import__("re").compile("[" + chr(0x80) + "-" + chr(0x9f) + "]")
+
+
+def test_logs_are_ascii_only():
+    """No string literal in the root modules may contain pictographic emoji.
+    ast is used so comments are ignored; only real string constants are scanned.
+    (i18n translation strings are non-ASCII but contain no pictographic emoji.)"""
+    import ast
+
+    offenders = []
+    for py in sorted(ROOT.glob("*.py")):
+        src = py.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                m = _EMOJI_RE.search(node.value)
+                if m:
+                    offenders.append(f"{py.name}:{node.lineno}: {m.group()!r} in {node.value[:50]!r}")
+    assert not offenders, "emoji found in string literals:\n" + "\n".join(offenders)
+
+
+def _unmojibake(s):
+    """Reverse cp1252 mojibake: rebuild the original bytes (ascii/latin-1/raw-C1
+    pass through, cp1252-remapped printables encode back) and re-decode UTF-8.
+    Legit Latin-1/CJK text does NOT round-trip to a *different* valid string, so
+    a change here is the reliable fingerprint of a double-encoded UTF-8 string --
+    catching the emoji mojibake that has NO C1 chars (e.g. cp1252 0x9F->Y-diaeresis)
+    which the C1 scan alone missed."""
+    out = bytearray()
+    for ch in s:
+        o = ord(ch)
+        if o < 0x100:
+            out.append(o)
+        else:
+            try:
+                out.extend(ch.encode("cp1252"))
+            except Exception:
+                out.extend(ch.encode("utf-8"))
+    try:
+        return out.decode("utf-8")
+    except Exception:
+        return s
+
+
+def test_no_mojibake():
+    """No root module may contain double-encoded (mojibake) text. Covers both C1
+    control chars and the C1-free emoji mojibake that slipped past a naive scan."""
+    offenders = []
+    for py in sorted(ROOT.glob("*.py")):
+        for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+            if _C1_RE.search(line):
+                offenders.append(f"{py.name}:{i} (C1 control)")
+            elif any(ord(c) > 0x7f for c in line) and _unmojibake(line) != line:
+                offenders.append(f"{py.name}:{i} (double-encoded)")
+    assert not offenders, "mojibake found at:\n" + "\n".join(offenders)
+
+
+# --- Video smart-source guard (compress_video passthrough + shrink race) ---
+# compress_video() never had a dedicated test before (other tests only mock it
+# as a dependency); it always calls real ffprobe/ffmpeg via a handful of choke
+# points, so these stub those points instead of extracting a "testable" helper.
+
+def _stub_video_backend(bc, monkeypatch, *, duration=5.0, width=640, height=360):
+    """Fake every subprocess/learning boundary compress_video touches so a
+    passthrough/shrink-race test never shells out or writes real user stats."""
+    probe = {
+        "format": {"duration": str(duration)},
+        "streams": [
+            {"codec_type": "video", "width": width, "height": height,
+             "avg_frame_rate": "30/1", "bit_rate": "1000000"},
+            {"codec_type": "audio", "channels": 2, "sample_rate": "48000"},
+        ],
+    }
+    monkeypatch.setattr(bc, "_probe_media_cached", lambda _p: probe)
+    monkeypatch.setattr(bc, "_jsonl_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(bc, "learn_from_result", lambda *_a, **_k: None)
+    monkeypatch.setattr(bc, "guardrail_adjust", lambda *_a, **_k: None)
+
+
+def test_video_passthrough_never_inflates(monkeypatch, tmp_path):
+    """Source already under target: remux passthrough must ship a file no
+    bigger than the source, not fall through to a full re-encode."""
+    import BitCrusherV9 as bc
+
+    src = tmp_path / "in.mp4"
+    src_bytes = b"x" * 500_000
+    src.write_bytes(src_bytes)
+
+    def fake_remux(_src, dst, _privacy=None):
+        with open(dst, "wb") as f:
+            f.write(src_bytes)
+        return True
+
+    _stub_video_backend(bc, monkeypatch)
+    monkeypatch.setattr(bc, "_remux_smart", fake_remux)
+
+    result = bc.compress_video(
+        str(src), str(tmp_path), lambda *_a, **_k: None,
+        target_size_mb=2, webhook_url=None,
+        advanced_options={"scene_zones": False, "measure_quality": False,
+                           "quality_mode": "max"},
+        cancel_cb=lambda: False,
+    )
+
+    assert result["passthrough"] is True
+    assert result["compressed_size"] <= result["original_size"]
+    assert os.path.getsize(result["output_path"]) == len(src_bytes)
+
+
+def test_video_passthrough_remux_fail_falls_back_to_crf18(monkeypatch, tmp_path):
+    """Remux failure must fall back to a bounded near-lossless CRF-18 encode,
+    not silently proceed into the full bitrate-targeting pipeline."""
+    import BitCrusherV9 as bc
+
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"x" * 500_000)
+
+    _stub_video_backend(bc, monkeypatch)
+    monkeypatch.setattr(bc, "_remux_smart", lambda *_a, **_k: False)
+
+    captured = {}
+
+    def fake_handbrake(*, input_path, output_path, encoder, bitrate, crf, **_kw):
+        captured["encoder"] = encoder
+        captured["crf"] = crf
+        captured["bitrate"] = bitrate
+        with open(output_path, "wb") as f:
+            f.write(b"y" * 400_000)
+        return True
+
+    monkeypatch.setattr(bc, "compress_with_handbrake", fake_handbrake)
+
+    result = bc.compress_video(
+        str(src), str(tmp_path), lambda *_a, **_k: None,
+        target_size_mb=2, webhook_url=None,
+        advanced_options={"scene_zones": False, "measure_quality": False,
+                           "quality_mode": "max"},
+        cancel_cb=lambda: False,
+    )
+
+    assert result["ok"] is True
+    assert captured["crf"] == 18
+    assert captured["bitrate"] is None
+    assert os.path.getsize(result["output"]) == 400_000
+
+
+def test_video_shrink_race_adopts_only_a_clear_win(monkeypatch, tmp_path):
+    """Source-as-candidate race: adopt the re-encode only when it beats the
+    original by >10% and clears the VMAF floor; otherwise keep the original."""
+    import BitCrusherV9 as bc
+
+    src = tmp_path / "in.mp4"
+    src_bytes = b"x" * 3_000_000  # >= the race's 2MB/25%-of-target trigger floor
+    src.write_bytes(src_bytes)
+
+    def fake_remux(_src, dst, _privacy=None):
+        with open(dst, "wb") as f:
+            f.write(src_bytes)
+        return True
+
+    adv = {"scene_zones": False, "measure_quality": True, "quality_mode": "max"}
+
+    # --- reject: shrink candidate isn't a clear win (only 5% smaller) ---
+    _stub_video_backend(bc, monkeypatch)
+    monkeypatch.setattr(bc, "_remux_smart", fake_remux)
+    monkeypatch.setattr(bc, "extract_video_duration", lambda _p: 5.0)
+
+    def fake_shrink_reject(*, input_path, output_path, **_kw):
+        with open(output_path, "wb") as f:
+            f.write(b"y" * int(len(src_bytes) * 0.95))
+        return True
+
+    monkeypatch.setattr(bc, "compress_with_handbrake", fake_shrink_reject)
+    monkeypatch.setattr(bc, "compute_vmaf", lambda *_a, **_k:
+                         (_ for _ in ()).throw(AssertionError("vmaf must not run when not a clear size win")))
+
+    result = bc.compress_video(str(src), str(tmp_path), lambda *_a, **_k: None,
+                                5, None, adv, lambda: False)
+    assert result["passthrough"] is True
+    assert result["compressed_size"] == len(src_bytes)
+
+    # --- adopt: shrink candidate is a clear, transparent win ---
+    def fake_shrink_adopt(*, input_path, output_path, **_kw):
+        with open(output_path, "wb") as f:
+            f.write(b"y" * int(len(src_bytes) * 0.5))
+        return True
+
+    monkeypatch.setattr(bc, "compress_with_handbrake", fake_shrink_adopt)
+    monkeypatch.setattr(bc, "compute_vmaf", lambda *_a, **_k: {"vmaf": 99.0})
+
+    src2 = tmp_path / "in2.mp4"
+    src2.write_bytes(src_bytes)
+    monkeypatch.setattr(bc, "_remux_smart", fake_remux)  # unchanged; ignores _src, writes src_bytes
+
+    result2 = bc.compress_video(str(src2), str(tmp_path), lambda *_a, **_k: None,
+                                 5, None, adv, lambda: False)
+    assert result2["passthrough"] is False
+    assert result2["compressed_size"] == int(len(src_bytes) * 0.5)
+
+
+def test_video_undecodable_source_fails_fast(monkeypatch, tmp_path):
+    """An unreadable/undecodable source must raise immediately with a specific
+    [Probe] error, never reach the primary + 5-fallback encode chain."""
+    import pytest
+    import BitCrusherV9 as bc
+
+    src = tmp_path / "corrupt.mp4"
+    src.write_bytes(b"not a real container")
+
+    monkeypatch.setattr(bc, "_probe_media_cached", lambda _p: {})  # simulates ffprobe failure
+    monkeypatch.setattr(bc, "_jsonl_log", lambda *_a, **_k: None)
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("encoder must not be invoked for an undecodable source")
+
+    monkeypatch.setattr(bc, "_remux_smart", _must_not_run)
+    monkeypatch.setattr(bc, "compress_with_handbrake", _must_not_run)
+
+    with pytest.raises(RuntimeError, match=r"\[Probe\] Source undecodable or unreadable"):
+        bc.compress_video(str(src), str(tmp_path), lambda *_a, **_k: None,
+                           2, None, {"scene_zones": False}, lambda: False)

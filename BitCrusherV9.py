@@ -183,46 +183,46 @@ LANG_BUILTIN = {
 }
 
 LANG_BUILTIN.update({
-    "es": { "menu_language":"Idioma","menu.file":"Archivo","menu.settings":"Ajustes","menu.themes":"Temas","menu.guide":"GuÃ­a","menu.view":"Vista",
+    "es": { "menu_language":"Idioma","menu.file":"Archivo","menu.settings":"Ajustes","menu.themes":"Temas","menu.guide":"Guía","menu.view":"Vista",
             "menu.exit":"Salir","menu.configure_paths":"Configurar rutas","menu.save_profile":"Guardar perfil","menu.load_profile":"Cargar perfil",
-            "menu.clear_queue":"Vaciar cola","menu.dashboard":"Panel","menu.user_guide":"GuÃ­a del usuario",
-            "menu.theme_lab":"Laboratorio de temasâ€¦","menu.save_theme":"Guardar tema actualâ€¦","menu.load_theme":"Cargar tema JSONâ€¦",
-            "menu.open_i18n_folder":"Abrir carpeta i18nâ€¦","menu.export_lang_templates":"Exportar plantillas de idiomaâ€¦",
-            "lbl.preset":"Preajuste:","lbl.target_size":"TamaÃ±o objetivo (MB):","lbl.queue":"Cola","lbl.preview":"Vista previa","lbl.save_to":"Guardar en:",
+            "menu.clear_queue":"Vaciar cola","menu.dashboard":"Panel","menu.user_guide":"Guía del usuario",
+            "menu.theme_lab":"Laboratorio de temas…","menu.save_theme":"Guardar tema actual…","menu.load_theme":"Cargar tema JSON…",
+            "menu.open_i18n_folder":"Abrir carpeta i18n…","menu.export_lang_templates":"Exportar plantillas de idioma…",
+            "lbl.preset":"Preajuste:","lbl.target_size":"Tamaño objetivo (MB):","lbl.queue":"Cola","lbl.preview":"Vista previa","lbl.save_to":"Guardar en:",
             "panel.webhook":"Webhook","lbl.webhook_url":"URL de Discord/Webhook","panel.watcher":"Monitor de carpeta","lbl.enable_watcher":"Activar monitor",
             "panel.profiles":"Perfiles","panel.advanced":"Opciones avanzadas","lbl.encoder":"Codificador:","lbl.manual_crf":"CRF manual:",
-            "lbl.prefix":"Prefijo:","lbl.audio":"Audio:","btn.add_files":"AÃ±adir archivosâ€¦","btn.remove_selected":"Eliminar seleccionados",
-            "btn.clear":"Limpiar","btn.move_up":"Mover â†‘","btn.move_down":"Mover â†“","btn.start":"Comenzar compresiÃ³n","btn.stop":"Detener",
-            "btn.open_save":"Abrir carpeta de salida","btn.user_guide":"GuÃ­a de usuario","btn.browse":"Examinarâ€¦","btn.save":"Guardar","btn.load":"Cargar",
+            "lbl.prefix":"Prefijo:","lbl.audio":"Audio:","btn.add_files":"Añadir archivos…","btn.remove_selected":"Eliminar seleccionados",
+            "btn.clear":"Limpiar","btn.move_up":"Mover ↑","btn.move_down":"Mover ↓","btn.start":"Comenzar compresión","btn.stop":"Detener",
+            "btn.open_save":"Abrir carpeta de salida","btn.user_guide":"Guía de usuario","btn.browse":"Examinar…","btn.save":"Guardar","btn.load":"Cargar",
             "title.open_save_folder":"Abrir carpeta de salida","title.cancel":"Cancelar",
-            "unreal.title":"TamaÃ±o objetivo irreal","unreal.header":"El tamaÃ±o solicitado es demasiado pequeÃ±o para una calidad aceptable.",
-            "unreal.original":"Original","unreal.target":"Objetivo","unreal.why":"Por quÃ© arruina la calidad:",
+            "unreal.title":"Tamaño objetivo irreal","unreal.header":"El tamaño solicitado es demasiado pequeño para una calidad aceptable.",
+            "unreal.original":"Original","unreal.target":"Objetivo","unreal.why":"Por qué arruina la calidad:",
             "unreal.why.v": "- Video bitrate plummets -> blocky macro-artifacts & smearing","unreal.why.a": "- Audio starved of bits -> metallic/warbly sound",
             "unreal.why.m": "- High motion or film grain needs more bits than static scenes","unreal.better":"Opciones mejores:",
             "unreal.opt.aim": "- Aim for 10-20% of the original size (not 1-2%)","unreal.opt.scale": "- Downscale resolution and/or reduce frame rate",
             "unreal.opt.codec": "- Use HEVC (x265) or AV1 with a sensible CRF"},
-    "fr": { "menu_language":"Langue","menu.file":"Fichier","menu.settings":"ParamÃ¨tres","menu.themes":"ThÃ¨mes","menu.guide":"Guide","menu.view":"Affichage" },
+    "fr": { "menu_language":"Langue","menu.file":"Fichier","menu.settings":"Paramètres","menu.themes":"Thèmes","menu.guide":"Guide","menu.view":"Affichage" },
     "de": { "menu_language":"Sprache","menu.file":"Datei","menu.settings":"Einstellungen","menu.themes":"Themen","menu.guide":"Anleitung","menu.view":"Ansicht" },
     "pt": { "menu_language":"Idioma","menu.file":"Arquivo","menu.settings":"Ajustes","menu.themes":"Temas","menu.guide":"Guia","menu.view":"Exibir" },
     "it": { "menu_language":"Lingua","menu.file":"File","menu.settings":"Impostazioni","menu.themes":"Temi","menu.guide":"Guida","menu.view":"Vista" },
     "nl": { "menu_language":"Taal","menu.file":"Bestand","menu.settings":"Instellingen","menu.themes":"Thema's","menu.guide":"Handleiding","menu.view":"Beeld" },
-    "pl": { "menu_language":"JÄ™zyk","menu.file":"Plik","menu.settings":"Ustawienia","menu.themes":"Motywy","menu.guide":"Przewodnik","menu.view":"Widok" },
-    "tr": { "menu_language":"Dil","menu.file":"Dosya","menu.settings":"Ayarlar","menu.themes":"Temalar","menu.guide":"KÄ±lavuz","menu.view":"GÃ¶rÃ¼nÃ¼m" },
-    "ru": { "menu_language":"Ð¯Ð·Ñ‹Ðº","menu.file":"Ð¤Ð°Ð¹Ð»","menu.settings":"ÐÐ°ÑÑ‚Ñ€Ð¾Ð¹ÐºÐ¸","menu.themes":"Ð¢ÐµÐ¼Ñ‹","menu.guide":"Ð¡Ð¿Ñ€Ð°Ð²ÐºÐ°","menu.view":"Ð’Ð¸Ð´" },
-    "uk": { "menu_language":"ÐœÐ¾Ð²Ð°","menu.file":"Ð¤Ð°Ð¹Ð»","menu.settings":"ÐÐ°Ð»Ð°ÑˆÑ‚ÑƒÐ²Ð°Ð½Ð½Ñ","menu.themes":"Ð¢ÐµÐ¼Ð¸","menu.guide":"Ð”Ð¾Ð²Ñ–Ð´Ð½Ð¸Ðº","menu.view":"Ð’Ð¸Ð³Ð»ÑÐ´" },
-    "ar": { "menu_language":"Ø§Ù„Ù„ØºØ©","menu.file":"Ù…Ù„Ù","menu.settings":"Ø§Ù„Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª","menu.themes":"Ø§Ù„Ø«ÙŠÙ…Ø§Øª","menu.guide":"Ø§Ù„Ø¯Ù„ÙŠÙ„","menu.view":"Ø¹Ø±Ø¶" },
-    "he": { "menu_language":"×©×¤×”","menu.file":"×§×•×‘×¥","menu.settings":"×”×’×“×¨×•×ª","menu.themes":"×¢×¨×›×•×ª × ×•×©×","menu.guide":"×ž×“×¨×™×š","menu.view":"×ª×¦×•×’×”" },
-    "fa": { "menu_language":"Ø²Ø¨Ø§Ù†","menu.file":"ÙØ§ÛŒÙ„","menu.settings":"ØªÙ†Ø¸ÛŒÙ…Ø§Øª","menu.themes":"ØªÙ…â€ŒÙ‡Ø§","menu.guide":"Ø±Ø§Ù‡Ù†Ù…Ø§","menu.view":"Ù†Ù…Ø§ÛŒØ´" },
-    "hi": { "menu_language":"à¤­à¤¾à¤·à¤¾","menu.file":"à¤«à¤¼à¤¾à¤‡à¤²","menu.settings":"à¤¸à¥‡à¤Ÿà¤¿à¤‚à¤—à¥à¤¸","menu.themes":"à¤¥à¥€à¤®à¥à¤¸","menu.guide":"à¤®à¤¾à¤°à¥à¤—à¤¦à¤°à¥à¤¶à¤¿à¤•à¤¾","menu.view":"à¤¦à¥ƒà¤¶à¥à¤¯" },
-    "bn": { "menu_language":"à¦­à¦¾à¦·à¦¾","menu.file":"à¦«à¦¾à¦‡à¦²","menu.settings":"à¦¸à§‡à¦Ÿà¦¿à¦‚à¦¸","menu.themes":"à¦¥à¦¿à¦®","menu.guide":"à¦—à¦¾à¦‡à¦¡","menu.view":"à¦­à¦¿à¦‰" },
+    "pl": { "menu_language":"Język","menu.file":"Plik","menu.settings":"Ustawienia","menu.themes":"Motywy","menu.guide":"Przewodnik","menu.view":"Widok" },
+    "tr": { "menu_language":"Dil","menu.file":"Dosya","menu.settings":"Ayarlar","menu.themes":"Temalar","menu.guide":"Kılavuz","menu.view":"Görünüm" },
+    "ru": { "menu_language":"Язык","menu.file":"Файл","menu.settings":"Настройки","menu.themes":"Темы","menu.guide":"Справка","menu.view":"Вид" },
+    "uk": { "menu_language":"Мова","menu.file":"Файл","menu.settings":"Налаштування","menu.themes":"Теми","menu.guide":"Довідник","menu.view":"Вигляд" },
+    "ar": { "menu_language":"اللغة","menu.file":"ملف","menu.settings":"الإعدادات","menu.themes":"الثيمات","menu.guide":"الدليل","menu.view":"عرض" },
+    "he": { "menu_language":"שפה","menu.file":"קובץ","menu.settings":"הגדרות","menu.themes":"ערכות נושא","menu.guide":"מדריך","menu.view":"תצוגה" },
+    "fa": { "menu_language":"زبان","menu.file":"فایل","menu.settings":"تنظیمات","menu.themes":"تم‌ها","menu.guide":"راهنما","menu.view":"نمایش" },
+    "hi": { "menu_language":"भाषा","menu.file":"फ़ाइल","menu.settings":"सेटिंग्स","menu.themes":"थीम्स","menu.guide":"मार्गदर्शिका","menu.view":"दृश्य" },
+    "bn": { "menu_language":"ভাষা","menu.file":"ফাইল","menu.settings":"সেটিংস","menu.themes":"থিম","menu.guide":"গাইড","menu.view":"ভিউ" },
     "id": { "menu_language":"Bahasa","menu.file":"Berkas","menu.settings":"Pengaturan","menu.themes":"Tema","menu.guide":"Panduan","menu.view":"Tampilan" },
     "ms": { "menu_language":"Bahasa","menu.file":"Fail","menu.settings":"Tetapan","menu.themes":"Tema","menu.guide":"Panduan","menu.view":"Paparan" },
-    "vi": { "menu_language":"NgÃ´n ngá»¯","menu.file":"Tá»‡p","menu.settings":"CÃ i Ä‘áº·t","menu.themes":"Chá»§ Ä‘á»","menu.guide":"HÆ°á»›ng dáº«n","menu.view":"Xem" },
-    "th": { "menu_language":"à¸ à¸²à¸©à¸²","menu.file":"à¹„à¸Ÿà¸¥à¹Œ","menu.settings":"à¸à¸²à¸£à¸•à¸±à¹‰à¸‡à¸„à¹ˆà¸²","menu.themes":"à¸˜à¸µà¸¡","menu.guide":"à¸„à¸¹à¹ˆà¸¡à¸·à¸­","menu.view":"à¸¡à¸¸à¸¡à¸¡à¸­à¸‡" },
-    "ja": { "menu_language":"è¨€èªž","menu.file":"ãƒ•ã‚¡ã‚¤ãƒ«","menu.settings":"è¨­å®š","menu.themes":"ãƒ†ãƒ¼ãƒž","menu.guide":"ã‚¬ã‚¤ãƒ‰","menu.view":"è¡¨ç¤º" },
-    "ko": { "menu_language":"ì–¸ì–´","menu.file":"íŒŒì¼","menu.settings":"ì„¤ì •","menu.themes":"í…Œë§ˆ","menu.guide":"ê°€ì´ë“œ","menu.view":"ë³´ê¸°" },
-    "zh": { "menu_language":"è¯­è¨€","menu.file":"æ–‡ä»¶","menu.settings":"è®¾ç½®","menu.themes":"ä¸»é¢˜","menu.guide":"æŒ‡å—","menu.view":"è§†å›¾" },
-    "zh_TW": { "menu_language":"èªžè¨€","menu.file":"æª”æ¡ˆ","menu.settings":"è¨­å®š","menu.themes":"ä¸»é¡Œ","menu.guide":"æŒ‡å—","menu.view":"æª¢è¦–" },
+    "vi": { "menu_language":"Ngôn ngữ","menu.file":"Tệp","menu.settings":"Cài đặt","menu.themes":"Chủ đề","menu.guide":"Hướng dẫn","menu.view":"Xem" },
+    "th": { "menu_language":"ภาษา","menu.file":"ไฟล์","menu.settings":"การตั้งค่า","menu.themes":"ธีม","menu.guide":"คู่มือ","menu.view":"มุมมอง" },
+    "ja": { "menu_language":"言語","menu.file":"ファイル","menu.settings":"設定","menu.themes":"テーマ","menu.guide":"ガイド","menu.view":"表示" },
+    "ko": { "menu_language":"언어","menu.file":"파일","menu.settings":"설정","menu.themes":"테마","menu.guide":"가이드","menu.view":"보기" },
+    "zh": { "menu_language":"语言","menu.file":"文件","menu.settings":"设置","menu.themes":"主题","menu.guide":"指南","menu.view":"视图" },
+    "zh_TW": { "menu_language":"語言","menu.file":"檔案","menu.settings":"設定","menu.themes":"主題","menu.guide":"指南","menu.view":"檢視" },
 })
 
 LANG_CODES = [
@@ -483,22 +483,22 @@ def _normalize_text(msg) -> str:
 
     # Fast path fixes for already-corrupted sequences seen in UI/logs.
     direct_map = {
-        "â€¦": "...",
-        "â€“": "-",
-        "â€”": "-",
-        "â€¢": "-",
-        "â†’": "->",
-        "â†": "<-",
-        "â†‘": "Up",
-        "â†“": "Down",
-        "Ã—": "x",
-        "â‰¥": ">=",
-        "â‰¤": "<=",
-        "Â±": "+/-",
-        "â€œ": '"',
-        "â€": '"',
-        "â€˜": "'",
-        "â€™": "'",
+        "…": "...",
+        "–": "-",
+        "—": "-",
+        "•": "-",
+        "→": "->",
+        "←": "<-",
+        "↑": "Up",
+        "↓": "Down",
+        "×": "x",
+        "≥": ">=",
+        "≤": "<=",
+        "±": "+/-",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
     }
     for bad, good in direct_map.items():
         text = text.replace(bad, good)
@@ -544,7 +544,7 @@ def _normalize_text(msg) -> str:
         best = best.replace(bad, good)
 
     # Strip decorative emoji/pictographs. They read as unprofessional in the UI
-    # and turn into mojibake ("ðŸŽ¬") in non-UTF-8 log sinks. Punctuation stays.
+    # and turn into mojibake ("") in non-UTF-8 log sinks. Punctuation stays.
     best = _EMOJI_RE.sub("", best)
     best = re.sub(r"[ \t]{2,}", " ", best)          # tidy gaps left behind
     best = re.sub(r"(?m)^[ \t]+", "", best)          # trim leading space per line
@@ -1434,15 +1434,14 @@ def _ffmpeg_two_pass_encode(
     hdr_pf = _hdr_pixel_fmt(vcodec) if source_is_hdr else None
     if source_is_hdr and hdr_pf:
         logging.getLogger("BitCrusher").info(
-            "⚠️ HDR source detected — encoding to 10-bit (%s) to preserve quality", hdr_pf)
+            "[HDR] HDR source detected — encoding to 10-bit (%s) to preserve quality", hdr_pf)
     elif source_is_hdr:
         logging.getLogger("BitCrusher").warning(
-            "⚠️ HDR source detected but %s only supports 8-bit — color precision will be reduced", vcodec)
+            "[HDR] HDR source detected but %s only supports 8-bit — color precision will be reduced", vcodec)
 
-    temp_dir = tempfile.mkdtemp(prefix="bc_ff2p_")
-    null_dev = "NUL" if os.name == "nt" else "/dev/null"
-    passlog = os.path.join(tempfile.gettempdir(), f"bc2p_{next(tempfile._get_candidate_names())}")
-    passlog_name = "passlog"
+    # temp dir + pass-log path are chosen further below, after the encode
+    # signature (codec/res/preset/tune/filters/params) is known, so an optional
+    # shared pass-log can key on it and reuse pass 1 across bitrate retries.
 
     # Video rc params (shared)
     rc = ["-b:v", str(int(bitrate)), "-maxrate", str(int(bitrate * 1.10)), "-bufsize", str(int(bitrate * 2))]
@@ -1453,7 +1452,7 @@ def _ffmpeg_two_pass_encode(
         if _tm:
             _vf_chain.append(_tm)
             logging.getLogger("BitCrusher").info(
-                "🎨 HDR source + 8-bit %s → tone-mapping BT.2020→BT.709 (two-pass).", vcodec)
+                "[HDR] HDR source + 8-bit %s -> tone-mapping BT.2020->BT.709 (two-pass).", vcodec)
     if width:
         _vf_chain.append(f"scale={int(width)}:-2")
     # Validated artifact-aware prefilters (deband/deblock/denoise) — applied at
@@ -1498,6 +1497,44 @@ def _ffmpeg_two_pass_encode(
     _hw = _hw_decode_args(_adv)
     base = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error"] + _hw + ["-i", input_path,
             "-map_metadata", "-1", "-map_chapters", "-1", "-sn", "-dn"]
+
+    # === Pass-1 stats reuse (shared pass-log) ==============================
+    # Pass 1 (whole-file complexity analysis) is identical for every encode of
+    # this source that shares codec + resolution + fps + preset + tune + filter
+    # chain + codec params; only the target bitrate differs, and pass-1 stats are
+    # bitrate-independent. When the caller supplies a shared pass-log dir (the
+    # size-convergence loop does), key the log on those invariants and reuse the
+    # stats across calls so only pass 2 re-runs — roughly halving the loop's
+    # encode time. A resolution/filter change yields a new key = a fresh pass 1.
+    import hashlib as _hashlib
+    _sig_src = "|".join([
+        vcodec, str(int(width or 0)), str(int(round(float(fps or 0.0)))),
+        str(preset), str(safe_tune or ""), (vpix[-1] if vpix else ""),
+        ",".join(_vf_chain),
+        str(_adv.get("x265_params") or ""), str(_adv.get("x264_params") or ""),
+        str(os.environ.get("BC_X265_PARAMS", "")), str(os.environ.get("BC_X264_PARAMS", "")),
+    ])
+    _sig8 = _hashlib.sha1(_sig_src.encode("utf-8", "ignore")).hexdigest()[:12]
+    null_dev = "NUL" if os.name == "nt" else "/dev/null"
+    _pl_dir = str((_adv.get("_twopass_passlog_dir") or "")).strip()
+    if _pl_dir and os.path.isdir(_pl_dir):
+        temp_dir = _pl_dir
+        _owns_temp = False
+        passlog = os.path.join(temp_dir, f"bc2p_{_sig8}")
+        passlog_name = os.path.basename(passlog)
+    else:
+        temp_dir = tempfile.mkdtemp(prefix="bc_ff2p_")
+        _owns_temp = True
+        passlog = os.path.join(tempfile.gettempdir(), f"bc2p_{next(tempfile._get_candidate_names())}")
+        passlog_name = "passlog"
+    _p1_sentinel = passlog + ".p1done"
+    # x265 writes the stats file to its exact `stats=` name; the generic
+    # -pass/-passlogfile encoders (x264/vp9/svt-av1) write "<passlogfile>-0.log".
+    _stats_probe = passlog if vcodec == "libx265" else (passlog + "-0.log")
+    _reuse_p1 = bool(
+        (not _owns_temp) and _adv.get("_twopass_reuse_stats")
+        and os.path.exists(_p1_sentinel)
+        and os.path.exists(_stats_probe) and os.path.getsize(_stats_probe) > 0)
 
     # Codec-specific two-pass
     try:
@@ -1570,43 +1607,72 @@ def _ffmpeg_two_pass_encode(
                   + vscale + vfps + vpix + rc + (["-x264-params", _x264_params] if _x264_params else []) + ["-pass", "2", "-passlogfile", passlog] + _amap + a2 + ["-movflags", "+faststart", output_path]
 
         # Map per-pass 0-100% onto overall 0-50 / 50-100 for the job progress row.
-        def _cb_pass(lo: float):
+        def _cb_pass(lo: float, span: float, stage: str):
             if not callable(progress_cb):
                 return None
             def _cb(jid, ev):
                 try:
                     ev = dict(ev)
-                    ev["pct"] = lo + float(ev.get("pct", 0.0)) * 0.5
-                    ev["stage"] = "pass1" if lo == 0.0 else "pass2"
+                    ev["pct"] = lo + float(ev.get("pct", 0.0)) * span
+                    ev["stage"] = stage
                     progress_cb(jid, ev)
                 except Exception:
                     pass
             return _cb
 
-        # Pass 1 — stats gathering (null output); show progress if duration known.
-        rc1 = _ffmpeg_run_with_progress(cmd1, duration_s or 0.0, "Pass 1/2", cwd=temp_dir,
-                                        progress_cb=_cb_pass(0.0), job_id=job_id, stage="pass1")
-        if rc1 != 0 and _hw:
-            # GPU decode can fail on exotic sources/drivers — fall back to
-            # software decode for this and all subsequent jobs.
-            _mark_hw_decode_broken()
-            logging.getLogger("BitCrusher").warning(
-                "HW decode failed (rc=%s); retrying with software decode.", rc1)
-            cmd1, cmd2 = _strip_hw_args(cmd1), _strip_hw_args(cmd2)
+        # Fast path: a prior identical pass 1 already produced reusable stats —
+        # run pass 2 only (mapped across the whole progress bar). If it fails
+        # (stale/incompatible stats), fall through and regenerate pass 1.
+        _did_reuse = False
+        if _reuse_p1:
+            logging.getLogger("BitCrusher").info(
+                "[TwoPass] Reusing pass-1 stats (%s); running pass 2 only.",
+                os.path.basename(passlog))
+            rc2 = _ffmpeg_run_with_progress(cmd2, duration_s or 0.0, "Pass 2/2", cwd=temp_dir,
+                                            progress_cb=_cb_pass(0.0, 1.0, "pass2"),
+                                            job_id=job_id, stage="pass2")
+            if rc2 == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                _did_reuse = True
+            else:
+                logging.getLogger("BitCrusher").warning(
+                    "[TwoPass] Pass 2 with reused stats failed (rc=%s); regenerating pass 1.", rc2)
+
+        if not _did_reuse:
+            # Pass 1 — stats gathering (null output); show progress if duration known.
             rc1 = _ffmpeg_run_with_progress(cmd1, duration_s or 0.0, "Pass 1/2", cwd=temp_dir,
-                                            progress_cb=_cb_pass(0.0), job_id=job_id, stage="pass1")
-        if rc1 != 0:
-            return False
-        # Pass 2 — actual encode with real-time progress display.
-        rc2 = _ffmpeg_run_with_progress(cmd2, duration_s or 0.0, "Pass 2/2", cwd=temp_dir,
-                                        progress_cb=_cb_pass(50.0), job_id=job_id, stage="pass2")
+                                            progress_cb=_cb_pass(0.0, 0.5, "pass1"), job_id=job_id, stage="pass1")
+            if rc1 != 0 and _hw:
+                # GPU decode can fail on exotic sources/drivers — fall back to
+                # software decode for this and all subsequent jobs.
+                _mark_hw_decode_broken()
+                logging.getLogger("BitCrusher").warning(
+                    "HW decode failed (rc=%s); retrying with software decode.", rc1)
+                cmd1, cmd2 = _strip_hw_args(cmd1), _strip_hw_args(cmd2)
+                rc1 = _ffmpeg_run_with_progress(cmd1, duration_s or 0.0, "Pass 1/2", cwd=temp_dir,
+                                                progress_cb=_cb_pass(0.0, 0.5, "pass1"), job_id=job_id, stage="pass1")
+            if rc1 != 0:
+                return False
+            # Pass 1 succeeded — mark the stats reusable for later bitrate retries
+            # of this same job (shared pass-log mode only; the caller owns cleanup).
+            if not _owns_temp:
+                try:
+                    with open(_p1_sentinel, "w") as _sf:
+                        _sf.write("1")
+                except Exception:
+                    pass
+            # Pass 2 — actual encode with real-time progress display.
+            rc2 = _ffmpeg_run_with_progress(cmd2, duration_s or 0.0, "Pass 2/2", cwd=temp_dir,
+                                            progress_cb=_cb_pass(50.0, 0.5, "pass2"), job_id=job_id, stage="pass2")
         return rc2 == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0
     finally:
-        import shutil
-        try:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+        # Only remove the temp dir we created. A shared pass-log dir is owned by
+        # the caller (the size loop) so its stats survive for the next retry.
+        if _owns_temp:
+            import shutil
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception:
+                pass
 
 
 
@@ -1743,16 +1809,16 @@ def log_err(msg): LOG.error(msg)
 def log_exc(msg="Unhandled exception"): LOG.exception(msg)
 
 def log_tool_paths(handbrake, ffmpeg, ffprobe):
-    LOG.info("Tool paths â€” HandBrakeCLI=%s | ffmpeg=%s | ffprobe=%s", handbrake, ffmpeg, ffprobe)
+    LOG.info("Tool paths - HandBrakeCLI=%s | ffmpeg=%s | ffprobe=%s", handbrake, ffmpeg, ffprobe)
 
 class DiscordWebhookClient:
     """
     Robust Discord webhook client with:
-      â€¢ session reuse + timeouts
-      â€¢ jittered exponential backoff with 429 'Retry-After' honor
-      â€¢ message auto-chunking (2k chars)
-      â€¢ optional username, avatar_url, tts, thread_id, silent flag
-      â€¢ basic embed/file support (â‰¤25MB)
+      • session reuse + timeouts
+      • jittered exponential backoff with 429 'Retry-After' honor
+      • message auto-chunking (2k chars)
+      • optional username, avatar_url, tts, thread_id, silent flag
+      • basic embed/file support (≤25MB)
     """
     def __init__(self, url: str, *, username: str|None=None, avatar_url: str|None=None,
                  tts: bool=False, thread_id: str|None=None, timeout: float=15.0,
@@ -1809,7 +1875,7 @@ class DiscordWebhookClient:
     def send_text(self, text: str, *, allow_everyone: bool=False):
         text = _normalize_text(text)
         if not self._alive or not text: return False
-        # Split into â‰¤2000 char chunks
+        # Split into ≤2000 char chunks
         CHUNK = 1900
         chunks = [text[i:i+CHUNK] for i in range(0, len(text), CHUNK)] or [text]
         ok = True
@@ -2053,7 +2119,7 @@ class CRFPredictor:
             base -= 2
         elif int(tune_code) == 1:    # animation
             base += 1
-        if float(sample_kbps) > 0:   # size targeting â†’ bias toward quality
+        if float(sample_kbps) > 0:   # size targeting → bias toward quality
             base -= 1
         return int(min(max(base, 16), 40))
 
@@ -2857,7 +2923,7 @@ ADVANCED_DEFAULTS = {
     "two_pass_fallback": True,
     "grain_filter": True,
     "auto_retry_done": False,
-    "two_pass_forced": False,   # â† COMMA HERE
+    "two_pass_forced": False,   # ← COMMA HERE
     "iterative_max_attempts": 4,
     "encoder": "x264",
     "iterative": False,
@@ -2899,6 +2965,11 @@ ADVANCED_DEFAULTS = {
     # collapse / size-cap overshoot and suggests a better codec on race-skipped
     # paths, from the ledger. Advisory only — never changes the encode itself.
     "preflight_advice": True,
+    # Last-resort ceiling guard: when even the minimum feasible bitrate at native
+    # resolution overshoots the size cap (tiny target / short clip), step the
+    # resolution down and re-encode rather than ship an oversized file. Bounded
+    # by max_job_seconds; only kept when the result actually lands under the cap.
+    "ceiling_downscale_retry": True,
     "auto_codec": True,        # VMAF-probe the chosen codec vs AV1 and keep the winner
     "scene_zones": True,       # per-scene bitrate zones for x264/x265 two-pass
     "hw_decode": True,         # GPU-accelerated decode of the source (encode stays as chosen)
@@ -3307,7 +3378,7 @@ THEMES = {
         "ERROR":"#FF6B6B", "WARN":"#FFB020",
         "TITLE":"#C9B8FF"
     },
-    "Light": {  # high-contrast light, no â€œblownâ€ whites
+    "Light": {  # high-contrast light, no “blown” whites
         "APP_BG":"#F4F6F9", "CARD_BG":"#FFFFFF",
         "FG":"#1F2328", "FG_SUB":"#5A6470",
         "ACCENT":"#4C5BD4", "ACCENT_2":"#139D6F",
@@ -3879,7 +3950,7 @@ def _adaptive_two_pass(new_w:int, target_bitrate:int, force:bool=False) -> bool:
         return True
     if new_w >= 1920:          # 1080p+ (includes 1440p, 4K)
         return target_bitrate > 0 and target_bitrate <= 8_000_000
-    elif new_w >= 1280:        # 720pâ€“1080p
+    elif new_w >= 1280:        # 720p–1080p
         return target_bitrate > 0 and target_bitrate <= 4_000_000
     else:                       # sub-720p
         return target_bitrate > 0 and target_bitrate <= 2_000_000
@@ -4777,10 +4848,46 @@ def _probe_vmaf_fullrate(ff: str, ref_path: str, dist_path: str) -> float | None
             pass
 
 
+def _probe_ref_clip(ff, input_path, *, t0, seg, scale_width, own_dir,
+                    ref_cache=None, ref_cache_dir=None):
+    """
+    Lossless reference clip for a probe segment at delivery resolution. The codec
+    race and the preproc A/B both need the SAME reference — it depends only on
+    source + segment + scale (codec-independent) — so a shared (ref_cache,
+    ref_cache_dir) lets the two stages extract each segment once per job instead
+    of twice. Returns a clip path, or None on failure.
+    """
+    key = (os.path.abspath(input_path), int(scale_width or 0),
+           round(float(t0), 3), round(float(seg), 3))
+    if isinstance(ref_cache, dict):
+        hit = ref_cache.get(key)
+        if hit and os.path.exists(hit) and os.path.getsize(hit) > 0:
+            return hit
+    dest_dir = ref_cache_dir if (ref_cache_dir and os.path.isdir(ref_cache_dir)) else own_dir
+    name = (f"ref_{int(scale_width or 0)}_{int(round(float(t0) * 1000))}"
+            f"_{int(round(float(seg) * 1000))}.mp4")
+    ref_clip = os.path.join(dest_dir, name)
+    if not (os.path.exists(ref_clip) and os.path.getsize(ref_clip) > 0):
+        _scale_vf = (["-vf", f"scale={int(scale_width)}:-2"] if int(scale_width or 0) > 0 else [])
+        rc = subprocess.run(
+            [ff, "-y", "-hide_banner", "-loglevel", "error",
+             "-ss", f"{float(t0):.3f}", "-t", f"{float(seg):.3f}",
+             "-i", os.path.abspath(input_path), "-an"] + _scale_vf +
+            ["-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", ref_clip],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=si, creationflags=NO_WIN)
+        if rc.returncode != 0 or not os.path.exists(ref_clip):
+            return None
+    if isinstance(ref_cache, dict):
+        ref_cache[key] = ref_clip
+    return ref_clip
+
+
 def choose_best_codec_by_vmaf(input_path: str, *, duration_s: float, video_bps: int,
                               candidates: list[str], scale_width: int = 0,
                               incumbent: str | None = None, switch_margin: float = 0.75,
-                              status_cb=None, result_sink: dict | None = None) -> str | None:
+                              status_cb=None, result_sink: dict | None = None,
+                              ref_cache: dict | None = None,
+                              ref_cache_dir: str | None = None) -> str | None:
     """
     Probe short representative clips with each candidate codec at the SAME video
     bitrate and return the codec tag with the highest VMAF (best quality for the
@@ -4821,14 +4928,12 @@ def choose_best_codec_by_vmaf(input_path: str, *, duration_s: float, video_bps: 
         scores: dict[str, list[float]] = {}
         sizes: dict[str, int] = {}
         for si_n, t0 in enumerate(starts):
-            # Lossless reference at the delivery resolution for this segment.
-            ref_clip = os.path.join(work, f"ref{si_n}.mp4")
-            rc = subprocess.run(
-                [ff, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{t0:.3f}", "-t", f"{seg:.3f}",
-                 "-i", os.path.abspath(input_path), "-an"] + _scale_vf +
-                ["-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", ref_clip],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=si, creationflags=NO_WIN)
-            if rc.returncode != 0 or not os.path.exists(ref_clip):
+            # Lossless reference at the delivery resolution for this segment
+            # (shared with the preproc A/B when the operating point matches).
+            ref_clip = _probe_ref_clip(ff, input_path, t0=t0, seg=seg,
+                                       scale_width=int(scale_width or 0), own_dir=work,
+                                       ref_cache=ref_cache, ref_cache_dir=ref_cache_dir)
+            if not ref_clip:
                 continue
             for tag in cand:
                 enc_name, cargs, suffix = _probe_codec_args(tag, av1_enc, int(video_bps))
@@ -4993,7 +5098,9 @@ def _preproc_chain(cands: list[dict]) -> str:
 
 def _preproc_probe_variants(input_path: str, variants: dict, *, encoder: str,
                             video_bps: int, scale_width: int, duration_s: float,
-                            status_cb=None, cancel_cb=None) -> dict | None:
+                            status_cb=None, cancel_cb=None,
+                            ref_cache: dict | None = None,
+                            ref_cache_dir: str | None = None) -> dict | None:
     """
     A/B the prefilter variants against the unfiltered baseline at the job's real
     operating point. Mirrors the codec race: 1-2 representative segments, a
@@ -5034,17 +5141,10 @@ def _preproc_probe_variants(input_path: str, variants: dict, *, encoder: str,
         for si_n, t0 in enumerate(starts):
             if callable(cancel_cb) and cancel_cb():
                 return None
-            ref_clip = os.path.join(work, f"ref{si_n}.mp4")
-            rc = subprocess.run(
-                [ff, "-y", "-hide_banner", "-loglevel", "error",
-                 "-ss", f"{t0:.3f}", "-t", f"{seg:.3f}",
-                 "-i", os.path.abspath(input_path), "-an"]
-                + (["-vf", _scale.rstrip(",")] if _scale else [])
-                + ["-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast",
-                   "-qp", "0", ref_clip],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                startupinfo=si, creationflags=NO_WIN)
-            if rc.returncode != 0 or not os.path.exists(ref_clip):
+            ref_clip = _probe_ref_clip(ff, input_path, t0=t0, seg=seg,
+                                       scale_width=int(scale_width or 0), own_dir=work,
+                                       ref_cache=ref_cache, ref_cache_dir=ref_cache_dir)
+            if not ref_clip:
                 continue
             for name in names:
                 if callable(cancel_cb) and cancel_cb():
@@ -5088,7 +5188,9 @@ def _preproc_probe_variants(input_path: str, variants: dict, *, encoder: str,
 def decide_preprocessing(input_path: str, feats: dict, *, encoder: str,
                          video_bps: int, scale_width: int, height: int, width: int,
                          fps: float, duration_s: float, advanced_options: dict | None = None,
-                         status_cb=None, cancel_cb=None) -> tuple[str | None, dict]:
+                         status_cb=None, cancel_cb=None,
+                         ref_cache: dict | None = None,
+                         ref_cache_dir: str | None = None) -> tuple[str | None, dict]:
     """
     Full artifact-aware preprocessing decision:
       1. gate candidate filters on measured content features + bit starvation;
@@ -5128,7 +5230,8 @@ def decide_preprocessing(input_path: str, feats: dict, *, encoder: str,
     scores = _preproc_probe_variants(
         input_path, variants, encoder=encoder, video_bps=int(video_bps),
         scale_width=int(scale_width or 0), duration_s=float(duration_s or 0.0),
-        status_cb=status_cb, cancel_cb=cancel_cb)
+        status_cb=status_cb, cancel_cb=cancel_cb,
+        ref_cache=ref_cache, ref_cache_dir=ref_cache_dir)
     info["scores"] = scores
     if not scores:
         if callable(status_cb):
@@ -5495,6 +5598,23 @@ def format_bytes(size: int) -> str:
         n += 1
     return f"{size:.2f} {units[n]}"
 
+
+# Standard delivery-width ladder for the last-resort ceiling downscale-retry.
+_STD_WIDTHS = [3840, 2560, 1920, 1600, 1280, 1024, 960, 854, 640, 480, 426]
+
+
+def next_lower_std_width(cur: int) -> int:
+    """Largest standard delivery width strictly below `cur`; falls back to 80%
+    (rounded down to even) and returns 0 once no sane lower width remains. Used
+    by the ceiling downscale-retry to step resolution down when a target cannot
+    be met at native size."""
+    cur = int(cur or 0)
+    for _sw in _STD_WIDTHS:
+        if _sw < cur:
+            return _sw
+    nxt = int(cur * 0.8) & ~1
+    return nxt if nxt >= 256 else 0
+
 def get_video_metadata(filepath: str):
 
     if get_media_type(filepath) != "video":
@@ -5521,16 +5641,13 @@ def get_video_metadata(filepath: str):
     return duration, width, height, bitrate, framerate
 
 def extract_video_duration(path):
-    
-    cmd = [
-        'ffprobe', '-v', 'error',
-        '-show_entries', 'format=duration',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        path
-    ]
+    # Read duration from the shared cached probe (one ffprobe per file/mtime/size)
+    # instead of spawning a fresh ffprobe on every call — this is hit repeatedly
+    # in the encode path (metadata fallback, shrink probe, VMAF windows).
     try:
-        out = _sp_check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
-        return float(out)
+        fmt = (_probe_media_cached(path).get("format") or {})
+        d = float(fmt.get("duration") or 0.0)
+        return d if d > 0 else None
     except Exception:
         return None
 
@@ -5813,13 +5930,13 @@ def compress_with_handbrake(
     try:
         status_cb = (advanced_options or {}).get("status_cb") or globals().get("status_callback")
         if callable(status_cb):
-            status_cb(f"ðŸŽ¯ Using encoder={raw_enc} â†’ normalized={enc} â†’ ffmpeg -c:v {vcodec}", level="INFO")
+            status_cb(f"Using encoder={raw_enc} -> normalized={enc} -> ffmpeg -c:v {vcodec}", level="INFO")
     except Exception:
         pass
 
 
     if callable(globals().get("status_callback", None)):
-        try: status_callback(f"ðŸŽ¯ Using encoder={enc} â†’ ffmpeg -c:v {vcodec}", level="INFO")
+        try: status_callback(f"Using encoder={enc} -> ffmpeg -c:v {vcodec}", level="INFO")
         except Exception: pass
 
     _preset_default = "slow" if vcodec == "libx265" else "medium"
@@ -5865,7 +5982,7 @@ def compress_with_handbrake(
             try:
                 status_cb = (advanced_options or {}).get("status_cb") or globals().get("status_callback")
                 if callable(status_cb):
-                    status_cb("🎨 HDR source + 8-bit codec → tone-mapping BT.2020→BT.709.", level="INFO")
+                    status_cb("[HDR] HDR source + 8-bit codec -> tone-mapping BT.2020->BT.709.", level="INFO")
             except Exception:
                 pass
     if width:
@@ -6153,10 +6270,10 @@ def binary_search_audio_bitrate(input_path: str, temp_output: str, audio_encoder
 def compress_audio_files(self):
     files = [f for f in self.file_queue if f.lower().endswith(self.supported_audio_formats)]
     if not files:
-        self.log_info("ðŸŽµ No audio files to compress.")
+        self.log_info("No audio files to compress.")
         return
 
-    self.log_info(f"ðŸŽµ Starting audio compression: {len(files)} files.")
+    self.log_info(f"Starting audio compression: {len(files)} files.")
     with ThreadPoolExecutor(max_workers=int(getattr(self, "settings", {}).get("parallel_workers", 1))) as pool:
         futures = [pool.submit(self.compress_audio, f) for f in files]
         for future in as_completed(futures):
@@ -6170,10 +6287,10 @@ def compress_audio_files(self):
 def compress_image_files(self):
     files = [f for f in self.file_queue if f.lower().endswith(self.supported_image_formats)]
     if not files:
-        self.log_info("ðŸ“¸ No image files to compress.")
+        self.log_info("No image files to compress.")
         return
 
-    self.log_info(f"ðŸ“¸ Starting image compression: {len(files)} files.")
+    self.log_info(f"Starting image compression: {len(files)} files.")
     with ThreadPoolExecutor(max_workers=int(getattr(self, "settings", {}).get("parallel_workers", 1))) as pool:
         futures = [pool.submit(self.compress_image, f) for f in files]
         for future in as_completed(futures):
@@ -6189,10 +6306,10 @@ from multiprocessing import cpu_count
 def compress_video_files(self):
     files = [f for f in self.file_queue if f.lower().endswith(self.supported_video_formats)]
     if not files:
-        self.log_info("ðŸŽ¥ No video files to compress.")
+        self.log_info("No video files to compress.")
         return
 
-    self.log_info(f"ðŸŽ¥ Starting video compression: {len(files)} files.")
+    self.log_info(f"Starting video compression: {len(files)} files.")
     with ThreadPoolExecutor(max_workers=int(getattr(self, "settings", {}).get("parallel_workers", 1))) as pool:
 
         out_dir = (self.save_path.get() if hasattr(self, "save_path") else os.path.dirname(files[0]) or os.getcwd())
@@ -6289,7 +6406,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
                    advanced_options: dict, cancel_cb) -> dict:
     
 
-    status_cb(f"ðŸš€ Compressing video: {input_path}")
+    status_cb(f"Compressing video: {input_path}")
     import os
     os.environ["BC_CURRENT_INPUT"] = str(input_path)
 
@@ -6390,6 +6507,18 @@ def compress_video(input_path: str, save_path: str, status_cb,
 
     _jsonl_log("start_job", {"type": "video", "input": input_path, "target_bytes": target_bytes,
                              "quality_mode": _qmode})
+
+    # === Fail-fast on an undecodable/unreadable source ======================
+    # get_video_metadata() never raises on a bad stream - it silently returns
+    # fabricated defaults (10s/1280x720/30fps), so a corrupt source used to
+    # sail through into the full primary + 5-fallback encode chain and burn
+    # several minutes before a generic "Encode failed" error. A cheap ffprobe
+    # (already cached, so this doesn't add a second probe later) is enough to
+    # catch a genuinely unreadable file up front without rejecting unusual-but
+    # -valid streams that ffmpeg can still decode.
+    if not (_probe_media_cached(input_path).get("streams") or []):
+        raise RuntimeError(f"[Probe] Source undecodable or unreadable: {input_path}")
+
     # scene-zones (heuristic fallback): compute once per input; the planner's
     # zone export later overrides these when it produces params. Values are
     # mirrored into advanced_options (per-job) — the env vars remain only as a
@@ -6417,9 +6546,9 @@ def compress_video(input_path: str, save_path: str, status_cb,
             privacy_preset = advanced_options.get("privacy_preset")
             ok = _remux_smart(input_path, tmp_final, _privacy_args(privacy_preset))
             if not ok:
-                status_cb("âš ï¸ Passthrough remux failed; falling back to near-lossless re-encode (CRF 18).", level="WARNING")
+                status_cb("Passthrough remux failed; falling back to near-lossless re-encode (CRF 18).", level="WARNING")
 
-                status_cb("ðŸŽ¬ Passthrough failed â†’ doing CRF 18 near-lossless transcode for MP4 compatibility.", "WARNING")
+                status_cb("Passthrough failed -> doing CRF 18 near-lossless transcode for MP4 compatibility.", "WARNING")
 
                 if os.path.exists(tmp_final):
                     try:
@@ -6528,7 +6657,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
                                 os.remove(_shrink_tmp)
                             except Exception:
                                 pass
-                            status_cb(f"[Race] Kept the original — re-encode ({format_bytes(_sc_size)}"
+                            status_cb(f"[Race] Kept the original - re-encode ({format_bytes(_sc_size)}"
                                       + (f", VMAF {_sc_vmaf:.1f}" if _sc_vmaf is not None else "")
                                       + f") wasn't a clear win vs {format_bytes(_prev_final)}.", "INFO")
             except Exception:
@@ -6572,13 +6701,11 @@ def compress_video(input_path: str, save_path: str, status_cb,
     try:
         dur, w, h, br, fr = get_video_metadata(input_path)
     except Exception:
-        status_cb("âš ï¸ Failed to extract metadata; using defaults", level="WARNING")
+        status_cb("Failed to extract metadata; using defaults", level="WARNING")
         dur, w, h, br, fr = 10.0, 1280, 720, 5_000_000, 30.0
     if not dur or dur <= 0:
         probed = extract_video_duration(input_path)
         dur = probed if probed and probed > 0 else 10.0
-
-    sample_dur = min(10.0, max(5.0, 0.07 * float(dur)))
 
     base_crf = None
     mc = str(advanced_options.get("manual_crf") or "").strip()
@@ -6587,20 +6714,12 @@ def compress_video(input_path: str, save_path: str, status_cb,
     else:
         base_crf = DEFAULT_CRF
 
-    est_total = 0
-    try:
-        est_total = quick_size_estimate(input_path, base_crf, sample_dur, status_cb)
-    except Exception:
-        est_total = 0
-
+    # suggested_crf is only surfaced for logging on the (rare) non-bitrate path;
+    # the ABR/two-pass path below drives size via bitrate, not CRF. A former
+    # quick_size_estimate() probe used to nudge this CRF from a sample encode, but
+    # that function was removed long ago — the call raised NameError on every run
+    # and was silently swallowed, so the nudge never applied. Drop the dead probe.
     suggested_crf = base_crf
-    try:
-        if target_bytes > 0 and est_total > 0:
-            ratio = est_total / float(target_bytes)
-            crf_adj = int(round(6 * math.log2(ratio))) if ratio > 0 else 0
-            suggested_crf = max(18, min(51, base_crf + crf_adj))
-    except Exception:
-        pass
 
     audio_meta = _probe_audio_meta(input_path)
     ch = (audio_meta or {}).get("ch") or 2
@@ -6741,9 +6860,9 @@ def compress_video(input_path: str, save_path: str, status_cb,
     tmp_final = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
     _feats_ctx: dict = {}
 
-    status_cb(f"ðŸŽ¬ Encoding BITRATE={target_bitrate} bps (two-pass={two_pass}), width={new_w}, encoder={encoder}, hw={hwaccel}")
-    status_cb(f"🎯 Quality-first encoder policy: requested={requested_encoder} -> effective={encoder}", level="INFO")
-    status_cb(f"ðŸ§ª Preflight: passlog_safe=x265:{str(encoder).lower() in ('x265','libx265','hevc')} "
+    status_cb(f"Encoding BITRATE={target_bitrate} bps (two-pass={two_pass}), width={new_w}, encoder={encoder}, hw={hwaccel}")
+    status_cb(f"[Codec] Quality-first encoder policy: requested={requested_encoder} -> effective={encoder}", level="INFO")
+    status_cb(f"Preflight: passlog_safe=x265:{str(encoder).lower() in ('x265','libx265','hevc')} "
               f"min_close_bytes={int((advanced_options or {}).get('min_close_bytes') or 120_000)}", level="INFO")
 
     try:
@@ -6790,7 +6909,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 new_h = int(round(h * (new_w / max(1.0, float(w))))); new_h -= new_h % 2
         except Exception:
             pass
-        status_cb(f"ðŸ¤– Heuristics: scaleÃ—{scale_mul:.2f}, crf_bias={crf_bias}, audioâ‰¥{audio_min_kbps}kbps")
+        status_cb(f"Heuristics: scalex{scale_mul:.2f}, crf_bias={crf_bias}, audio>={audio_min_kbps}kbps")
     except Exception as _ml_e:
         status_cb(f"ML heuristic analysis skipped: {type(_ml_e).__name__}", level="DEBUG")
 
@@ -6952,6 +7071,18 @@ def compress_video(input_path: str, save_path: str, status_cb,
             status_cb(f"[Spotlight] Zone injection failed ({type(_sz_e).__name__}); "
                       f"encoding without the boost.", "WARNING")
 
+    # Shared probe-reference cache: the codec race and the preproc A/B both
+    # extract lossless reference clips at the same segments/delivery resolution.
+    # One cache (dict + dir) lets the second stage reuse the first's refs instead
+    # of re-extracting them. Keyed by (source, scale_width, segment) so a codec
+    # race that changes the delivery width naturally gets its own reference.
+    _probe_ref_cache: dict = {}
+    _probe_ref_dir = None
+    try:
+        _probe_ref_dir = tempfile.mkdtemp(prefix="bc_probref_")
+    except Exception:
+        _probe_ref_dir = None
+
     # === Smart codec auto-pick (VMAF-measured) ===
     # Race the chosen codec against AV1 on a short clip at the real bit budget and
     # keep whichever gives higher VMAF-per-bit. AV1 usually wins big, but only
@@ -7000,11 +7131,13 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 incumbent=_cur_tag,
                 status_cb=status_cb,
                 result_sink=_race_sink,
+                ref_cache=_probe_ref_cache,
+                ref_cache_dir=_probe_ref_dir,
             )
             if _race_sink.get("scores"):
                 advanced_options["_race_scores"] = _race_sink["scores"]
             if _winner and _winner != _cur_tag:
-                status_cb(f"🏆 Auto-codec: {_winner} beat {_cur_tag} on quality-per-bit; switching.", "INFO")
+                status_cb(f"[Race] Auto-codec: {_winner} beat {_cur_tag} on quality-per-bit; switching.", "INFO")
                 encoder = _winner
                 if str(_winner).lower() != "x264":
                     # x264 tunes (film/animation/...) are invalid elsewhere.
@@ -7068,7 +7201,8 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 scale_width=int(new_w or 0), width=int(w or 0), height=int(h or 0),
                 fps=float(fps or fr or 30.0), duration_s=float(dur or 0.0),
                 advanced_options=advanced_options,
-                status_cb=status_cb, cancel_cb=cancel_cb)
+                status_cb=status_cb, cancel_cb=cancel_cb,
+                ref_cache=_probe_ref_cache, ref_cache_dir=_probe_ref_dir)
             if _pre_chain:
                 advanced_options["preproc_vf"] = _pre_chain
                 advanced_options["_preproc_label"] = str(_pre_info.get("kept") or "")
@@ -7130,10 +7264,18 @@ def compress_video(input_path: str, save_path: str, status_cb,
     try:
         from outcome_ledger import predict_deviation as _ol_predict, seed_adjust as _ol_seed
         _ol_stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
+        # Operating-point flags for neighbour matching: film-grain synthesis,
+        # preprocessing and spotlight change size/quality materially, so they
+        # steer which past encodes count as comparable. All resolved above.
+        _ol_flags = {
+            "film_grain": ((advanced_options or {}).get("_film_grain") or {}).get("level"),
+            "preproc": (advanced_options or {}).get("_preproc_label"),
+            "spotlight": bool((advanced_options or {}).get("_spotlight_secs")),
+        }
         _ol_dev, _ol_n = _ol_predict(
             _ol_stats_dir, _feats_ctx or {}, str(encoder),
             int(new_w or w or 0), int(new_h or h or 0),
-            float(fps or fr or 30.0), float(target_bitrate))
+            float(fps or fr or 30.0), float(target_bitrate), op_flags=_ol_flags)
         _ol_acted = False
         _ol_seed_on = bool((advanced_options or {}).get(
             "learned_seed", ADVANCED_DEFAULTS.get("learned_seed", True)))
@@ -7174,12 +7316,17 @@ def compress_video(input_path: str, save_path: str, status_cb,
             _enc_locked = bool(_codec_pinned or _race_ran
                                or str(encoder).lower() not in ("x264", "x265", "libx265", "hevc"))
             _pf_model = resolve_vmaf_model() or "version=vmaf_v0.6.1"
+            _pf_flags = {
+                "film_grain": ((advanced_options or {}).get("_film_grain") or {}).get("level"),
+                "preproc": (advanced_options or {}).get("_preproc_label"),
+                "spotlight": bool((advanced_options or {}).get("_spotlight_secs")),
+            }
             _adv = _ol_advice(
                 os.path.join(USER_SETTINGS_DIR, "stats"), _feats_ctx or {},
                 str(encoder), int(new_w or w or 0), int(new_h or h or 0),
                 float(fps or fr or 30.0), float(target_bitrate),
                 float(target_bytes), candidates=["x264", "x265", "av1"],
-                vmaf_model=_pf_model, encoder_locked=_enc_locked)
+                vmaf_model=_pf_model, encoder_locked=_enc_locked, op_flags=_pf_flags)
             for _w in _adv.get("warnings", []):
                 status_cb(f"[Preflight] {_w}", "WARNING")
             if _adv.get("codec_suggestion"):
@@ -7197,13 +7344,36 @@ def compress_video(input_path: str, save_path: str, status_cb,
         except Exception:
             advanced_options["_preflight"] = None
 
+    # === Shared two-pass pass-log for the whole size-convergence loop ========
+    # Every two-pass encode below (initial, seed, refine, retries, downscale,
+    # packing, quality-floor) shares one pass-1 analysis per encode signature
+    # (codec/resolution/preset/tune/filters/fps) — only the target bitrate
+    # differs between them, and pass-1 stats are bitrate-independent. This keys
+    # the reuse; a resolution/filter change transparently forces a fresh pass 1.
+    # Roughly halves the loop's total encode time on slow presets (x265 "slow").
+    _pl_reuse_on = bool((advanced_options or {}).get(
+        "twopass_passlog_reuse", ADVANCED_DEFAULTS.get("twopass_passlog_reuse", True)))
+    # Bench/debug override: BC_TWOPASS_PL_REUSE=0 forces the old behaviour (a
+    # fresh pass 1 on every retry) so the reuse speedup can be A/B measured.
+    _pl_env = os.environ.get("BC_TWOPASS_PL_REUSE")
+    if _pl_env is not None and str(_pl_env).strip().lower() in ("0", "false", "no", "off"):
+        _pl_reuse_on = False
+    _pl_shared_dir = None
+    if _pl_reuse_on:
+        try:
+            _pl_shared_dir = tempfile.mkdtemp(prefix="bc_2ppl_")
+            advanced_options["_twopass_passlog_dir"] = _pl_shared_dir
+            advanced_options["_twopass_reuse_stats"] = True
+        except Exception:
+            _pl_shared_dir = None
+
     # === Encode ===
     ok = False
     seeded_from_bitrate_observation = False
     # Prefer real two-pass when supported
     if two_pass and _supports_true_two_pass(encoder):
-        status_cb("ðŸŽ¯ Using native ffmpeg two-pass.", level="INFO")
-        status_cb(f"ðŸŽ¬ Two-pass seed â†’ v_bitrate={int(target_bitrate)} a_bitrate={int(audio_br or 0)} width={new_w} fps={fps} tune={tune} enc_preset={(advanced_options or {}).get('preset','medium')}", level="INFO")
+        status_cb("Using native ffmpeg two-pass.", level="INFO")
+        status_cb(f"Two-pass seed -> v_bitrate={int(target_bitrate)} a_bitrate={int(audio_br or 0)} width={new_w} fps={fps} tune={tune} enc_preset={(advanced_options or {}).get('preset','medium')}", level="INFO")
         ok = _ffmpeg_two_pass_encode(
             input_path=input_path,
             output_path=tmp_final,
@@ -7607,8 +7777,91 @@ def compress_video(input_path: str, save_path: str, status_cb,
         except Exception:
             pass
 
+    # === Last-resort ceiling guard: downscale-and-retry ====================
+    # Every bitrate at the current resolution was tried and the best result is
+    # STILL over the ceiling (rate control can overshoot a very low target at a
+    # high resolution — the encoder cannot compress that much detail that far).
+    # Stepping the resolution down lets rate control actually reach the feasible
+    # bitrate, honouring the never-over invariant instead of shipping an
+    # oversized file. Toggle-gated, budget-bounded; only a genuinely-under
+    # result is ever kept (via _is_better_size), and new_w/new_h are updated so
+    # the ledger records the EFFECTIVE resolution.
+    _downscale_on = bool((advanced_options or {}).get(
+        "ceiling_downscale_retry", ADVANCED_DEFAULTS.get("ceiling_downscale_retry", True)))
+    if (int(final_size) > int(hard_target_bytes) and _downscale_on
+            and (bitrate or target_bitrate)):
+
+        def _ds_try(cand_w, cand_h, v_bps, tag):
+            """Encode at a downscaled resolution; keep only if it beats the best
+            result under the ceiling. Returns the produced size, or None."""
+            nonlocal final_size, accepted_v_bps, new_w, new_h
+            _tmp = out_file + f".{tag}.mp4"
+            if os.path.exists(_tmp):
+                try: os.remove(_tmp)
+                except Exception: pass
+            _ok = compress_with_handbrake(
+                input_path=input_path, output_path=_tmp, encoder=encoder,
+                bitrate=int(v_bps), crf=None, two_pass=True, turbo=True,
+                early_abort_guard=None, hwaccel=hwaccel, width=int(cand_w), fps=fps,
+                audio_bitrate=(None if audio_copy else int(aud_bps_guess)),
+                audio_copy=audio_copy, tune=tune,
+                advanced_options={**(advanced_options or {}), "duration_s": float(dur)})
+            if not (_ok and os.path.exists(_tmp)):
+                return None
+            _sz = os.path.getsize(_tmp)
+            if _is_better_size(_sz, final_size):
+                os.replace(_tmp, out_file)
+                final_size = int(_sz)
+                accepted_v_bps = int(v_bps)
+                new_w, new_h = int(cand_w), int(cand_h)
+            else:
+                try: os.remove(_tmp)
+                except Exception: pass
+            return int(_sz)
+
+        _ds_w = int(new_w or w or 0)
+        _seed_v = (int(max(80_000, int(_feasible_v_bps)))
+                   if (_feasible_v_bps and _feasible_v_bps > 0)
+                   else int(used_seed_v or 500_000))
+        for _ds_step in (1, 2):
+            if int(final_size) <= int(hard_target_bytes) or _over_budget("Downscale"):
+                break
+            _cand_w = next_lower_std_width(_ds_w)
+            if not _cand_w or _cand_w >= _ds_w:
+                break
+            _cand_h = int(round((h or 0) * _cand_w / (w or 1)))
+            if _cand_h % 2:
+                _cand_h += 1
+            _ds_w = _cand_w
+            status_cb(f"[Ceiling] {final_size} bytes still over ceiling {hard_target_bytes}; "
+                      f"downscaling to {_cand_w}x{_cand_h} and re-encoding (step {_ds_step}).", "WARNING")
+            _ds_ctl = SizeController(
+                target_bytes=int(hard_target_bytes), duration_s=float(dur),
+                audio_bps=int(aud_bps_guess),
+                quality_mode=("quality_first" if _qmode_ctl != "fast" else "balanced"),
+                target_policy="no_overshoot_near_max",
+                max_target_attempts=3)
+            _sz = _ds_try(_cand_w, _cand_h, _seed_v, f"ds{_ds_step}s")
+            if _sz is None:
+                continue
+            _ds_ctl.set_initial(int(_seed_v), int(_sz))
+            _last = int(_sz)
+            _it = 0
+            while (int(final_size) > int(hard_target_bytes)
+                   and _ds_ctl.should_retry(actual_bytes=_last)
+                   and _it < 3 and not _over_budget("Downscale")):
+                _it += 1
+                _nv, _ = _ds_ctl.next(_last)
+                _r = _ds_try(_cand_w, _cand_h, _nv, f"ds{_ds_step}_{_it}")
+                if _r is None:
+                    break
+                _last = int(_r)
+            if int(final_size) <= int(hard_target_bytes):
+                status_cb(f"[Ceiling] Fit under target at {new_w}x{new_h}: {final_size} bytes.", "INFO")
+                break
+
     if not _within_near_target(int(final_size)):
-        status_cb(f"[Size] Final output remains outside target window: {final_size} vs {hard_target_bytes} (window=±{_near_tol} bytes).", "WARNING")
+        status_cb(f"[Size] Final output remains outside target window: {final_size} vs {hard_target_bytes} (window=+/-{_near_tol} bytes).", "WARNING")
 
     # === Max Quality: pack the remaining budget (measured search) ===
     # After the size loop lands under the cap, keep spending the leftover bytes
@@ -7802,7 +8055,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
                         xpsnr_result = None
                     if xpsnr_result and xpsnr_result.get("reliable"):
                         status_cb(f"[Quality] XPSNR {xpsnr_result['xpsnr']:.1f} dB "
-                                  f"({xpsnr_result['label']}) — perceptual cross-check.", "INFO")
+                                  f"({xpsnr_result['label']}) - perceptual cross-check.", "INFO")
                         try:
                             _vm = float(vmaf_result.get("vmaf") or 0.0)
                             _xp = float(xpsnr_result.get("xpsnr") or 0.0)
@@ -7907,7 +8160,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
         if _kept:
             final_size = int(os.path.getsize(out_file))
             vmaf_result = None  # delivering the original stream; VMAF vs itself is moot
-            status_cb("[Race] Kept the original — a re-encode would have inflated a source "
+            status_cb("[Race] Kept the original - a re-encode would have inflated a source "
                       "that already fit under the target.", "INFO")
 
     stats = {
@@ -7947,7 +8200,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
     # One rich record per completed encode: features + full EFFECTIVE operating
     # point + every retry observation + race scoreboard + v1 VMAF outcome.
     try:
-        from outcome_ledger import build_record, ledger_append
+        from outcome_ledger import build_record, ledger_append, build_op
         _ol_stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
         _vm_tag = resolve_vmaf_model() or "version=vmaf_v0.6.1"
         if _vm_tag.startswith("path="):
@@ -7967,20 +8220,23 @@ def compress_video(input_path: str, save_path: str, status_cb,
                  "w": int(w or 0), "h": int(h or 0), "fps": float(fr or 0.0),
                  "dur": float(dur or 0.0), "bitrate": int(br or 0),
                  "size": int(os.path.getsize(input_path)) if os.path.exists(input_path) else 0},
-            op={"target_bytes": int(hard_target_bytes),
-                "encoder_req": str(requested_encoder or ""),
-                "encoder_eff": str(encoder or ""),
-                "width": int(new_w or 0), "height": int(new_h or 0),
-                "fps": float(fps or fr or 0.0),
-                "v_bps": int(accepted_v_bps or target_bitrate or 0),
-                "audio_bps": int(_ol_aud_bps), "audio_copy": bool(audio_copy),
-                "preset": str((advanced_options or {}).get("preset") or ""),
-                "quality_mode": str((advanced_options or {}).get("quality_mode") or ""),
-                "preproc": (str((advanced_options or {}).get("_preproc_label") or "") or None),
-                "film_grain": ((advanced_options or {}).get("_film_grain") or {}).get("level"),
-                "film_grain_ratio": ((advanced_options or {}).get("_film_grain") or {}).get("size_ratio"),
-                "spotlight": bool((advanced_options or {}).get("_spotlight_secs")),
-                "dur": float(dur or 0.0)},
+            # EFFECTIVE operating point: encoder_eff is the encoder that actually
+            # ran (codec-race winner), never the request — see build_op.
+            op=build_op(
+                target_bytes=hard_target_bytes,
+                encoder_req=requested_encoder,
+                encoder_eff=encoder,
+                width=new_w, height=new_h,
+                fps=(fps or fr),
+                v_bps=(accepted_v_bps or target_bitrate),
+                audio_bps=_ol_aud_bps, audio_copy=audio_copy,
+                preset=(advanced_options or {}).get("preset"),
+                quality_mode=(advanced_options or {}).get("quality_mode"),
+                preproc=(advanced_options or {}).get("_preproc_label"),
+                film_grain=((advanced_options or {}).get("_film_grain") or {}).get("level"),
+                film_grain_ratio=((advanced_options or {}).get("_film_grain") or {}).get("size_ratio"),
+                spotlight=(advanced_options or {}).get("_spotlight_secs"),
+                dur=dur),
             attempts=_ol_attempts,
             race=(advanced_options or {}).get("_race_scores"),
             outcome={"size": int(final_size or 0),
@@ -8006,12 +8262,27 @@ def compress_video(input_path: str, save_path: str, status_cb,
         _post_webhook_hardened(webhook_url, json_payload=stats, file_path=out_file)
 
 
-    status_cb(f"âœ… Compress done in {time.time()-t_start:.1f}s")
+    status_cb(f"Compress done in {time.time()-t_start:.1f}s")
     _emit("done", pct=100.0)
     try:
         os.environ.pop("BC_CURRENT_INPUT", None)
     except Exception:
         pass
+    # Tear down the shared two-pass pass-log dir (holds pass-1 stats reused across
+    # this job's retries) and drop the per-job flags that pointed encoders at it.
+    try:
+        if _pl_shared_dir and os.path.isdir(_pl_shared_dir):
+            shutil.rmtree(_pl_shared_dir, ignore_errors=True)
+    except Exception:
+        pass
+    try:
+        if _probe_ref_dir and os.path.isdir(_probe_ref_dir):
+            shutil.rmtree(_probe_ref_dir, ignore_errors=True)
+    except Exception:
+        pass
+    if isinstance(advanced_options, dict):
+        advanced_options.pop("_twopass_passlog_dir", None)
+        advanced_options.pop("_twopass_reuse_stats", None)
     return stats
 
 
@@ -8050,7 +8321,7 @@ def compress_audio(input_path: str, save_path: str, status_callback,
                    target_size_mb: int, webhook_url: str,
                    advanced_options: dict, cancel_callback) -> dict:
 
-    status_callback(f"ðŸš€ Compressing audio: {input_path}")
+    status_callback(f"Compressing audio: {input_path}")
     t0 = time.time()
 
     try:
@@ -8092,7 +8363,7 @@ def compress_audio(input_path: str, save_path: str, status_callback,
             fin = int(os.path.getsize(_pass_out))
             _is_lossless = _src_codec in _LOSSLESS_AUDIO_CODECS
             status_callback(
-                f"âœ… Source already fits the target ({format_bytes(fin)} â‰¤ "
+                f"Source already fits the target ({format_bytes(fin)} ≤ "
                 f"{format_bytes(target_bytes)}); kept the original "
                 f"{'lossless ' if _is_lossless else ''}file to avoid re-compression quality loss.",
                 level="INFO")
@@ -8133,8 +8404,8 @@ def compress_audio(input_path: str, save_path: str, status_callback,
                 _flac_out = _bc_build_output_path(input_path, save_path, advanced_options, default_ext="flac")
                 os.replace(_flac_tmp, _flac_out)
                 status_callback(
-                    f"âœ… Re-compressed to lossless FLAC ({format_bytes(_szf)} â‰¤ "
-                    f"{format_bytes(target_bytes)}) â€” fits the target with zero quality loss.",
+                    f"Re-compressed to lossless FLAC ({format_bytes(_szf)} ≤ "
+                    f"{format_bytes(target_bytes)}) — fits the target with zero quality loss.",
                     level="INFO")
                 stats = {
                     "filename": os.path.basename(_flac_out),
@@ -8198,7 +8469,7 @@ def compress_audio(input_path: str, save_path: str, status_callback,
                 _cover_bytes = os.path.getsize(_cover_path)
                 if encoder == "libopus":
                     _opus_cover_meta = _build_opus_cover_meta(input_path, _cap, _audio_work_dir)
-                status_callback(f"ðŸ–¼ï¸ Album art preserved (~{max(1, _cover_bytes // 1024)} KB embedded).", level="INFO")
+                status_callback(f"Album art preserved (~{max(1, _cover_bytes // 1024)} KB embedded).", level="INFO")
         except Exception:
             _cover_path = None
             _opus_cover_meta = None
@@ -8274,7 +8545,7 @@ def compress_audio(input_path: str, save_path: str, status_callback,
 
     while tries < max_tries:
         if cancel_callback():
-            status_callback("â¹ï¸ Audio compression cancelled.", level="WARNING")
+            status_callback("Audio compression cancelled.", level="WARNING")
             if os.path.exists(tmp_out):
                 os.remove(tmp_out)
             _rmtree_quiet(_audio_work_dir)
@@ -8284,7 +8555,7 @@ def compress_audio(input_path: str, save_path: str, status_callback,
         if os.path.exists(tmp_out):
             os.remove(tmp_out)
 
-        status_callback(f"ðŸŽšï¸ Try {tries}/{max_tries}: {current_bps//1000} kbps, "
+        status_callback(f"Try {tries}/{max_tries}: {current_bps//1000} kbps, "
                         f"{out_sr} Hz, {'mono' if out_ch==1 else 'stereo'} "
                         f"(encoder={encoder}, vbr={vbr_mode})")
 
@@ -8304,12 +8575,12 @@ def compress_audio(input_path: str, save_path: str, status_callback,
         )
 
         if not ok:
-            status_callback(f"âŒ ffmpeg error on pass {tries}:\n{err_tail}", level="ERROR")
+            status_callback(f"ffmpeg error on pass {tries}:\n{err_tail}", level="ERROR")
 
             break
 
         status_callback(
-            f"ðŸ“¦ Output size: {format_bytes(size)} "
+            f"Output size: {format_bytes(size)} "
             f"(target {format_bytes(max(1, int(target_bytes)))})"
         )
 
@@ -8334,8 +8605,8 @@ def compress_audio(input_path: str, save_path: str, status_callback,
 
             if current_bps >= high_bps or (high_bps - current_bps) < 1000:
                 status_callback(
-                    f"ðŸŽ¯ Reached {encoder} bitrate ceiling (~{high_bps//1000} kbps); "
-                    f"best achievable â‰ˆ {format_bytes(size)} for this track.",
+                    f"Reached {encoder} bitrate ceiling (~{high_bps//1000} kbps); "
+                    f"best achievable ≈ {format_bytes(size)} for this track.",
                     level="WARNING"
                 )
                 break
@@ -8345,7 +8616,7 @@ def compress_audio(input_path: str, save_path: str, status_callback,
             current_bps = max(low_bps, int((low_bps + current_bps) / 2))
 
     if not best_ok:
-        status_callback("ðŸ” Falling back to ABR binary searchâ€¦")
+        status_callback("Falling back to ABR binary search...")
 
         chosen_format = "opus" if encoder == "libopus" else ("aac" if encoder == "aac" else "mp3")
         audio_encoder = "libopus" if chosen_format == "opus" else ("aac" if chosen_format == "aac" else "libmp3lame")
@@ -8376,7 +8647,7 @@ def compress_audio(input_path: str, save_path: str, status_callback,
             opus_cover_meta=_opus_cover_meta, cover_file=_cover_path
         )
         if not ok:
-            status_callback(f"âŒ ffmpeg error (final encode):\n{err_tail}", level="ERROR")
+            status_callback(f"ffmpeg error (final encode):\n{err_tail}", level="ERROR")
             _rmtree_quiet(_audio_work_dir)
             return {}
         os.replace(temp_output, final_out)
@@ -8427,8 +8698,8 @@ def compress_audio(input_path: str, save_path: str, status_callback,
     took = time.time() - t0
     fin_size = os.path.getsize(final_out)
     _q_label = _audio_transparency_label(encoder, _final_bps, out_ch)
-    status_callback(f"âœ… Audio compressed to {format_bytes(fin_size)} in {took:.1f}s "
-                    f"(â‰ˆ{_final_bps//1000} kbps {encoder.replace('lib','')}, quality: {_q_label})")
+    status_callback(f"Audio compressed to {format_bytes(fin_size)} in {took:.1f}s "
+                    f"(≈{_final_bps//1000} kbps {encoder.replace('lib','')}, quality: {_q_label})")
     # Dedicated quality line so the plain-language Progress feed shows an audio
     # quality readout too (video gets one from VMAF; audio's is a label).
     status_callback(f"Audio quality: {_q_label}")
@@ -8458,7 +8729,7 @@ def compress_audio(input_path: str, save_path: str, status_callback,
 def compress_image(input_path: str, save_path: str, status_callback,
                    target_size_mb: int, webhook_url: str,
                    advanced_options: dict, cancel_callback) -> dict:
-    status_callback(f"ðŸš€ Compressing image: {input_path}")
+    status_callback(f"Compressing image: {input_path}")
     t_start = time.time()
     try:
         _v = float(target_size_mb)
@@ -8486,7 +8757,7 @@ def compress_image(input_path: str, save_path: str, status_callback,
             is_anim = False
 
         if is_anim:
-            status_callback("ðŸª„ Animated image detected â†’ routing to video compressor.", level="INFO")
+            status_callback("Animated image detected -> routing to video compressor.", level="INFO")
             try:
                 im.close()
             except Exception:
@@ -8498,7 +8769,7 @@ def compress_image(input_path: str, save_path: str, status_callback,
                 input_path, save_path, status_callback, target_size_mb, webhook_url, v_adv, cancel_callback
             )
     except Exception as e:
-        status_callback("âŒ Could not open image: " + str(e), level="ERROR")
+        status_callback("Could not open image: " + str(e), level="ERROR")
         return {}
 
 
@@ -8509,7 +8780,7 @@ def compress_image(input_path: str, save_path: str, status_callback,
 
     while attempts < ITERATIVE_MAX_ATTEMPTS:
         if cancel_callback():
-            status_callback("â¹ï¸ Image compression cancelled.", level="WARNING")
+            status_callback("Image compression cancelled.", level="WARNING")
             return {}
 
         temp_output = output_file + ".tmp"
@@ -8525,7 +8796,7 @@ def compress_image(input_path: str, save_path: str, status_callback,
             while low <= high:
                 mid = (low + high)//2
                 if cancel_callback():
-                    status_callback("â¹ï¸ Image compression cancelled.", level="WARNING"); return {}
+                    status_callback("Image compression cancelled.", level="WARNING"); return {}
                 if os.path.exists(temp_output):
                     try: os.remove(temp_output)
                     except Exception: pass
@@ -8533,9 +8804,9 @@ def compress_image(input_path: str, save_path: str, status_callback,
                        "-crf", str(mid), "-b:v", "0", temp_output]
                 p = _sp_run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, startupinfo=si, creationflags=NO_WIN)
                 if p.returncode != 0 or not os.path.exists(temp_output):
-                    status_callback(f"âŒ AVIF encode failed at CRF {mid}", level="ERROR"); return {}
+                    status_callback(f"AVIF encode failed at CRF {mid}", level="ERROR"); return {}
                 size = os.path.getsize(temp_output)
-                status_callback(f"ðŸ§ª AVIF trial CRF={mid} â†’ {format_bytes(size)} (target {format_bytes(target_size_bytes)})")
+                status_callback(f"AVIF trial CRF={mid} -> {format_bytes(size)} (target {format_bytes(target_size_bytes)})")
                 if size <= target_size_bytes:
                     best = mid; break
                 low = mid + 1
@@ -8554,13 +8825,13 @@ def compress_image(input_path: str, save_path: str, status_callback,
                      "compressed_size": fin, "ratio": fin/max(1, os.path.getsize(input_path)), "time_taken": took, "output_path": output_file}
             _jsonl_log("encode_end", {"type":"image_avif", **stats})
             if webhook_url: _post_webhook_hardened(webhook_url, json_payload=stats, file_path=output_file)
-            status_callback(f"âœ… Image (AVIF) compressed to {format_bytes(fin)} in {took:.1f}s")
+            status_callback(f"Image (AVIF) compressed to {format_bytes(fin)} in {took:.1f}s")
             return stats
         pil_fmt = {"jpg": "JPEG", "jpeg": "JPEG", "png": "PNG", "webp": "WEBP"}.get(fmt, fmt.upper())
         im.convert("RGB").save(temp_output, pil_fmt, quality=quality, optimize=True)
         size = os.path.getsize(temp_output)
         status_callback(
-            f"ðŸ“¦ Image size: {format_bytes(size)} at quality {quality} "
+            f"Image size: {format_bytes(size)} at quality {quality} "
             f"(target {format_bytes(max(1, int(target_size_bytes)))})"
         )
 
@@ -8583,13 +8854,13 @@ def compress_image(input_path: str, save_path: str, status_callback,
             _jsonl_log("encode_end", {"type": "image", **stats})
             if webhook_url:
                 _post_webhook_hardened(webhook_url, json_payload=stats, file_path=output_file)
-            status_callback(f"âœ… Image compressed to {format_bytes(fin)} in {took:.1f}s")
+            status_callback(f"Image compressed to {format_bytes(fin)} in {took:.1f}s")
             return stats
         quality = max(10, quality - 10)
         attempts += 1
 
     if not success:
-        status_callback("âŒ Image compression failed.", level="ERROR")
+        status_callback("Image compression failed.", level="ERROR")
         if temp_output and os.path.exists(temp_output):
             os.remove(temp_output)
         return {}
@@ -8636,7 +8907,7 @@ def compress_image(input_path: str, save_path: str, status_callback,
 
     t_end = time.time()
     final_size = os.path.getsize(output_file)
-    status_callback(f"âœ… Image compressed: {format_bytes(final_size)}")
+    status_callback(f"Image compressed: {format_bytes(final_size)}")
 
     stats = {
         "filename": filename,
@@ -8668,11 +8939,11 @@ def compress_pdf(input_path: str, save_path: str, status_callback,
     
 
     adv = dict(advanced_options or {})
-    status_callback(f"ðŸš€ Compressing PDF: {input_path}")
+    status_callback(f"Compressing PDF: {input_path}")
 
     gs = _which("gswin64c", "gswin32c", "gs")
     if not gs:
-        status_callback("âŒ Ghostscript not found. Install Ghostscript or add it to PATH.", level="ERROR")
+        status_callback("Ghostscript not found. Install Ghostscript or add it to PATH.", level="ERROR")
         return {}
 
     try:
@@ -8683,7 +8954,7 @@ def compress_pdf(input_path: str, save_path: str, status_callback,
     src_size = os.path.getsize(input_path)
     target_bytes = max(1, int(target_size_mb * 1024 * 1024))
     target_bytes = apply_target_size_margin(target_bytes)
-    tol = float(adv.get("pdf_tolerance", 0.10))            # Â±10%
+    tol = float(adv.get("pdf_tolerance", 0.10))            # ±10%
     min_dpi = int(adv.get("pdf_min_dpi", 90))
     max_dpi = int(adv.get("pdf_max_dpi", 300))
     linearize_if_close = bool(adv.get("pdf_linearize_if_close", True))
@@ -8712,7 +8983,7 @@ def compress_pdf(input_path: str, save_path: str, status_callback,
         _jsonl_log("encode_end", {"type": "pdf", **stats})
         if webhook_url:
             _post_webhook_hardened(webhook_url, json_payload=stats, file_path=output_file)
-        status_callback(f"â„¹ï¸ PDF already near target â€” kept original ({format_bytes(stats['compressed_size'])}).")
+        status_callback(f"PDF already near target - kept original ({format_bytes(stats['compressed_size'])}).")
         return stats
 
     def _pdfset_for_dpi(dpi_val: int) -> str:
@@ -8785,7 +9056,7 @@ def compress_pdf(input_path: str, save_path: str, status_callback,
                 _jsonl_log("encode_end", {"type": "pdf", **stats})
                 if webhook_url:
                     _post_webhook_hardened(webhook_url, json_payload=stats, file_path=output_file)
-                status_callback(f"âœ… PDF rasterized to {format_bytes(stats['compressed_size'])} (target {format_bytes(target_bytes)})")
+                status_callback(f"PDF rasterized to {format_bytes(stats['compressed_size'])} (target {format_bytes(target_bytes)})")
                 return stats
 
         try:
@@ -8805,7 +9076,7 @@ def compress_pdf(input_path: str, save_path: str, status_callback,
         _jsonl_log("encode_end", {"type": "pdf", **stats})
         if webhook_url:
             _post_webhook_hardened(webhook_url, json_payload=stats, file_path=output_file)
-        status_callback("â„¹ï¸ PDF appears text/vector-only â€” kept original to avoid size increase.")
+        status_callback("PDF appears text/vector-only - kept original to avoid size increase.")
         return stats
 
     probe_tmp = output_file + ".probe.pdf"
@@ -8815,10 +9086,10 @@ def compress_pdf(input_path: str, save_path: str, status_callback,
             try: os.remove(pth)
             except Exception: pass
 
-    status_callback("ðŸ§ª Probing PDF @ 300 DPI (/printer)")
+    status_callback("Probing PDF @ 300 DPI (/printer)")
     ok_probe, probe_size = _gs_trial(probe_tmp, 300)
     if not ok_probe:
-        status_callback("âŒ PDF probe failed; aborting PDF compression.", level="ERROR")
+        status_callback("PDF probe failed; aborting PDF compression.", level="ERROR")
         return {}
 
     best_path = None
@@ -8832,7 +9103,7 @@ def compress_pdf(input_path: str, save_path: str, status_callback,
 
     for _ in range(TRIALS_MAX):
         if cancel_callback():
-            status_callback("â¹ï¸ PDF compression cancelled.", level="WARNING")
+            status_callback("PDF compression cancelled.", level="WARNING")
             for pth in (probe_tmp, trial_tmp):
                 try:
                     if os.path.exists(pth): os.remove(pth)
@@ -8848,7 +9119,7 @@ def compress_pdf(input_path: str, save_path: str, status_callback,
             if os.path.exists(trial_tmp):
                 try: os.remove(trial_tmp)
                 except Exception: pass
-            status_callback(f"ðŸ§ª PDF trial @ {mid} DPI ({_pdfset_for_dpi(mid)})")
+            status_callback(f"PDF trial @ {mid} DPI ({_pdfset_for_dpi(mid)})")
             ok, size = _gs_trial(trial_tmp, mid)
             cur_path = trial_tmp
             if not ok:
@@ -8893,7 +9164,7 @@ def compress_pdf(input_path: str, save_path: str, status_callback,
             _jsonl_log("encode_end", {"type": "pdf", **stats})
             if webhook_url:
                 _post_webhook_hardened(webhook_url, json_payload=stats, file_path=output_file)
-            status_callback("â„¹ï¸ No beneficial PDF compression found â€” kept original.")
+            status_callback("No beneficial PDF compression found - kept original.")
             for pth in (probe_tmp, trial_tmp):
                 try:
                     if os.path.exists(pth): os.remove(pth)
@@ -8926,7 +9197,7 @@ def compress_pdf(input_path: str, save_path: str, status_callback,
     _jsonl_log("encode_end", {"type": "pdf", **stats})
     if webhook_url:
         _post_webhook_hardened(webhook_url, json_payload=stats, file_path=output_file)
-    status_callback(f"âœ… PDF compressed to {format_bytes(stats['compressed_size'])} (target {format_bytes(target_bytes)})")
+    status_callback(f"PDF compressed to {format_bytes(stats['compressed_size'])} (target {format_bytes(target_bytes)})")
     return stats
 
 
@@ -8948,7 +9219,7 @@ def _rasterize_pdf_to_target(input_path: str, output_file: str, target_bytes: in
 
         for _ in range(max_iters):
             if cancel_callback():
-                status_callback("â¹ï¸ PDF rasterization cancelled.", level="WARNING")
+                status_callback("PDF rasterization cancelled.", level="WARNING")
                 return False
 
             dpi = (dpi_min + dpi_max) // 2
@@ -8958,16 +9229,16 @@ def _rasterize_pdf_to_target(input_path: str, output_file: str, target_bytes: in
             for f in glob.glob(os.path.join(tmpdir, "page-*.jpg")):
                 try: os.remove(f)
                 except Exception: pass
-            status_callback(f"ðŸ§ª Raster trial DPI={dpi}, Q={q}")
+            status_callback(f"Raster trial DPI={dpi}, Q={q}")
             cmd = [gs, "-dNOPAUSE", "-dQUIET", "-dBATCH", "-sDEVICE=jpeg", f"-r{dpi}", f"-dJPEGQ={q}", "-o", img_pattern, input_path]
             p = _sp_run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, startupinfo=si, creationflags=NO_WIN)
             if p.returncode != 0:
-                status_callback("âŒ Ghostscript rasterization failed.", level="ERROR")
+                status_callback("Ghostscript rasterization failed.", level="ERROR")
                 return False
 
             jpgs = sorted(glob.glob(os.path.join(tmpdir, "page-*.jpg")))
             if not jpgs:
-                status_callback("âŒ No pages rendered during rasterization.", level="ERROR")
+                status_callback("No pages rendered during rasterization.", level="ERROR")
                 return False
 
             images = []
@@ -8993,7 +9264,7 @@ def _rasterize_pdf_to_target(input_path: str, output_file: str, target_bytes: in
                 except Exception: pass
 
             size = os.path.getsize(tmp_pdf)
-            status_callback(f"ðŸ§ª Raster result â†’ {format_bytes(size)} (target {format_bytes(target_bytes)})")
+            status_callback(f"Raster result -> {format_bytes(size)} (target {format_bytes(target_bytes)})")
 
             if size <= target_bytes and (best_size is None or size < best_size):
                 best_pdf, best_size = tmp_pdf, size
@@ -9472,7 +9743,7 @@ def _auto_compress_dispatch(media_type, input_path, _orig_input, save_path,
                             advanced_options, cancel_callback)
 
     else:
-        status_callback(f"âŒ Unsupported file type: {input_path}", level="ERROR")
+        status_callback(f"Unsupported file type: {input_path}", level="ERROR")
         return {}
 
 
@@ -9881,7 +10152,7 @@ class CompressorGUI:
         folder = filedialog.askdirectory(parent=self.root, title="Select watch folder")
         if folder:
             self.watch_folder.set(folder)
-            self.update_status(f"ðŸ‘€ Watch folder set to: {folder}")
+            self.update_status(f"Watch folder set to: {folder}")
         else:
 
             self.watch_var.set(False)
@@ -10312,7 +10583,7 @@ class CompressorGUI:
             if val is None:
                 return
             self.per_file_opts.setdefault(path, {})[key] = val.strip()
-            try: self.update_status(f"Per-file: {os.path.basename(path)} → {key}={val.strip()}")
+            try: self.update_status(f"Per-file: {os.path.basename(path)} -> {key}={val.strip()}")
             except Exception: pass
             try: self._save_queue()
             except Exception: pass
@@ -10717,7 +10988,7 @@ class CompressorGUI:
 
         choice = simpledialog.askstring(
             "Format",
-            "Choose download format:\nâ€¢ audio\nâ€¢ video\nâ€¢ audio+video"
+            "Choose download format:\n• audio\n• video\n• audio+video"
         )
         if not choice:
             return
@@ -10743,7 +11014,7 @@ class CompressorGUI:
                 "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s")
             }
 
-        self.update_status(f"â¬‡ï¸ Downloading from YouTube: {url} ({choice})")
+        self.update_status(f"Downloading from YouTube: {url} ({choice})")
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -10769,11 +11040,11 @@ class CompressorGUI:
     def _compress_downloaded(self, input_path, save_dir, target_size_mb, adv_opts):
         
 
-        self.update_status(f"ðŸš€ Compressing downloaded file: {input_path}")
+        self.update_status(f"Compressing downloaded file: {input_path}")
         target_size_bytes = target_size_mb * 1024 * 1024
         actual_size = os.path.getsize(input_path)
         if actual_size <= target_size_bytes:
-            self.update_status(f"âš¡ Skipping compression â€” file is {format_bytes(actual_size)}, under target.")
+            self.update_status(f"Skipping compression - file is {format_bytes(actual_size)}, under target.")
             shutil.copy(input_path, os.path.join(save_dir, os.path.basename(input_path)))
             return
         stats = auto_compress(
@@ -10829,7 +11100,7 @@ class CompressorGUI:
         else:  # audio+video
             ydl_opts["format"] = "best"
 
-        self.update_status(f"â¬‡ï¸ Downloading from YouTube: {url} ({choice})")
+        self.update_status(f"Downloading from YouTube: {url} ({choice})")
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -10949,7 +11220,7 @@ class CompressorGUI:
                     pass
 
                 try:
-                    self.update_status(f"Starting compression for {len(self._thread_file_list)} file(s)â€¦", level="INFO")
+                    self.update_status(f"Starting compression for {len(self._thread_file_list)} file(s)...", level="INFO")
                 except Exception:
                     pass
             except Exception:
@@ -11017,7 +11288,7 @@ class CompressorGUI:
         self.audio_fmt_var     = tk.StringVar(value="opus")
         self.image_fmt_var     = tk.StringVar(value="jpg")
         
-        self.style = ttk.Style(self.root)   # don't apply yet; weâ€™ll apply after loading settings
+        self.style = ttk.Style(self.root)   # don't apply yet; we’ll apply after loading settings
 
         self.settings_dir  = USER_SETTINGS_DIR  # e.g. .../tescompressor3/user_settings
         os.makedirs(self.settings_dir, exist_ok=True)
@@ -11166,6 +11437,10 @@ class CompressorGUI:
         self.adv_hw_decode      = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("hw_decode", True) else 0)
         # Batch-1 quality-of-life toggles
         self.adv_smart_preproc   = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("smart_preproc", True) else 0)
+        # Learning-system toggles (parity with CLI --no-learned-seed / --no-preflight)
+        self.adv_learned_seed    = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("learned_seed", True) else 0)
+        self.adv_preflight       = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("preflight_advice", True) else 0)
+        self.adv_ceiling_downscale = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("ceiling_downscale_retry", True) else 0)
         self.adv_discord_compat  = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("discord_compat", False) else 0)
         self.adv_embed_lyrics    = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("embed_lyrics", True) else 0)
         self.adv_copy_clipboard  = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("copy_to_clipboard", False) else 0)
@@ -12148,9 +12423,9 @@ class CompressorGUI:
         except Exception:
             _advisor_popup = None
         tips = [
-            "â€¢ High motion detected? Consider raising target size by 10â€“20% or enabling grain preset.",
-            "â€¢ Dialogue-heavy? Lower audio to 96â€“128 kbps stereo; move bits to video.",
-            "â€¢ Low-entropy static scenes compress well; you can drop CRF or target by ~10%."
+            "• High motion detected? Consider raising target size by 10–20% or enabling grain preset.",
+            "• Dialogue-heavy? Lower audio to 96–128 kbps stereo; move bits to video.",
+            "• Low-entropy static scenes compress well; you can drop CRF or target by ~10%."
         ]
         self._insights_text.insert("end", "Advisor Insights\n\n" + "\n".join(tips))
         self._insights_text.configure(state="disabled")
@@ -12247,7 +12522,7 @@ class CompressorGUI:
             return
 
         top = tk.Toplevel(self.root)
-        top.title("Visual Compare â€” Fallback")
+        top.title("Visual Compare — Fallback")
         try:
             top.configure(bg="#2C2F33")
         except Exception:
@@ -12260,7 +12535,7 @@ class CompressorGUI:
         right.pack(side="right", expand=True, fill="both")
 
         bar = ttk.Frame(top); bar.pack(side="bottom", fill="x")
-        status_lbl = ttk.Label(bar, text=f"{os.path.basename(original_path)}  â‡„  {os.path.basename(compressed_path)}")
+        status_lbl = ttk.Label(bar, text=f"{os.path.basename(original_path)}  ⇄  {os.path.basename(compressed_path)}")
         status_lbl.pack(side="left", padx=10, pady=6)
 
         tmpdir = tempfile.mkdtemp(prefix="bc_compare_")
@@ -12289,14 +12564,14 @@ class CompressorGUI:
         total = min(len(lf), len(rf))
         if total == 0:
             try:
-                mbox.showerror("Visual Compare", "No frames extracted â€” cannot preview.")
+                mbox.showerror("Visual Compare", "No frames extracted — cannot preview.")
             except Exception:
                 pass
             shutil.rmtree(tmpdir, ignore_errors=True)
             top.destroy()
             return
 
-        max_frames = min(total, 180)  # â‰¤15s at 12fps
+        max_frames = min(total, 180)  # ≤15s at 12fps
         left_imgs = [ImageTk.PhotoImage(Image.open(p)) for p in lf[:max_frames]]
         right_imgs = [ImageTk.PhotoImage(Image.open(p)) for p in rf[:max_frames]]
         total = min(len(left_imgs), len(right_imgs))
@@ -12558,7 +12833,7 @@ class CompressorGUI:
         r = 1
         for label, key in rows:
             ttk.Label(container, text=label + ":").grid(row=r, column=0, sticky="w", padx=(0, 10), pady=4)
-            var = tk.StringVar(value="â€”")
+            var = tk.StringVar(value="—")
             self._dash_vars[key] = var
             ttk.Label(container, textvariable=var).grid(row=r, column=1, sticky="w", pady=4)
             r += 1
@@ -12597,7 +12872,7 @@ class CompressorGUI:
         def _avg_ratio_and_time():
             lst = getattr(self, "stats_list", None)
             if not isinstance(lst, list) or not lst:
-                return ("â€”", "â€”")
+                return ("—", "—")
             ratios, times = [], []
             for rec in lst:
                 try:
@@ -12613,8 +12888,8 @@ class CompressorGUI:
                     pass
             avg_r = (sum(ratios) / len(ratios)) if ratios else None
             avg_t = (sum(times) / len(times)) if times else None
-            r_txt = f"{avg_r*100:.1f}%" if isinstance(avg_r, float) else "â€”"
-            t_txt = f"{avg_t:.2f}s" if isinstance(avg_t, float) else "â€”"
+            r_txt = f"{avg_r*100:.1f}%" if isinstance(avg_r, float) else "—"
+            t_txt = f"{avg_t:.2f}s" if isinstance(avg_t, float) else "—"
             return (r_txt, t_txt)
 
         def _watcher_status():
@@ -12779,7 +13054,7 @@ class CompressorGUI:
         r = 1
         for label, key in rows:
             ttk.Label(container, text=label + ":").grid(row=r, column=0, sticky="w", padx=(0, 10), pady=4)
-            var = tk.StringVar(value="â€”")
+            var = tk.StringVar(value="—")
             self._dash_vars[key] = var
             ttk.Label(container, textvariable=var).grid(row=r, column=1, sticky="w", pady=4)
             r += 1
@@ -12821,7 +13096,7 @@ class CompressorGUI:
         def _avg_ratio_and_time():
             lst = getattr(self, "stats_list", None)
             if not isinstance(lst, list) or not lst:
-                return ("â€”", "â€”")
+                return ("—", "—")
             ratios, times = [], []
             for rec in lst:
                 try:
@@ -12837,8 +13112,8 @@ class CompressorGUI:
                     pass
             avg_r = (sum(ratios) / len(ratios)) if ratios else None
             avg_t = (sum(times) / len(times)) if times else None
-            r_txt = f"{avg_r*100:.1f}%" if isinstance(avg_r, float) else "â€”"
-            t_txt = f"{avg_t:.2f}s" if isinstance(avg_t, float) else "â€”"
+            r_txt = f"{avg_r*100:.1f}%" if isinstance(avg_r, float) else "—"
+            t_txt = f"{avg_t:.2f}s" if isinstance(avg_t, float) else "—"
             return (r_txt, t_txt)
 
         def _watcher_status():
@@ -13107,6 +13382,12 @@ class CompressorGUI:
         except Exception: pass
         try: self.adv_smart_preproc.set(1 if adv.get("smart_preproc", True) else 0)
         except Exception: pass
+        try: self.adv_learned_seed.set(1 if adv.get("learned_seed", True) else 0)
+        except Exception: pass
+        try: self.adv_preflight.set(1 if adv.get("preflight_advice", True) else 0)
+        except Exception: pass
+        try: self.adv_ceiling_downscale.set(1 if adv.get("ceiling_downscale_retry", True) else 0)
+        except Exception: pass
         try: self.adv_embed_lyrics.set(1 if adv.get("embed_lyrics", True) else 0)
         except Exception: pass
         try: self.adv_copy_clipboard.set(1 if adv.get("copy_to_clipboard", False) else 0)
@@ -13197,6 +13478,9 @@ class CompressorGUI:
                 "hw_decode":           bool(self.adv_hw_decode.get())         if hasattr(self, "adv_hw_decode")         else True,
                 "discord_compat":      bool(self.adv_discord_compat.get())    if hasattr(self, "adv_discord_compat")    else False,
                 "smart_preproc":       bool(self.adv_smart_preproc.get())     if hasattr(self, "adv_smart_preproc")     else True,
+                "learned_seed":        bool(self.adv_learned_seed.get())      if hasattr(self, "adv_learned_seed")      else True,
+                "preflight_advice":    bool(self.adv_preflight.get())         if hasattr(self, "adv_preflight")         else True,
+                "ceiling_downscale_retry": bool(self.adv_ceiling_downscale.get()) if hasattr(self, "adv_ceiling_downscale") else True,
                 "embed_lyrics":        bool(self.adv_embed_lyrics.get())      if hasattr(self, "adv_embed_lyrics")      else True,
                 "copy_to_clipboard":   bool(self.adv_copy_clipboard.get())    if hasattr(self, "adv_copy_clipboard")    else False,
                 "audio_track_mode":    (str(self.adv_audio_track_mode.get() or "keepfirst").strip().lower()
@@ -13247,7 +13531,7 @@ class CompressorGUI:
             os.replace(tmp, self.settings_path)
 
             self.settings = payload
-            try: LOG.info("Settings saved â†’ %s", self.settings_path)
+            try: LOG.info("Settings saved -> %s", self.settings_path)
             except Exception: pass
         except Exception as e:
             try: LOG.error(f"Failed to save settings: {e}")
@@ -13318,6 +13602,16 @@ class CompressorGUI:
                                                ADVANCED_DEFAULTS.get("smart_preproc", True))))
         except Exception:
             opts["smart_preproc"] = bool(ADVANCED_DEFAULTS.get("smart_preproc", True))
+
+        # Learning-system + ceiling-guard toggles (parity with CLI flags).
+        for _k, _var in (("learned_seed", "adv_learned_seed"),
+                         ("preflight_advice", "adv_preflight"),
+                         ("ceiling_downscale_retry", "adv_ceiling_downscale")):
+            try:
+                opts[_k] = (bool(getattr(self, _var).get()) if hasattr(self, _var)
+                            else bool(self.settings.get(_k, ADVANCED_DEFAULTS.get(_k, True))))
+            except Exception:
+                opts[_k] = bool(ADVANCED_DEFAULTS.get(_k, True))
 
         try:
             _atm = (self.adv_audio_track_mode.get() if hasattr(self, "adv_audio_track_mode")
@@ -13557,7 +13851,7 @@ class CompressorGUI:
         from pathlib import Path
 
         t0 = time.time()
-        logging.info(f"âž¡ï¸ Compressing: {filepath}")
+        logging.info(f"Compressing: {filepath}")
         os.environ["BC_CURRENT_INPUT"] = str(filepath)
         try:
             _per = getattr(self, "per_file_opts", {}).get(filepath, {})
@@ -13572,7 +13866,7 @@ class CompressorGUI:
         try:
             wh = webhook if webhook else getattr(self, "webhook", None)
             if wh:
-                wh.send_text(f"ðŸš€ Compressing: {os.path.basename(filepath)}")
+                wh.send_text(f"Compressing: {os.path.basename(filepath)}")
         except Exception:
             pass
 
@@ -13658,18 +13952,18 @@ class CompressorGUI:
                 _reenc_warn = _detect_reencoding_risk(_src_codec, _tgt_enc, int(br or 0), _target_v_bps)
                 if _reenc_warn:
                     LOG.warning("Re-encoding risk: %s", _reenc_warn)
-                    self.update_status(f"⚠️ Re-encoding warning: {_reenc_warn}", level="WARNING")
+                    self.update_status(f"[Warn] Re-encoding warning: {_reenc_warn}", level="WARNING")
                     from tkinter import messagebox as _mbox
                     _proceed = self._ask_on_main(
                         lambda: _mbox.askyesno(
-                            "⚠️ Re-encoding Warning",
+                            "Re-encoding Warning",
                             f"{_reenc_warn}\n\nProceed anyway?",
                             icon="warning"
                         ),
                         default=True,
                     )
                     if not _proceed:
-                        self.update_status("❌ Encode cancelled by user (re-encoding risk).", level="INFO")
+                        self.update_status("[Cancel] Encode cancelled by user (re-encoding risk).", level="INFO")
                         return {}
             except Exception:
                 pass
@@ -13769,7 +14063,7 @@ class CompressorGUI:
                         pass
                 self._notify(
                     "Compression Completed",
-                    f"{rec['filename']} â†’ {size_str} (CRF {used_crf}){vmaf_str}"
+                    f"{rec['filename']} → {size_str} (CRF {used_crf}){vmaf_str}"
                 )
 
                 # Copy-result-to-clipboard (CF_HDROP): drop the finished file on the
@@ -13790,15 +14084,15 @@ class CompressorGUI:
                     wh = webhook if webhook else getattr(self, "webhook", None)
                     if wh:
                         out_file = stats.get("output_path") or stats.get("out_path") or stats.get("output")
-                        msg = f"âœ… Done: {os.path.basename(filepath)}" + (
-                              f" â†’ {os.path.basename(out_file)}" if out_file else f" â†’ {size_str}"
+                        msg = f"Done: {os.path.basename(filepath)}" + (
+                              f" → {os.path.basename(out_file)}" if out_file else f" → {size_str}"
                         )
                         wh.send_text(msg)
                         if out_file and os.path.isfile(out_file):
                             wh.send_file(out_file, description=msg)
 
                             try:
-                                self.update_status(f"âœ… Finished {os.path.basename(filepath)}", level="INFO")
+                                self.update_status(f"Finished {os.path.basename(filepath)}", level="INFO")
                             except Exception:
                                 pass
                 except Exception:
@@ -13812,7 +14106,7 @@ class CompressorGUI:
                 try:
                     wh = webhook if webhook else getattr(self, "webhook", None)
                     if wh:
-                        wh.send_text(f"âŒ Failed: {os.path.basename(filepath)} â€” no output file.")
+                        wh.send_text(f"Failed: {os.path.basename(filepath)} - no output file.")
                 except Exception:
                     raise RuntimeError("Encode failed (no output)")
                     pass
@@ -13824,11 +14118,11 @@ class CompressorGUI:
             try:
                 wh = webhook if webhook else getattr(self, "webhook", None)
                 if wh:
-                    wh.send_text(f"âŒ Failed: {os.path.basename(filepath)} â€” check logs.")
+                    wh.send_text(f"Failed: {os.path.basename(filepath)} - check logs.")
             except Exception:
                 pass
 
-            logging.error(f"âŒ Compression error for {filepath}: {e}")
+            logging.error(f"Compression error for {filepath}: {e}")
             self._notify(
                 "Compression Failed",
                 f"{os.path.basename(filepath)}: {e}"
@@ -13879,7 +14173,7 @@ class CompressorGUI:
                     )
 
                     self.compress_file(file, output_file)
-                    self.log(f"âœ” Done: {output_file}")
+                    self.log(f"Done: {output_file}")
 
                     try:
                         if os.path.isfile(output_file):
@@ -13893,7 +14187,7 @@ class CompressorGUI:
                     )
 
                 except Exception as e:
-                    self.log(f"âŒ Error: {e}")
+                    self.log(f"Error: {e}")
                     notify_error(
                         title="BitCrusher - Error",
                         msg="Compression failed! Check logs.",
@@ -14051,7 +14345,7 @@ class CompressorGUI:
 
         info = tool_urls.get(name)
         if not info:
-            self.update_status(f"âŒ Unknown tool: {name}", level="ERROR")
+            self.update_status(f"Unknown tool: {name}", level="ERROR")
             return
 
 
@@ -14063,10 +14357,10 @@ class CompressorGUI:
         url = info["url"]
 
         if exe_path.exists():
-            self.update_status(f"âœ… {name} already installed at: {exe_path}")
+            self.update_status(f"{name} already installed at: {exe_path}")
             return
 
-        self.update_status(f"â¬‡ï¸ Downloading {name}â€¦")
+        self.update_status(f"Downloading {name}...")
 
         for attempt in range(3):
             try:
@@ -14078,21 +14372,21 @@ class CompressorGUI:
                 break
             except Exception as e:
                 if attempt == 2:
-                    self.update_status(f"âŒ Failed to download {name}: {e}", level="ERROR")
+                    self.update_status(f"Failed to download {name}: {e}", level="ERROR")
                     return
                 time.sleep(2)
 
         if not is_zipfile(zip_path):
-            self.update_status(f"âŒ Corrupted or invalid ZIP: {zip_path}", level="ERROR")
+            self.update_status(f"Corrupted or invalid ZIP: {zip_path}", level="ERROR")
             zip_path.unlink(missing_ok=True)
             return
 
-        self.update_status(f"ðŸ“¦ Extracting {name}â€¦")
+        self.update_status(f"Extracting {name}...")
         try:
             with ZipFile(zip_path, "r") as zip_ref:
                 members = [m for m in zip_ref.namelist() if m.endswith(info["exe"])]
                 if not members:
-                    self.update_status(f"âŒ {info['exe']} not found in ZIP", level="ERROR")
+                    self.update_status(f"{info['exe']} not found in ZIP", level="ERROR")
                     return
                 for member in members:
                     zip_ref.extract(member, tools_dir)
@@ -14101,9 +14395,9 @@ class CompressorGUI:
                     flattened = tools_dir / info["exe"]
                     extracted.rename(flattened)
             zip_path.unlink(missing_ok=True)
-            self.update_status(f"âœ… {name} installed to {exe_path}")
+            self.update_status(f"{name} installed to {exe_path}")
         except Exception as e:
-            self.update_status(f"âŒ Extraction failed: {e}", level="ERROR")
+            self.update_status(f"Extraction failed: {e}", level="ERROR")
             zip_path.unlink(missing_ok=True)
 
 
@@ -14118,7 +14412,7 @@ class CompressorGUI:
     def toggle_pause(self):
         
         self.paused = not getattr(self, "paused", False)
-        self.update_status("â¸ï¸ Paused" if self.paused else "â–¶ï¸ Resumed")
+        self.update_status("Paused" if self.paused else "Resumed")
 
     def select_watch_folder(self):
         folder = filedialog.askdirectory()
@@ -15063,6 +15357,18 @@ class CompressorGUI:
             self.adv_smart_preproc = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("smart_preproc", True) else 0)
         ttk.Checkbutton(video, text="Artifact-aware preprocessing (VMAF-validated deband/denoise)",
                         variable=self.adv_smart_preproc).grid(row=12, column=0, columnspan=2, sticky="w", padx=6, pady=4)
+        if not hasattr(self, "adv_learned_seed"):
+            self.adv_learned_seed = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("learned_seed", True) else 0)
+        ttk.Checkbutton(video, text="Learned first-attempt bitrate seeding (outcome ledger)",
+                        variable=self.adv_learned_seed).grid(row=13, column=0, columnspan=2, sticky="w", padx=6, pady=4)
+        if not hasattr(self, "adv_preflight"):
+            self.adv_preflight = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("preflight_advice", True) else 0)
+        ttk.Checkbutton(video, text="Pre-flight quality/size advice (advisory only)",
+                        variable=self.adv_preflight).grid(row=14, column=0, columnspan=2, sticky="w", padx=6, pady=4)
+        if not hasattr(self, "adv_ceiling_downscale"):
+            self.adv_ceiling_downscale = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("ceiling_downscale_retry", True) else 0)
+        ttk.Checkbutton(video, text="Downscale-and-retry if size cap can't be met at native resolution",
+                        variable=self.adv_ceiling_downscale).grid(row=15, column=0, columnspan=2, sticky="w", padx=6, pady=4)
 
         ttk.Label(audio, text="Audio Format").grid(row=0, column=0, sticky="e", padx=6, pady=4)
         audio_values = ["aac", "opus", "mp3"]
@@ -15184,7 +15490,7 @@ class CompressorGUI:
 
     def cancel_compression(self):
         self.cancel_flag = True
-        self.update_status("â¹ï¸ Cancel requested.")
+        self.update_status("Cancel requested.")
 
     def compression_cancelled(self):
         return self.cancel_flag
@@ -15422,30 +15728,6 @@ class CompressorGUI:
             pass
 
 
-def start_folder_watcher(self):
-    adv = self.gather_advanced_options()
-    include = adv.get("watch_include", "").split() if adv.get("watch_include") else None
-    exclude = adv.get("watch_exclude", "").split() if adv.get("watch_exclude") else None
-    stable = float(adv.get("watch_stable_secs", 1.0))
-    debounce = int(adv.get("watch_debounce_ms", 300))
-    recursive = bool(adv.get("watch_recursive", True))
-    folder = (self.watch_folder.get() if hasattr(self, "watch_folder") else os.getcwd())
-
-    def _on_ready(path):
-        self.file_callback(path)
-        if adv.get("watch_auto_start", False):
-            try: self.start_compression()
-            except Exception: pass
-
-    self._fw = FolderWatcher(_on_ready, include_globs=include, exclude_globs=exclude,
-                             recursive=recursive, stable_secs=stable, debounce_ms=debounce,
-                             status_cb=lambda m,l="INFO": self.update_status(m, level=l),
-                             notify_cb=lambda m: self.update_status(m))
-    self._fw.add_path(folder)
-    self._fw.start()
-    self.update_status(f"Watching {folder}")
-
-
 # watchdog is OPTIONAL — FolderWatcher falls back to polling when it's absent.
 # This was an unconditional import, so a machine without watchdog couldn't even
 # start BitCrusher (the whole module failed to load). Guard it.
@@ -15664,546 +15946,6 @@ class FolderWatcher:
                     self.on_file_ready(p)
                 except Exception:
                     LOG.exception("FolderWatcher callback failed for %s", p)
-
-
-        class WatchHandler(FileSystemEventHandler):
-            def on_created(handler_self, event):
-                if event.is_directory:
-                    return
-                path = event.src_path
-                self.update_status(f"ðŸ“‚ Detected new file: {path}")
-                if os.path.isfile(path) and get_media_type(path) != "unknown":
-
-                    _norm = _normalize_drop_path(path)
-                    try:
-                        if not hasattr(self, "file_list"):
-                            self.file_list = []
-                        if _norm not in self.file_list:
-                            self.file_list.append(_norm)
-                    except Exception:
-                        pass
-                    self.queue_box.insert("end", _norm)
-
-
-        self.update_status(f"ðŸ‘€ Watching: {self.watch_folder.get()}")
-        self._watch_observer = Observer()
-        self._watch_handler  = WatchHandler()
-        self._watch_observer.schedule(
-            self._watch_handler,
-            self.watch_folder.get(),
-            recursive=False
-        )
-        self._watch_observer.start()
-
-    def stop_folder_watcher(self):
-        try:
-            if hasattr(self, "_fw") and self._fw:
-                self._fw.stop()
-                self._fw = None
-            self.update_status("Folder watcher stopped.")
-        except Exception:
-            pass
-
-
-    def toggle_watch_folder(self):
-        
-        from tkinter import messagebox
-        if self.watch_var.get():
-            if not os.path.isdir(self.watch_folder.get()):
-                messagebox.showerror("Error", "Invalid watch folder.")
-                self.watch_var.set(False)
-                return
-            self.start_folder_watcher()
-        else:
-            self.stop_folder_watcher()
-
-
-
-    def display_statistics(self):
-        
-        for row in self.stats_table.get_children():
-            self.stats_table.delete(row)
-
-        for s in self.stats_list:
-            orig = format_bytes(s["original_size"])
-            comp = format_bytes(s["compressed_size"])
-            ratio = f"{s['ratio']:.2f}"
-            took  = f"{s['time_taken']:.1f}"
-            self.stats_table.insert("", "end", values=(s["filename"], orig, comp, ratio, took))
-
-
-
-
-    def select_save_folder(self):
-            from tkinter import filedialog, messagebox
-            try:
-                folder = filedialog.askdirectory(parent=self.root, title="Select Save Folder")
-                if folder:
-                    self.save_path.set(folder)
-                    self.update_status(f"Save folder set: {folder}")
-            except Exception as e:
-                try:
-                    if hasattr(self, "log_exception"):
-                        self.log_exception(f"Browse error: {e}")
-                finally:
-                    try:
-                        messagebox.showerror("Browse error", str(e))
-                    except Exception:
-                        pass
-    def show_user_guide(self):
-        guide_text = (
-            "BitCrusher V9 - User Guide\n\n"
-            "1. Adding Files:\n"
-            "   - Drag and drop or use 'Add Files...'.\n\n"
-            "2. Queue:\n"
-            "   - Remove, reorder, or clear with the buttons.\n\n"
-            "3. Preview:\n"
-            "   - Images show a thumbnail; videos show metadata; audio has no preview.\n\n"
-            "4. Compression Settings:\n"
-            "   - Choose a preset or adjust in 'Advanced Options'.\n\n"
-            "5. Profiles:\n"
-            "   - Save/load advanced settings via Settings -> Save/Load Profile.\n\n"
-            "6. Start:\n"
-            "   - Pick a valid save folder, click 'Start Compression'.\n\n"
-            "7. Logs & Stats:\n"
-            "   - Filter logs; view compression stats below.\n\n"
-            "Enjoy using BitCrusher V9!"
-        )
-        messagebox.showinfo("User Guide", guide_text)
-
-
-    def save_profile(self):
-        name = simpledialog.askstring("Save Profile", "Profile name:")
-        if not name:
-            return
-
-        opts = _strip_runtime_keys(self._collect_current_options())
-
-        if not hasattr(self, "saved_profiles") or self.saved_profiles is None:
-            self.saved_profiles = {}
-        self.saved_profiles[name] = opts
-
-        try:
-            self.save_settings()
-        except Exception:
-            pass
-
-        try:
-            if hasattr(self, "profile_combo"):
-                self.profile_combo["values"] = sorted(self.saved_profiles.keys())
-        except Exception:
-            pass
-
-        try:
-            self.snackbar(self.root, f"Saved profile '{name}'", 1400, "info")
-        except Exception:
-            pass
-
-    def _collect_current_options(self) -> dict:
-        
-        opts = {}
-
-        try:
-            from testcompressor3 import ADVANCED_DEFAULTS as _ADV
-        except Exception:
-            _ADV = {
-                "auto_retry": True, "overshoot_ratio": 1.00, "two_pass_fallback": True,
-                "grain_filter": True, "auto_retry_done": False, "two_pass_forced": False,
-                "encoder": "x264", "iterative": False, "two_pass": False, "manual_crf": "",
-                "manual_bitrate": "", "output_prefix": "", "output_suffix": "_discord_ready",
-                "audio_format": "aac", "image_format": "jpg", "concurrent": False,
-                "auto_output_folder": False, "guetzli": False, "pngopt": False, "auto_jpeg": False,
-                "quality_mode": "quality_first",
-                "target_policy": "no_overshoot_near_max",
-                "target_tolerance_pct": float(ADVANCED_DEFAULTS.get("target_tolerance_pct", 1.50)),
-                "target_tolerance_min_bytes": 120000,
-                "max_target_attempts": 8,
-                "pdf_force_rasterize": True,
-                "pdf_tolerance": 0.10,
-                "pdf_min_dpi": 90,
-                "pdf_max_dpi": 300,
-                "pdf_linearize_if_close": True,
-                "pdf_raster_min_dpi": 110,
-                "pdf_raster_max_dpi": 220,
-                "pdf_raster_min_q": 60,
-                "pdf_raster_max_q": 90,
-                "pdf_raster_max_iters": 7,
-            }
-        opts.update(_ADV)
-
-        try:
-            opts.update((self.settings or {}).get("advanced", {}) or {})
-        except Exception:
-            pass
-
-        def _g(name, default=None):
-            v = getattr(self, name, None)
-            try:
-                return v.get() if hasattr(v, "get") else (v if v is not None else default)
-            except Exception:
-                return default
-
-        mapping = {
-            "encoder": "adv_encoder",
-            "audio_format": "adv_audio_format",
-            "manual_crf": "adv_manual_crf",
-            "manual_bitrate": "adv_manual_bitrate",
-            "iterative": "adv_iterative",
-            "two_pass": "adv_two_pass",
-            "two_pass_fallback": "adv_two_pass_fallback",
-            "grain_filter": "adv_grain_filter",
-            "auto_retry": "adv_auto_retry",
-            "overshoot_ratio": "adv_overshoot_ratio",
-            "output_prefix": "adv_output_prefix",
-            "output_suffix": "adv_output_suffix",
-            "image_format": "adv_image_format",
-            "concurrent": "adv_concurrent",
-            "auto_output_folder": "adv_auto_output",
-            "guetzli": "adv_guetzli",
-            "pngopt": "adv_pngopt",
-            "auto_jpeg": "adv_auto_jpeg",
-        }
-        for k, attr in mapping.items():
-            val = _g(attr, opts.get(k))
-            if val is not None:
-                opts[k] = val
-
-        try:
-            t_val = self.target_size_var.get() if hasattr(self.target_size_var, "get") else self.target_size_var
-            t_mb = int(float(t_val)) if str(t_val).strip() else 0
-        except Exception:
-            t_mb = 0
-        if t_mb > 0:
-            opts["two_pass"] = True
-
-            opts["overshoot_ratio"] = 1.00
-        try:
-            if hasattr(self, "adv_quality_mode"):
-                _qm3 = str(self.adv_quality_mode.get() or "max").strip().lower()
-            elif hasattr(self, "adv_quality_first"):
-                _qm3 = "max" if bool(int(self.adv_quality_first.get())) else "balanced"
-            else:
-                _qm3 = "max"
-            if _qm3 not in ("fast", "balanced", "max"):
-                _qm3 = "max"
-            opts["quality_mode"] = _qm3
-            opts["target_policy"] = "legacy" if _qm3 == "fast" else "no_overshoot_near_max"
-        except Exception:
-            pass
-
-        # VMAF quality measurement + optional quality floor.
-        try:
-            if hasattr(self, "adv_measure_quality"):
-                opts["measure_quality"] = bool(int(self.adv_measure_quality.get()))
-            else:
-                opts["measure_quality"] = bool(ADVANCED_DEFAULTS.get("measure_quality", True))
-        except Exception:
-            opts["measure_quality"] = True
-        try:
-            if hasattr(self, "adv_min_vmaf"):
-                opts["min_vmaf"] = max(0, min(100, int(float(self.adv_min_vmaf.get()))))
-            else:
-                opts["min_vmaf"] = int(ADVANCED_DEFAULTS.get("min_vmaf", 0))
-        except Exception:
-            opts["min_vmaf"] = 0
-        try:
-            if hasattr(self, "adv_auto_codec"):
-                opts["auto_codec"] = bool(int(self.adv_auto_codec.get()))
-            else:
-                opts["auto_codec"] = bool(ADVANCED_DEFAULTS.get("auto_codec", True))
-        except Exception:
-            opts["auto_codec"] = True
-        for _bkey, _battr, _bdef in (("scene_zones", "adv_scene_zones", True),
-                                     ("hw_decode", "adv_hw_decode", True),
-                                     ("grain_filter", "adv_grain_filter", True)):
-            try:
-                if hasattr(self, _battr):
-                    opts[_bkey] = bool(int(getattr(self, _battr).get()))
-                else:
-                    opts[_bkey] = bool(ADVANCED_DEFAULTS.get(_bkey, _bdef))
-            except Exception:
-                opts[_bkey] = _bdef
-
-        return opts
-
-    def _apply_profile_options(self, opts: dict) -> None:
-        
-        if not isinstance(opts, dict):
-            return
-
-        def _s(name, value):
-            var = getattr(self, name, None)
-            try:
-                if hasattr(var, "set"):
-                    var.set(value)
-            except Exception:
-                pass
-
-        mapping = {
-            "encoder": "adv_encoder",
-            "audio_format": "adv_audio_format",
-            "manual_crf": "adv_manual_crf",
-            "manual_bitrate": "adv_manual_bitrate",
-            "iterative": "adv_iterative",
-            "two_pass": "adv_two_pass",
-            "two_pass_fallback": "adv_two_pass_fallback",
-            "grain_filter": "adv_grain_filter",
-            "auto_retry": "adv_auto_retry",
-            "overshoot_ratio": "adv_overshoot_ratio",
-            "output_prefix": "adv_output_prefix",
-            "output_suffix": "adv_output_suffix",
-            "image_format": "adv_image_format",
-            "concurrent": "adv_concurrent",
-            "auto_output_folder": "adv_auto_output",
-            "guetzli": "adv_guetzli",
-            "pngopt": "adv_pngopt",
-            "auto_jpeg": "adv_auto_jpeg",
-        }
-        for k, attr in mapping.items():
-            if k in opts:
-                _s(attr, opts[k])
-        if "quality_mode" in opts:
-            try:
-                _qm = str(opts.get("quality_mode", "max") or "").strip().lower()
-                if _qm == "quality_first":
-                    _qm = "max"
-                if hasattr(self, "adv_quality_first"):
-                    self.adv_quality_first.set(0 if _qm == "fast" else 1)
-                if hasattr(self, "adv_quality_mode") and _qm in ("fast", "balanced", "max"):
-                    self.adv_quality_mode.set(_qm)
-            except Exception:
-                pass
-
-        try:
-            self.settings = getattr(self, "settings", {}) or {}
-            adv = dict(self.settings.get("advanced", {}))
-            adv.update(opts)
-            self.settings["advanced"] = adv
-            self.save_settings()
-        except Exception:
-            pass
-
-
-
-    def load_profile(self):
-        name = self.profile_var.get().strip()
-        if name in self.saved_profiles:
-            prof = self.saved_profiles[name]
-            if "preset_name" in prof:
-                self.selected_preset.set(prof["preset_name"])
-
-            self.adv_encoder.set(prof["encoder"])
-            self.adv_iterative.set(1 if prof["iterative"] else 0)
-            self.adv_two_pass.set(1 if prof["two_pass"] else 0)
-            self.adv_manual_crf.set(prof["manual_crf"])
-            self.adv_manual_bitrate.set(prof["manual_bitrate"])
-            self.adv_output_prefix.set(prof["output_prefix"])
-            self.adv_output_suffix.set(prof["output_suffix"])
-            self.adv_audio_format.set(prof["audio_format"])
-            self.adv_image_format.set(prof["image_format"])
-            self.adv_concurrent.set(1 if prof["concurrent"] else 0)
-            self.adv_auto_output.set(1 if prof["auto_output_folder"] else 0)
-            self.adv_guetzli.set(1 if prof["guetzli"] else 0)
-            self.adv_pngopt.set(1 if prof["pngopt"] else 0)
-            self.adv_auto_jpeg.set(1 if prof["auto_jpeg"] else 0)
-            _qm = str(prof.get("quality_mode", "max") or "").strip().lower()
-            if _qm == "quality_first":
-                _qm = "max"
-            if hasattr(self, "adv_quality_first"):
-                self.adv_quality_first.set(0 if _qm == "fast" else 1)
-            if hasattr(self, "adv_quality_mode") and _qm in ("fast", "balanced", "max"):
-                self.adv_quality_mode.set(_qm)
-            self.update_status(f"Profile '{name}' loaded.")
-        else:
-            messagebox.showerror("Error", "Profile not found.")
-
-    def setup_tray(self):
-        def on_show(icon, item):
-            self.root.deiconify()
-
-        def on_quit(icon, item):
-            self.tray_icon.stop()
-            self.root.quit()
-
-        try:
-            image = Image.open("icon.png")  # You can change this to your actual tray icon
-        except Exception:
-            image = Image.new('RGB', (16, 16), color='black')
-
-        menu = pystray.Menu(
-            pystray.MenuItem("Open BitCrusher", on_show),
-            pystray.MenuItem("Exit", on_quit)
-        )
-        self.tray_icon = pystray.Icon("bitcrusher", image, "BitCrusher v10", menu)
-        threading.Thread(target=self.tray_icon.run, daemon=True).start()
-
-
-    def gather_advanced_options(self) -> dict:
-        _qf = bool(self.adv_quality_first.get()) if hasattr(self, "adv_quality_first") else True
-        _af = (self.adv_audio_format.get().strip().lower() if hasattr(self, "adv_audio_format") else "aac")
-        if _af == "m4a":
-            _af = "aac"
-        if _af not in {"aac", "opus", "mp3"}:
-            _af = "aac"
-        return {
-            "encoder": self.adv_encoder.get(),
-            "iterative": bool(self.adv_iterative.get()),
-            "two_pass": bool(self.adv_two_pass.get()),
-            "manual_crf": self.adv_manual_crf.get().strip(),
-            "manual_bitrate": self.adv_manual_bitrate.get().strip(),
-            "output_prefix": self.adv_output_prefix.get().strip(),
-            "output_suffix": self.adv_output_suffix.get().strip(),
-            "audio_format": _af,
-            "image_format": self.adv_image_format.get().strip(),
-            "concurrent": bool(self.adv_concurrent.get()),
-            "auto_output_folder": bool(self.adv_auto_output.get()),
-            "guetzli": bool(self.adv_guetzli.get()),
-            "pngopt": bool(self.adv_pngopt.get()),
-            "auto_jpeg": bool(self.adv_auto_jpeg.get()),
-            "quality_mode": ("quality_first" if _qf else "balanced"),
-            "target_policy": ("no_overshoot_near_max" if _qf else "legacy"),
-            "target_tolerance_pct": float(ADVANCED_DEFAULTS.get("target_tolerance_pct", 1.50)),
-            "target_tolerance_min_bytes": 120000,
-            "max_target_attempts": 8,
-        }
-
-    def export_presets(self):
-        
-        fp = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON","*.json")])
-        if not fp:
-            return
-        data = {"presets": PRESETS, "profiles": getattr(self, "saved_profiles", {})}
-        try:
-            with open(fp, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            self.update_status(f"Presets exported to {fp}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to export presets: {e}")
-
-    def import_presets(self):
-        
-        fp = filedialog.askopenfilename(filetypes=[("JSON","*.json")])
-        if not fp:
-            return
-        try:
-            data = json.load(open(fp, "r", encoding="utf-8"))
-            PRESETS.clear()
-            PRESETS.update(data.get("presets", {}))
-            if hasattr(self, "saved_profiles"):
-                self.saved_profiles.clear()
-                self.saved_profiles.update(data.get("profiles", {}))
-            self.update_status("Presets imported.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to import presets: {e}")
-
-    def toggle_theme(self):
-        
-        self.dark_mode.set(not self.dark_mode.get())
-        self.apply_theme()
-        self.save_settings()
-
-    def open_language_manager(self):
-        import tkinter as tk
-        from tkinter import ttk, messagebox
-
-        _load_lang_packs()
-
-        win = tk.Toplevel(self.root)
-        win.title("Language Manager")
-        win.geometry("720x420")
-        win.transient(self.root)
-
-        frame = tk.Frame(win)
-        frame.pack(fill="both", expand=True, padx=12, pady=12)
-
-        cols = ("code", "name", "coverage", "source")
-        tree = ttk.Treeview(frame, columns=cols, show="headings", height=14)
-        tree.heading("code", text="Code")
-        tree.heading("name", text="Display Name")
-        tree.heading("coverage", text="Coverage")
-        tree.heading("source", text="Source")
-        tree.column("code", width=90, anchor="w")
-        tree.column("name", width=300, anchor="w")
-        tree.column("coverage", width=120, anchor="w")
-        tree.column("source", width=120, anchor="w")
-        tree.pack(fill="both", expand=True)
-
-        hint = tk.Label(
-            frame,
-            text="Coverage is relative to English base keys. Edit user_settings/i18n/<code>.json and click Reload.",
-            anchor="w",
-            justify="left",
-        )
-        hint.pack(fill="x", pady=(8, 4))
-
-        btns = tk.Frame(frame)
-        btns.pack(fill="x", pady=(4, 0))
-
-        def _refresh_rows():
-            _load_lang_packs()
-            tree.delete(*tree.get_children())
-            for code in _language_codes_ordered():
-                tree.insert(
-                    "",
-                    "end",
-                    values=(
-                        code,
-                        LANG_DISPLAY.get(code, LANG_CODE_NAME.get(code, code)),
-                        f"{int(LANG_COVERAGE.get(code, 0))}%",
-                        LANG_SOURCE.get(code, "fallback"),
-                    ),
-                )
-
-        def _use_selected():
-            sel = tree.selection()
-            if not sel:
-                messagebox.showinfo("Language Manager", "Select a language first.")
-                return
-            vals = tree.item(sel[0], "values")
-            if not vals:
-                return
-            code = str(vals[0])
-            self.lang_var.set(code)
-            self._on_language_change()
-            try:
-                win.destroy()
-            except Exception:
-                pass
-
-        ttk.Button(btns, text="Reload", command=_refresh_rows).pack(side="left")
-        ttk.Button(btns, text="Export Templates", command=lambda: (_export_lang_templates(), _refresh_rows())).pack(side="left", padx=6)
-        ttk.Button(btns, text="Open i18n Folder", command=lambda: _open_folder(_i18n_dir())).pack(side="left", padx=6)
-        ttk.Button(btns, text="Use Selected", command=_use_selected).pack(side="right")
-
-        _refresh_rows()
-    def show_dashboard(self):
-        
-        dash = tk.Toplevel(self.root)
-        dash.title("Dashboard")
-        dash.geometry("400x250")
-        from tkinter import Label
-
-        total = len(self.stats_list)
-        if total == 0:
-            Label(dash, text="No compression data yet.").pack(pady=20)
-            return
-
-        tot_orig = sum(s["original_size"] for s in self.stats_list)
-        tot_comp = sum(s["compressed_size"] for s in self.stats_list)
-        avg_rat  = sum(s["ratio"] for s in self.stats_list) / total
-        avg_time = sum(s["time_taken"] for s in self.stats_list) / total
-
-        info = (
-            f"Files compressed: {total}\n"
-            f"Total orig size: {format_bytes(tot_orig)}\n"
-            f"Total comp size: {format_bytes(tot_comp)}\n"
-            f"Avg ratio: {avg_rat:.2f}\n"
-            f"Avg time: {avg_time:.1f}s"
-        )
-        Label(dash, text=info, justify="left", font=("Segoe UI", 10))\
-            .pack(padx=10, pady=10)
-
-
 
 
 class DropZone(TkinterDnD.Tk):
@@ -16668,6 +16410,10 @@ def _build_adv_from_args(args) -> dict:
         adv["smart_preproc"] = False
     if getattr(args, "no_learned_seed", False):
         adv["learned_seed"] = False
+    if getattr(args, "no_preflight", False):
+        adv["preflight_advice"] = False
+    if getattr(args, "no_ceiling_downscale", False):
+        adv["ceiling_downscale_retry"] = False
     if getattr(args, "film_grain", None):
         adv["film_grain"] = str(args.film_grain)
     if getattr(args, "trim", None):
@@ -16726,7 +16472,7 @@ def _print_summary(stats_list):
             out_sz = s.get("compressed_size")
             ratio = (out_sz / in_sz) if in_sz else 0
             print(f"- {s.get('filename') or ''}  "
-                  f"{format_bytes(in_sz)} â†’ {format_bytes(out_sz)}  "
+                  f"{format_bytes(in_sz)} -> {format_bytes(out_sz)}  "
                   f"({ratio*100:.1f}% of original)")
         except Exception:
             pass
@@ -16734,7 +16480,7 @@ def _print_summary(stats_list):
 def build_arg_parser():
     p = argparse.ArgumentParser(
         prog="BitCrusher",
-        description="Fast media compression (video/audio/image) â€” GUI by default, CLI with args.",
+        description="Fast media compression (video/audio/image) — GUI by default, CLI with args.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("inputs", nargs="*", help="Files/folders/globs to compress (if empty, GUI launches)")
@@ -16768,6 +16514,11 @@ def build_arg_parser():
                    help="Disable artifact-aware preprocessing (validated deband/deblock/denoise prefilters)")
     p.add_argument("--no-learned-seed", action="store_true",
                    help="Disable learned first-attempt bitrate seeding from the outcome ledger")
+    p.add_argument("--no-preflight", action="store_true",
+                   help="Disable the advisory pre-flight quality/size guardrail (ledger-based)")
+    p.add_argument("--no-ceiling-downscale", action="store_true",
+                   help="Disable the last-resort downscale-and-retry when the size cap "
+                        "cannot be met at native resolution (an oversized file may then ship)")
     p.add_argument("--film-grain", choices=["auto", "off", "force"], default=None,
                    help="AV1 film-grain synthesis: auto (probe & enable on grainy sources, "
                         "default), off, or force. Denoises grain before encoding and re-adds it "

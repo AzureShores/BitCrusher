@@ -127,6 +127,24 @@ def test_estimate_encode_abstains_without_history(tmp_path):
     assert est["n"] == 0 and est["worst"] is None and est["seconds"] is None
 
 
+def test_predict_quality_ignores_black_frame_worst_window(tmp_path):
+    """A min_window==0.0 (black leader/title-card frame tanking one VMAF
+    window) must not drag down the worst-window prediction, but the record's
+    mean VMAF - unaffected by a couple black frames - should still count."""
+    sd = str(tmp_path)
+    tgt = 3 * 1024 * 1024
+    recs = [_rec("x265", worst=44.0, mean=72.0, size=int(tgt * 0.99), target=tgt)
+            for _ in range(3)]
+    recs.append(_rec("x265", worst=0.0, mean=85.0, size=int(tgt * 0.99), target=tgt))
+    _seed(sd, recs)
+
+    pq = ol.predict_quality(sd, _FEATS, "x265", 640, 480, 24.0, 180_000, tgt,
+                            vmaf_model="vmaf_v1.0.16")
+    assert pq["n"] == 4                       # the collapsed record still counts
+    assert pq["worst"] == 44.0                # but doesn't pull the worst-window mean down
+    assert pq["mean"] > 72.0                  # its (unaffected) mean VMAF still contributes
+
+
 def test_scale_isolation_v06_not_used_for_v1(tmp_path):
     sd = str(tmp_path)
     tgt = 3 * 1024 * 1024
