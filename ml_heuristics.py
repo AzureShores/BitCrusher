@@ -266,27 +266,24 @@ def _build_zones_str(scenes: list[dict], fps: float, encoder: str) -> str:
         return f"zones={join}"
     return f"zones={join}"
 
-def analyze_scenes(path: str, encoder: str = "x264", fps_hint: float | None = None,
-                   difficulty: float | None = None) -> dict:
+def _scene_core(path: str, fps_hint: float | None = None) -> dict:
+    """
+    Codec-independent scene analysis: scene-cut boundaries + per-scene frame
+    features. This is the expensive part (a full-file scene-cut pass plus 3-frame
+    sampling per scene), so it is cached by file signature ALONE — encoding the
+    same source with x264 and then x265 reuses one analysis instead of running
+    the ffmpeg work twice. analyze_scenes derives the cheap per-codec fields
+    (zones/gop/aq) from this. Returns {"scenes":[...], "fps":float}.
+    """
     if not _bc_cache_disabled():
         sig = _bc_file_sig(path)
-        cp = _bc_cache_path('scenes', f"{encoder}_{sig}")
+        cp = _bc_cache_path('scene_core', sig)
         cached = _bc_cache_load_json(cp)
         if isinstance(cached, dict) and cached.get('scenes') is not None:
-            # Persist a stable scene-json file path for other modules
-            try:
-                sj = _bc_cache_dir() / f"scenes_{encoder}_{sig}.json"
-                if not sj.exists():
-                    _bc_cache_save_json(sj, cached)
-                cached['scene_json'] = str(sj)
-            except Exception:
-                pass
             return cached
-    """
-    Returns {"zones_str":..., "gop":..., "aq_strength":..., "scenes":[...]}
-    """
+
     info = probe_media(path)
-    v = next((s for s in info.get("streams", []) if s.get("codec_type")=="video"), {})
+    v = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), {})
     fps = _frm_rate_to_float(v.get("avg_frame_rate") or v.get("r_frame_rate")) or float(fps_hint or 30.0)
     b = _detect_scene_boundaries(path)
     scenes: list[dict] = []
@@ -301,7 +298,7 @@ def analyze_scenes(path: str, encoder: str = "x264", fps_hint: float | None = No
             # clamp each timestamp so it never exceeds duration-0.05s (avoid EOF seeks)
             dur_safe = _safe_float(probe_media(path).get("format", {}).get("duration") or 0.0, 0.0)
             if dur_safe <= 0.0:
-                # fallback if probing fails: keep within this scene’s end
+                # fallback if probing fails: keep within this scene's end
                 dur_safe = max(e, s, mid, 0.0)
             safe_max = max(0.0, dur_safe - 0.05)
 
@@ -351,11 +348,45 @@ def analyze_scenes(path: str, encoder: str = "x264", fps_hint: float | None = No
             shutil.rmtree(tmpd, ignore_errors=True)
         w = _scene_weight(sf)
         qp_off = _qp_offset_for_scene(sf)
-        scenes.append({"start":s, "end":e, "weight":w, "qp_offset":qp_off, **sf})
+        scenes.append({"start": s, "end": e, "weight": w, "qp_offset": qp_off, **sf})
+
+    core = {"scenes": scenes, "fps": fps}
+    if not _bc_cache_disabled():
+        try:
+            _bc_cache_save_json(_bc_cache_path('scene_core', _bc_file_sig(path)), core)
+        except Exception:
+            pass
+    return core
+
+
+def analyze_scenes(path: str, encoder: str = "x264", fps_hint: float | None = None,
+                   difficulty: float | None = None) -> dict:
+    if not _bc_cache_disabled():
+        sig = _bc_file_sig(path)
+        cp = _bc_cache_path('scenes', f"{encoder}_{sig}")
+        cached = _bc_cache_load_json(cp)
+        if isinstance(cached, dict) and cached.get('scenes') is not None:
+            # Persist a stable scene-json file path for other modules
+            try:
+                sj = _bc_cache_dir() / f"scenes_{encoder}_{sig}.json"
+                if not sj.exists():
+                    _bc_cache_save_json(sj, cached)
+                cached['scene_json'] = str(sj)
+            except Exception:
+                pass
+            return cached
+    """
+    Returns {"zones_str":..., "gop":..., "aq_strength":..., "scenes":[...]}
+    """
+    # Heavy, codec-independent scene analysis (scene-cut pass + per-scene frame
+    # sampling) is computed once per file and shared across encoders; only the
+    # cheap per-codec fields below (zones/gop/aq) are re-derived here.
+    core = _scene_core(path, fps_hint=fps_hint)
+    scenes = list(core.get("scenes") or [])
+    fps = float(core.get("fps") or fps_hint or 30.0)
 
     # Normalize weights and choose GOP/AQ from global tempo
     tot_len = sum(sc["end"]-sc["start"] for sc in scenes) or 1.0
-    mean_len = tot_len/len(scenes)
     sc_rate = float(len(scenes)/max(0.1, tot_len))
     if sc_rate > 0.6:    gop = 30
     elif sc_rate > 0.25: gop = 60
@@ -587,9 +618,10 @@ def _banding_risk(frames: list[Image.Image]) -> float:
 def extract_media_features(path: str) -> Dict[str, Any]:
     if not _bc_cache_disabled():
         sig = _bc_file_sig(path)
-        # v2: whole-video sampling — old cached entries came from the
-        # first-2.7-seconds sampler and would keep poisoning the advisor.
-        cp = _bc_cache_path('features_v2', sig)
+        # v3: adds banding_risk — old v2 entries lack it and would keep
+        # silently feeding 0.0 to every consumer (ai_advisor, encoder_profiles,
+        # preproc deband gate, outcome_ledger), so bump to force recompute.
+        cp = _bc_cache_path('features_v3', sig)
         cached = _bc_cache_load_json(cp)
         if isinstance(cached, dict) and cached.get('width') is not None:
             return cached
@@ -647,6 +679,7 @@ def extract_media_features(path: str) -> Dict[str, Any]:
         "temporal_ssim_std": float(_temporal_ssim_variance(frames)),
         "motion_mad": float(_motion_mad(frames)),
         "scene_rate": float(_scene_change_rate(path)),
+        "banding_risk": float(_banding_risk(frames)),
     }
 
     # Derive a coarse "spatial_complexity" for legacy callers

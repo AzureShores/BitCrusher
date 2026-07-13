@@ -444,13 +444,18 @@ def _log_event(
     error_code: str,
     message: str,
     context: Dict[str, Any],
+    settings_dir: Optional[str] = None,
 ) -> None:
     """
     Structured logging contract:
     timestamp(ISO8601 UTC), severity, component, operation, error_code, message, context(object)
     Destinations:
-      - logs/errors.jsonl (structured)
-      - logs/bitcrusher.log (human-ish single-line)
+      - <settings_dir>/logs/errors.jsonl (structured)
+      - <settings_dir>/logs/bitcrusher.log (human-ish single-line)
+    Falls back to a CWD-relative "logs" dir only when no settings_dir is given
+    (e.g. direct unit-test calls) — GUI (fixed install dir) and CLI (arbitrary
+    shell CWD) must not end up writing to two different places for the same
+    logical log.
     """
     rec = {
         "timestamp": _utc_now_iso(),
@@ -462,7 +467,7 @@ def _log_event(
         "context": dict(context or {}),
     }
     try:
-        log_dir = Path("logs")
+        log_dir = (Path(settings_dir) / "logs") if settings_dir else Path("logs")
         log_dir.mkdir(parents=True, exist_ok=True)
         # JSONL
         with (log_dir / "errors.jsonl").open("a", encoding="utf-8") as f:
@@ -725,7 +730,13 @@ def plan(inputs: PlanInputs) -> PlanOutputs:
     overhead = get_overhead_factor(inputs.settings_dir, cont, w, h, fps)
     stats = inputs.stats or {}
     scene = inputs.scene
-    overshoot = float(get_dynamic_overshoot(stats, enc, cont, default=1.00, width=w, fps=fps))
+    # Graduated per-content-class trust: prefer the narrower content-class
+    # bucket (screen_ui/film_grain/sports_action/flat_camera/general) once it
+    # has enough observations, else get_dynamic_overshoot falls back to the
+    # coarse encoder/container/resolution/fps bucket unchanged. BC_CONTENT_CLASS
+    # is set by ai_advisor.choose_bitrates_advised earlier in the same encode.
+    _klass = os.environ.get("BC_CONTENT_CLASS") or None
+    overshoot = float(get_dynamic_overshoot(stats, enc, cont, default=1.00, width=w, fps=fps, klass=_klass))
     overshoot = float(max(0.90, min(1.12, overshoot)))
 
     aggressive = int(inputs.target_bytes) < 25_000_000
@@ -803,6 +814,7 @@ def plan(inputs: PlanInputs) -> PlanOutputs:
                     "weight_min": float(pbae.get("summary", {}).get("weight_min") or 0.0),
                     "weight_max": float(pbae.get("summary", {}).get("weight_max") or 0.0),
                 },
+                settings_dir=inputs.settings_dir,
             )
     except Exception as _pbae_e:
         _log_event(
@@ -812,6 +824,7 @@ def plan(inputs: PlanInputs) -> PlanOutputs:
             error_code=E_RUN_PBAE,
             message="PBAE failed; continuing without scene allocation",
             context={"encoder": enc, "container": cont, "err": f"{type(_pbae_e).__name__}: {_pbae_e}"},
+            settings_dir=inputs.settings_dir,
         )
         pbae = None
 
@@ -881,6 +894,7 @@ def plan(inputs: PlanInputs) -> PlanOutputs:
                 error_code=E_RUN_ZONES,
                 message="Zone export failed; continuing without zones",
                 context={"encoder": enc, "container": cont, "err": f"{type(_ze).__name__}: {_ze}"},
+                settings_dir=inputs.settings_dir,
             )
 
         if zone_plan is None:
@@ -907,6 +921,7 @@ def plan(inputs: PlanInputs) -> PlanOutputs:
                     "mult_max": float(zexp.get("mult_max") or 1.0),
                     "merge_applied": bool(zexp.get("merge_applied") or False),
                 },
+                settings_dir=inputs.settings_dir,
             )
         else:
             # Disabled is not an error; log at DEBUG-ish level (INFO with reason for now).
@@ -922,15 +937,9 @@ def plan(inputs: PlanInputs) -> PlanOutputs:
                     "format": str(zexp.get("format") or "none"),
                     "reason": str(zexp.get("reason") or ""),
                 },
+                settings_dir=inputs.settings_dir,
             )
 
-    if pbae is not None:
-        if zone_plan is None:
-            zone_plan = {}
-        zone_plan["pbae"] = pbae
-
-    if isinstance(inputs.scene, dict) and inputs.scene.get("zones") is not None:
-        zone_plan = {"zones": inputs.scene.get("zones"), "zones_str": inputs.scene.get("zones_str")}
     # If zones are enabled, expose a param-string override for downstream ffmpeg two-pass builders.
     # This is append-only and safe: caller may merge into existing -x26x-params strings.
     try:
@@ -953,6 +962,7 @@ def plan(inputs: PlanInputs) -> PlanOutputs:
                             "mult_min": float(zone_plan.get("export", {}).get("mult_min", 1.0)),
                             "mult_max": float(zone_plan.get("export", {}).get("mult_max", 1.0)),
                         },
+                        settings_dir=inputs.settings_dir,
                     )
 
                 elif zfmt == "x265-zones":
@@ -970,6 +980,7 @@ def plan(inputs: PlanInputs) -> PlanOutputs:
                         "mult_min": float(zone_plan.get("export", {}).get("mult_min", 1.0)),
                         "mult_max": float(zone_plan.get("export", {}).get("mult_max", 1.0)),
                     },
+                    settings_dir=inputs.settings_dir,
                 )
 
     except Exception:
@@ -1002,6 +1013,7 @@ def plan(inputs: PlanInputs) -> PlanOutputs:
                     "mult_max": float(zone_plan["export"].get("mult_max", 1.0)),
                     "reason": str(zone_plan["export"].get("reason", "")),
                 },
+                settings_dir=inputs.settings_dir,
             )
     except Exception:
         pass

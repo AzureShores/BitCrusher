@@ -39,7 +39,10 @@ class SizeController:
     min_close_bytes: int = 131072
     max_iter: int = 4
     quality_mode: str = "balanced"
-    target_policy: str = "legacy"
+    # Default to the never-over policy: the size target is a hard ceiling, so a
+    # default-constructed controller must not accept an overshoot. "legacy" is
+    # still selectable but is likewise clamped strictly under the target below.
+    target_policy: str = "no_overshoot_near_max"
     target_tolerance_pct: float = 0.25
     target_tolerance_min_bytes: int = 32768
     max_target_attempts: int = 8
@@ -143,7 +146,10 @@ class SizeController:
 
         if self.close_tol <= 0.0:
             return actual <= hard
-        return abs(actual - hard) <= win
+        # Strictly under the ceiling: an overshoot is never "close enough" to
+        # stop the retry loop (a symmetric window used to accept files OVER the
+        # target by up to `win` bytes, violating the never-over invariant).
+        return (actual <= hard) and (hard - actual) <= win
 
     def should_retry(self, actual_bytes: int) -> bool:
         if self._within_close_window(int(actual_bytes)):

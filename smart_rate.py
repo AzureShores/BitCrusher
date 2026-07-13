@@ -81,14 +81,60 @@ def _fps_bucket(fps: float | None) -> str:
     if f < 60.5: return "45-60"
     return "gt60"
 
-def _ov_key(encoder: str, container: str, width: int | None, fps: float | None) -> str:
+# Minimum observations a content-class-specific bucket needs before it's
+# trusted over the coarser encoder/container/resolution/fps bucket -- same
+# >=3-neighbor gate outcome_ledger's codec-prior pattern already uses
+# (outcome_ledger._MIN_PRIOR_N), so a class bucket earns trust the same way
+# the rest of the ledger's live predictions do, not a fresh invented threshold.
+_KLASS_MIN_N = 3
+
+
+def _ov_key(encoder: str, container: str, width: int | None, fps: float | None,
+           klass: str | None = None) -> str:
     enc = (encoder or "x264").lower()
     cont = (container or "mp4").lower()
-    return f"{enc}|{cont}|{_res_bucket(width)}|{_fps_bucket(fps)}"
+    base = f"{enc}|{cont}|{_res_bucket(width)}|{_fps_bucket(fps)}"
+    return f"{base}|{klass}" if klass else base
+
+
+def get_overshoot_confidence(stats: dict, encoder: str, container: str = "mp4",
+                             width: int | None = None, fps: float | None = None,
+                             full_trust_n: int = 10, klass: str | None = None) -> float:
+    """How many prior observations fed this bucket's overshoot factor --
+    scaled to 0..1, saturating at `full_trust_n`. Lets learn_from_result pass
+    a REAL confidence into update_overshoot's confidence-weighted learning
+    rate instead of the hardcoded 0.5 every caller used before (a thin bucket
+    got the same trust as a well-observed one). Pass `klass` to read the
+    content-class-specific bucket's own observation count."""
+    key = _ov_key(encoder, container, width, fps, klass)
+    try:
+        n = int(stats.get("overshoot_n", {}).get(key, 0) or 0)
+        return max(0.0, min(1.0, n / max(1, int(full_trust_n))))
+    except Exception:
+        return 0.0
+
 
 def get_dynamic_overshoot(stats: dict, encoder: str, container: str = "mp4", default: float = 1.00,
                           width: int | None = None,
-                          fps: float | None = None) -> float:
+                          fps: float | None = None,
+                          klass: str | None = None) -> float:
+    """Graduated per-content-class trust ladder: when `klass` is given (e.g.
+    ai_advisor's DifficultyScore.klass -- screen_ui/film_grain/sports_action/
+    flat_camera/general) and that class's own bucket already has >=_KLASS_MIN_N
+    observations, prefer its narrower, more specific factor. Otherwise fall
+    back to the coarse encoder/container/resolution/fps bucket, same as
+    before -- a thin class bucket never gets to act, it just quietly waits
+    for enough data while the coarse bucket keeps serving requests."""
+    if klass:
+        key_c = _ov_key(encoder, container, width, fps, klass)
+        n_c = int(stats.get("overshoot_n", {}).get(key_c, 0) or 0)
+        if n_c >= _KLASS_MIN_N:
+            try:
+                val = float(stats.get("overshoot", {}).get(key_c, default))
+                if 0.5 < val < 1.5:
+                    return val
+            except Exception:
+                pass
     key = _ov_key(encoder, container, width, fps)
     try:
         val = float(stats.get("overshoot", {}).get(key, default))
@@ -98,6 +144,20 @@ def get_dynamic_overshoot(stats: dict, encoder: str, container: str = "mp4", def
     except Exception:
         return default
 
+
+def _apply_overshoot_update(stats: dict, key: str, ratio: float, lr: float,
+                            confidence: float, cur: float) -> None:
+    try:
+        c = max(0.0, min(1.0, float(confidence)))
+    except Exception:
+        c = 0.5
+    lr_eff = max(0.02, min(0.45, float(lr) * (0.20 + 0.80 * c)))
+    new = max(0.92, min(1.08, (1.0 - lr_eff) * float(cur) + lr_eff * float(ratio)))
+    stats.setdefault("overshoot", {})[key] = float(round(new, 4))
+    n_map = stats.setdefault("overshoot_n", {})
+    n_map[key] = int(n_map.get(key, 0) or 0) + 1
+
+
 def update_overshoot(stats: dict,
                      encoder: str,
                      container: str,
@@ -106,14 +166,19 @@ def update_overshoot(stats: dict,
                      lr: float = 0.25,
                      width: int | None = None,
                      fps: float | None = None,
-                     confidence: float = 0.5) -> dict:
+                     confidence: float = 0.5,
+                     klass: str | None = None) -> dict:
     """
     Confidence-weighted overshoot learning.
     Stores a multiplicative factor such that planned_bytes * factor ~= actual_bytes.
 
+    When `klass` is given, updates BOTH the coarse bucket (unchanged) and the
+    content-class-specific bucket (dual-write) -- the class bucket never
+    fragments the coarse one away, it just accumulates its own narrower
+    history alongside it until get_dynamic_overshoot's trust gate lets it act.
+
     Deterministic update; callers may freeze time.time() in tests.
     """
-    key = _ov_key(encoder, container, width, fps)
     try:
         ratio = float(actual_bytes) / max(1.0, float(int(target_bytes)))
         # slight directional bias to reduce repeated overshoot/undershoot oscillation
@@ -122,22 +187,16 @@ def update_overshoot(stats: dict,
     except Exception:
         return stats
 
+    key = _ov_key(encoder, container, width, fps)
     cur = get_dynamic_overshoot(stats, encoder, container, width=width, fps=fps)
+    _apply_overshoot_update(stats, key, ratio, lr, confidence, cur)
 
-    try:
-        c = float(confidence)
-    except Exception:
-        c = 0.5
-    c = max(0.0, min(1.0, c))
+    if klass:
+        key_c = _ov_key(encoder, container, width, fps, klass)
+        cur_c = get_dynamic_overshoot(stats, encoder, container, width=width, fps=fps, klass=klass)
+        conf_c = get_overshoot_confidence(stats, encoder, container, width=width, fps=fps, klass=klass)
+        _apply_overshoot_update(stats, key_c, ratio, lr, conf_c, cur_c)
 
-    # scale learning rate by confidence (low confidence => slow updates)
-    lr_eff = float(lr) * (0.20 + 0.80 * c)
-    lr_eff = max(0.02, min(0.45, lr_eff))
-
-    new = (1.0 - lr_eff) * float(cur) + lr_eff * float(ratio)
-    new = max(0.92, min(1.08, new))
-
-    stats.setdefault("overshoot", {})[key] = float(round(new, 4))
     stats["updated_at"] = int(time.time())
     return stats
 
@@ -670,8 +729,18 @@ def cache_path(base_dir: str) -> str:
     return str(_ensure_dir(base_dir) / "abr_cache.jsonl")
 
 def _cache_key(input_path: str, target_mb: int, encoder: str) -> str:
+    # Keying on filename alone let two different files that happen to share a
+    # name (common across folders/re-exports) collide and silently reuse a
+    # stale v_bps/width/fps record for unrelated content. Fold in the same
+    # cheap content signature ml_heuristics already computes (path + size +
+    # mtime + first 2MB) so distinct files never collide.
+    try:
+        from ml_heuristics import _bc_file_sig
+        _sig = _bc_file_sig(input_path)
+    except Exception:
+        _sig = Path(input_path).name
     h = hashlib.sha256()
-    h.update(f"{Path(input_path).name}|{int(target_mb)}|{(encoder or 'x264').lower()}".encode("utf-8"))
+    h.update(f"{_sig}|{int(target_mb)}|{(encoder or 'x264').lower()}".encode("utf-8"))
     return h.hexdigest()
 
 def cache_store(base_dir: str, input_path: str, target_mb: int, encoder: str, v_bps: int,
@@ -721,8 +790,15 @@ def learn_from_result(stats_dir: str,
                       target_bytes: int,
                       actual_bytes: int,
                       width_hint: int | None = None,
-                      fps_hint: float | None = None) -> None:
+                      fps_hint: float | None = None,
+                      klass_hint: str | None = None) -> None:
     s = load_stats(stats_dir)
+    # Real per-bucket confidence (how many prior observations this exact
+    # encoder/container/resolution/fps bucket already has) instead of the
+    # fixed 0.5 every caller previously got by omission -- a thin bucket now
+    # updates slowly, a well-observed one updates near full rate.
+    conf = get_overshoot_confidence(s, encoder, container, width=width_hint, fps=fps_hint)
     s = update_overshoot(s, encoder, container, target_bytes, actual_bytes,
-                         lr=0.25, width=width_hint, fps=fps_hint)
+                         lr=0.25, width=width_hint, fps=fps_hint, confidence=conf,
+                         klass=klass_hint)
     save_stats(stats_dir, s)

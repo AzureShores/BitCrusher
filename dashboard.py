@@ -142,3 +142,75 @@ def build_dashboard_model(record: dict) -> dict:
         "under_target": (size_ratio is not None and size_ratio <= 1.0),
         "encode_seconds": outc.get("encode_seconds"),
     }
+
+
+def _trend_stats(vals: list[float]) -> dict:
+    """First-half-vs-second-half mean comparison: cheap, order-preserving
+    signal for whether a predictor's error is trending down over time,
+    without needing a real time-series regression for what's still a small
+    sample in most installs."""
+    if not vals:
+        return {"n": 0, "series": [], "first_half_mean": None,
+               "second_half_mean": None, "improving": None}
+    mid = len(vals) // 2
+    first = vals[:mid] or vals
+    second = vals[mid:] or vals
+    fm = sum(first) / len(first)
+    sm = sum(second) / len(second)
+    return {"n": len(vals), "series": vals,
+           "first_half_mean": round(fm, 4), "second_half_mean": round(sm, 4),
+           "improving": bool(sm < fm)}
+
+
+def build_trend_model(records: list[dict]) -> dict:
+    """Prediction-error trend across MULTIPLE ledger records, in the ledger's
+    own chronological (append) order -- unlike build_dashboard_model, which
+    renders a single encode. One error point per record per predictor: the
+    ledger's own kNN size-deviation predictor (dev_pred), probe_predictor's
+    rate fit (probe_dev_pred/actual), and ai_advisor's Ridge quality model
+    (advisor_q_pred vs the record's own measured VMAF) -- the same three
+    predictors outcome_ledger.shadow_report() calibrates in aggregate, here
+    broken out as a time series so "is it actually improving" is answerable,
+    not just "what's the current error". Pure/no I/O: callers load records via
+    outcome_ledger.ledger_load() first."""
+    dev_err: list[float] = []
+    probe_err: list[float] = []
+    advisor_err: list[float] = []
+    retries: list[float] = []
+    for r in records or []:
+        rec = r or {}
+        sh = rec.get("shadow") or {}
+        attempts = rec.get("attempts") or []
+        op = rec.get("op") or {}
+        src = rec.get("src") or {}
+        if attempts:
+            v_bps, got = attempts[0][0], attempts[0][1]
+            dur = src.get("dur") or op.get("dur") or 0.0
+            audio_bps = op.get("audio_bps") or 0.0
+            try:
+                expected = (float(v_bps) + float(audio_bps)) * max(0.1, float(dur)) / 8.0
+                dev = float(got) / expected if expected > 0 and got else None
+            except Exception:
+                dev = None
+            dp = sh.get("dev_pred")
+            if dev and dp is not None:
+                dev_err.append(round(abs(float(dp) - dev) / dev, 4))
+        pp, pa = sh.get("probe_dev_pred"), sh.get("probe_dev_actual")
+        if pp is not None and pa:
+            probe_err.append(round(abs(float(pp) - float(pa)) / float(pa), 4))
+        qp = sh.get("advisor_q_pred")
+        qa = (rec.get("outcome") or {}).get("vmaf")
+        if qp is not None and qa is not None:
+            advisor_err.append(round(abs(float(qp) - float(qa)), 2))
+        rpe = (rec.get("outcome") or {}).get("retries_per_encode")
+        if rpe is not None:
+            try:
+                retries.append(float(rpe))
+            except Exception:
+                pass
+    return {
+        "ledger_dev": _trend_stats(dev_err),
+        "probe": _trend_stats(probe_err),
+        "advisor": _trend_stats(advisor_err),
+        "retries_per_encode": _trend_stats(retries),
+    }

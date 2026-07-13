@@ -82,6 +82,29 @@ def ledger_append(stats_dir: str, record: dict) -> bool:
         return False
 
 
+_WEBHOOK_OUTCOMES_NAME = "webhook_outcomes.jsonl"
+
+
+def record_webhook_outcome(stats_dir: str, input_path: str, ok: bool) -> bool:
+    """Log whether the post-encode webhook (Discord etc.) POST succeeded, in a
+    separate file from ledger.jsonl -- correlated by (input basename, ts), not
+    merged into the encode record itself. Keeping it separate avoids polluting
+    predict_quality/feature_vector's kNN scans with a differently-shaped record
+    (the webhook fires in the outer caller, after the encode record is already
+    written, so it can't cleanly join into the same JSONL line anyway)."""
+    try:
+        os.makedirs(stats_dir, exist_ok=True)
+        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+              "input": os.path.basename(str(input_path or "")),
+              "ok": bool(ok)}
+        path = os.path.join(stats_dir, _WEBHOOK_OUTCOMES_NAME)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        return True
+    except Exception:
+        return False
+
+
 # Parse cache: the ledger is append-only, so a (size, mtime) key is a safe
 # invalidation signal. A single pre-flight fans out to predict_quality once per
 # candidate codec family; without this, each call re-read and re-parsed the
@@ -129,6 +152,174 @@ def ledger_load(stats_dir: str, encoder_fam: str | None = None,
         recs = [d for d in recs if encoder_family(
             (d.get("op") or {}).get("encoder_eff")) == encoder_fam]
     return recs[-max_records:]
+
+
+def lookup_by_signature(stats_dir: str, sig: str, target_bytes: int,
+                        encoder: str | None = None, tolerance_pct: float = 3.0) -> dict | None:
+    """Instant recall for a repeat/near-duplicate input (the immune-memory-cell
+    idea from the brainstorm): if this exact content signature
+    (ml_heuristics._bc_file_sig -- already folds in path+size+mtime+a content
+    sample) was already encoded to a similar target before, return its
+    converged operating point instead of recomputing from scratch. Read-only
+    diagnostic -- callers decide whether/how to act on it; this does not
+    itself short-circuit anything (smart_rate's abr_cache already does exact
+    same-file/same-target reuse live, this covers the NEAR-duplicate-target
+    case from the richer ledger store and is meant for surfacing to the user,
+    e.g. the CLI --estimate preview)."""
+    if not sig:
+        return None
+    fam = encoder_family(encoder) if encoder else None
+    best = None
+    for r in _load_all_records(ledger_path(stats_dir)):
+        if (r.get("src") or {}).get("input_sig") != sig:
+            continue
+        if not (r.get("outcome") or {}).get("success", True):
+            continue
+        op = r.get("op") or {}
+        if fam and encoder_family(op.get("encoder_eff")) != fam:
+            continue
+        rec_target = op.get("target_bytes") or 0
+        if not rec_target or not target_bytes:
+            continue
+        if abs(rec_target - target_bytes) / max(1, target_bytes) * 100.0 > tolerance_pct:
+            continue
+        ts = r.get("ts") or ""
+        if best is None or ts > best["ts"]:
+            best = {"ts": ts, "encoder": op.get("encoder_eff"), "v_bps": op.get("v_bps"),
+                   "width": op.get("width"), "height": op.get("height"),
+                   "size": (r.get("outcome") or {}).get("size")}
+    return best
+
+
+def skip_race_candidates(stats_dir: str, klass: str | None, candidates: list[str],
+                         min_races: int = 5) -> set[str]:
+    """Codec-race time-saver: a family that has been raced at least
+    `min_races` times for this content class and never once won gets skipped
+    next time -- built entirely from the `race.scores` block already recorded
+    on past ledger records (the "ecosystem market-share" idea from the
+    brainstorm), no new tracking needed. Returns the subset of `candidates`
+    to SKIP racing; empty when there isn't enough history or klass is None
+    (never skip on thin data -- same n-gated caution as codec_prior)."""
+    if not klass or not candidates:
+        return set()
+    fams = {encoder_family(c) for c in candidates}
+    races = 0
+    wins: dict[str, int] = {f: 0 for f in fams}
+    for r in _load_all_records(ledger_path(stats_dir)):
+        if (r.get("outcome") or {}).get("content_class") != klass:
+            continue
+        scores = r.get("race") or {}
+        scores = scores.get("scores") if isinstance(scores, dict) and "scores" in scores else scores
+        if not isinstance(scores, dict) or not scores:
+            continue
+        clean: dict[str, float] = {}
+        for k, v in scores.items():
+            fam = encoder_family(k)
+            if fam not in fams:
+                continue
+            try:
+                clean[fam] = max(clean.get(fam, float("-inf")), float(v))
+            except Exception:
+                continue
+        if len(clean) < 2:
+            continue
+        races += 1
+        winner = max(clean, key=clean.get)
+        wins[winner] = wins.get(winner, 0) + 1
+    if races < min_races:
+        return set()
+    return {f for f in fams if wins.get(f, 0) == 0}
+
+
+def detect_anomalies(stats_dir: str, dev_thresh: float = 0.5, probe_thresh: float = 0.5,
+                     advisor_thresh: float = 15.0) -> list[dict]:
+    """Records where the actual result diverged wildly from EVERY active
+    shadow predictor that had an opinion -- a bug-hunting signal (something
+    genuinely unusual happened: corrupt source, a codec/driver regression,
+    etc.), distinct from the plain training-accuracy signal shadow_report()
+    already reports. A record with only ONE accurate predictor is NOT
+    flagged -- this is for cases where nothing saw it coming. Read-only."""
+    out = []
+    for r in ledger_load(stats_dir):
+        sh = r.get("shadow") or {}
+        present, missed = [], []
+
+        dev = record_deviation(r)
+        dp = sh.get("dev_pred")
+        if dev is not None and dp is not None and dev:
+            present.append("ledger_dev")
+            if abs(float(dp) - dev) / dev > dev_thresh:
+                missed.append("ledger_dev")
+
+        pp, pa = sh.get("probe_dev_pred"), sh.get("probe_dev_actual")
+        if pp is not None and pa:
+            present.append("probe")
+            if abs(float(pp) - float(pa)) / float(pa) > probe_thresh:
+                missed.append("probe")
+
+        qp = sh.get("advisor_q_pred")
+        qa = (r.get("outcome") or {}).get("vmaf")
+        if qp is not None and qa is not None:
+            present.append("advisor")
+            if abs(float(qp) - float(qa)) > advisor_thresh:
+                missed.append("advisor")
+
+        if present and len(missed) == len(present):
+            out.append({"ts": r.get("ts"), "input": os.path.basename(str(r.get("input") or "")),
+                       "missed_by": missed})
+    return out
+
+
+def audit_vmaf_scale(stats_dir: str) -> dict:
+    """Self-audit: population size per VMAF scale tag (v0.6.1 vs v1 vs
+    unknown), plus an explicit reminder of the one live-acting path that does
+    NOT filter by scale today. `predict_deviation` (feeding the live
+    `seed_adjust`) has no `_scale_key` gate, unlike `predict_quality` --
+    currently safe because it never touches VMAF-derived values at all,
+    but any future change adding a VMAF-derived signal to that path must add
+    the same gate `predict_quality` already has, or risks reintroducing the
+    v0.6.1/v1 poisoned-scale scar this module's docstring warns about."""
+    counts: dict[str, int] = {}
+    for r in ledger_load(stats_dir):
+        k = _scale_key(r.get("vmaf_model"))
+        counts[k] = counts.get(k, 0) + 1
+    return {"counts": counts,
+           "note": "predict_deviation/seed_adjust do not filter by VMAF scale "
+                   "(currently safe -- they never touch VMAF values); keep it that "
+                   "way, or add a _scale_key gate the moment that changes."}
+
+
+def recent_prior_ts(stats_dir: str, input_path: str, lookback_hours: float = 24.0) -> str | None:
+    """Timestamp of the most recent prior ledger record for the same input
+    (matched by basename), within `lookback_hours`. An implicit reject signal:
+    the same file being sent through again shortly after a previous encode
+    usually means the user wasn't happy with that result. Forward-pointing
+    only (the new record references the old one) — never mutates history, so
+    the ledger stays append-only."""
+    try:
+        base = os.path.basename(str(input_path or ""))
+        if not base:
+            return None
+        now = time.time()
+        cutoff = now - max(0.0, float(lookback_hours)) * 3600.0
+        best_ts, best_epoch = None, -1.0
+        for r in _load_all_records(ledger_path(stats_dir)):
+            if os.path.basename(str(r.get("input") or "")) != base:
+                continue
+            ts = r.get("ts")
+            if not ts:
+                continue
+            try:
+                epoch = time.mktime(time.strptime(ts, "%Y-%m-%dT%H:%M:%S"))
+            except Exception:
+                continue
+            if epoch < cutoff or epoch > now:
+                continue
+            if epoch > best_epoch:
+                best_epoch, best_ts = epoch, ts
+        return best_ts
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------- deviation --
@@ -234,6 +425,48 @@ def _dist(a: list[float], b: list[float]) -> float:
     return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(n)) / max(1, n))
 
 
+def nearest_neighbors(stats_dir: str, features: dict, encoder: str,
+                      width: int, height: int, fps: float, v_bps: float,
+                      k: int = 3, op_flags: dict | None = None) -> list[dict]:
+    """The k nearest past encodes to this content/operating point (same
+    encoder family), for surfacing to the user -- "N similar encodes averaged
+    X% overshoot" -- rather than just the aggregated prediction predict_
+    deviation()/predict_quality() already compute. Read-only; each entry:
+    {"input", "ts", "dist", "deviation", "size_ratio"}."""
+    fam = encoder_family(encoder)
+    recs = ledger_load(stats_dir, encoder_fam=fam)
+    try:
+        bpp = float(v_bps) / max(1.0, float(width) * float(height) * max(1.0, float(fps)))
+    except Exception:
+        bpp = 0.05
+    q = feature_vector(features, width, height, fps, bpp, op_flags=op_flags)
+
+    cands = []
+    for r in recs:
+        dev = record_deviation(r)
+        if dev is None or not (0.2 <= dev <= 5.0):
+            continue
+        op = r.get("op") or {}
+        try:
+            r_bpp = float(op.get("v_bps") or 0.0) / max(
+                1.0, float(op.get("width") or 1) * float(op.get("height") or 1)
+                * max(1.0, float(op.get("fps") or 30.0)))
+        except Exception:
+            r_bpp = 0.05
+        rv = feature_vector(r.get("features") or {}, op.get("width") or 0,
+                            op.get("height") or 0, op.get("fps") or 30.0, r_bpp,
+                            op_flags=(_op_flags_from_record(r) if op_flags is not None else None))
+        cands.append((_dist(q, rv), r, dev))
+    cands.sort(key=lambda t: t[0])
+    out = []
+    for dist, r, dev in cands[:max(1, int(k))]:
+        out.append({"input": os.path.basename(str(r.get("input") or "")),
+                    "ts": r.get("ts"), "dist": round(dist, 4),
+                    "deviation": round(dev, 3),
+                    "size_ratio": round(dev, 3)})  # dev IS the actual/expected size ratio
+    return out
+
+
 def predict_deviation(stats_dir: str, features: dict, encoder: str,
                       width: int, height: int, fps: float,
                       v_bps: float, k_neighbors: int = 5,
@@ -307,13 +540,39 @@ def shadow_report(stats_dir: str) -> dict:
     base_err = sum(abs(1.0 - a) / a for p, a in pairs) / len(pairs)
     within5 = sum(1 for p, a in pairs if abs(p - a) / a <= 0.05) / len(pairs)
     base5 = sum(1 for p, a in pairs if abs(1.0 - a) / a <= 0.05) / len(pairs)
+
+    # Probe-predictor calibration: predicted vs realized video bitrate, logged
+    # into shadow.probe_dev_pred/probe_dev_actual at write time (previously
+    # untracked anywhere — probe_predictor.py had no self-audit).
+    probe_errs = []
+    for r in recs:
+        sh = r.get("shadow") or {}
+        pp, pa = sh.get("probe_dev_pred"), sh.get("probe_dev_actual")
+        if pp is not None and pa:
+            probe_errs.append(abs(float(pp) - float(pa)) / float(pa))
+
+    # Advisor (ai_advisor Ridge model) calibration: predicted vs measured VMAF.
+    advisor_errs = []
+    for r in recs:
+        sh = r.get("shadow") or {}
+        qp = sh.get("advisor_q_pred")
+        qa = (r.get("outcome") or {}).get("vmaf")
+        if qp is not None and qa is not None:
+            advisor_errs.append(abs(float(qp) - float(qa)))
+
     return {"n": len(pairs),
             "pred_mean_abs_err": round(pred_err, 4),
             "baseline_mean_abs_err": round(base_err, 4),
             "pred_within_5pct": round(within5, 3),
             "baseline_within_5pct": round(base5, 3),
             "verdict": ("predictor beats baseline" if pred_err < base_err
-                        else "baseline still wins - keep shadowing")}
+                        else "baseline still wins - keep shadowing"),
+            "probe": {"n": len(probe_errs),
+                     "mean_abs_pct_err": (round(sum(probe_errs) / len(probe_errs), 4)
+                                          if probe_errs else None)},
+            "advisor": {"n": len(advisor_errs),
+                       "mean_abs_vmaf_err": (round(sum(advisor_errs) / len(advisor_errs), 2)
+                                             if advisor_errs else None)}}
 
 
 def seed_adjust(v_bps: float, dev_pred: float, n: int, *, min_n: int = 3,
@@ -582,7 +841,11 @@ def preflight_advice(stats_dir: str, features: dict, encoder: str,
 
 def build_op(*, target_bytes, encoder_req, encoder_eff, width, height, fps,
              v_bps, audio_bps, audio_copy, preset, quality_mode, preproc,
-             film_grain, film_grain_ratio, spotlight, dur) -> dict:
+             film_grain, film_grain_ratio, spotlight, dur,
+             manual_bitrate_requested=None, advised_v_bps=None,
+             override_applied=False, degraded=False,
+             two_pass=None, encoder_version=None, hwaccel=None,
+             overhead_predicted=None, overhead_measured=None) -> dict:
     """Assemble the EFFECTIVE operating-point block for a ledger record.
 
     `encoder_eff` is the encoder that ACTUALLY ran (the codec-race winner, if a
@@ -591,6 +854,10 @@ def build_op(*, target_bytes, encoder_req, encoder_eff, width, height, fps,
     for the old poisoned-cache scar where a raced-away encoder's result was
     credited to the requested one. Pure and unit-testable; the monolith supplies
     the values, this guarantees the mapping.
+
+    `manual_bitrate_requested`/`advised_v_bps`/`override_applied` capture the
+    user-override delta: what the user explicitly asked for (if anything) vs
+    what the heuristic stack would have picked, as a revealed-preference signal.
     """
     return {"target_bytes": int(target_bytes or 0),
             "encoder_req": str(encoder_req or ""),
@@ -605,7 +872,22 @@ def build_op(*, target_bytes, encoder_req, encoder_eff, width, height, fps,
             "film_grain": film_grain,
             "film_grain_ratio": film_grain_ratio,
             "spotlight": bool(spotlight),
-            "dur": float(dur or 0.0)}
+            "dur": float(dur or 0.0),
+            "manual_bitrate_requested": (int(manual_bitrate_requested)
+                                         if manual_bitrate_requested else None),
+            "advised_v_bps": (int(advised_v_bps) if advised_v_bps else None),
+            "override_applied": bool(override_applied),
+            "degraded": bool(degraded),
+            "two_pass": (bool(two_pass) if two_pass is not None else None),
+            "encoder_version": (str(encoder_version) if encoder_version else None),
+            "hwaccel": (str(hwaccel) if hwaccel else None),
+            # Measured-vs-predicted container muxing overhead: feeds a future
+            # accuracy check on overhead.py's static factor, the same
+            # self-audit pattern as shadow_report -- overhead.py's own
+            # update_overhead() is a separate live-learning fix, out of scope
+            # here (this is read-only observability, not a behavior change).
+            "overhead_predicted": (float(overhead_predicted) if overhead_predicted else None),
+            "overhead_measured": (float(overhead_measured) if overhead_measured else None)}
 
 
 def build_record(*, input_path: str, features: dict, src: dict, op: dict,
@@ -624,7 +906,13 @@ def build_record(*, input_path: str, features: dict, src: dict, op: dict,
                      if isinstance(features, dict) and features.get(k) is not None},
         "src": dict(src or {}),
         "op": dict(op or {}),
-        "attempts": [[int(a), int(b)] for a, b in (attempts or []) if a and b],
+        # Each entry is [v_bps, actual_bytes] or, when the caller has richer
+        # per-attempt bookkeeping, [v_bps, actual_bytes, accepted, reason].
+        # record_deviation only ever reads indices 0/1, so both shapes are
+        # backward/forward compatible.
+        "attempts": [([int(t[0]), int(t[1]), bool(t[2]), str(t[3])] if len(t) >= 4
+                      else [int(t[0]), int(t[1])])
+                     for t in (attempts or []) if t[0] and t[1]],
         "race": (dict(race) if race else None),
         "outcome": dict(outcome or {}),
         "shadow": (dict(shadow) if shadow else None),

@@ -375,8 +375,15 @@ def choose_bitrates_advised(duration_s: float,
     if banding_risk_val > 0.45:
         floor = min(0.985, floor + 0.008)
     if q_pred/100.0 < floor:
+        # Shadow-only: log the predicted bump but do not apply it to the real
+        # encode bitrate. _MODEL is an unvalidated learner (see post_encode_learn)
+        # and must not steer real encodes per the shadow-mode invariant.
         bump = min(0.10, max(0.04, (floor - q_pred/100.0) * 0.6))
-        v_bps = int(v_bps * (1.0 + bump))
+        try:
+            LOG.debug("Quality-floor bump (shadow, not applied): q_pred=%.2f floor=%.3f bump=%.3f",
+                       q_pred, floor, bump)
+        except Exception:
+            pass
 
     # Scene analysis → zones + suggested GOP/AQ (exported via ENV)
     try:
@@ -404,6 +411,22 @@ def choose_bitrates_advised(duration_s: float,
         pass
 
     return int(v_bps), int(a_bps), float(ov)
+
+
+def predict_effective_quality(feats: Dict[str, float], v_bps: int, a_bps: int) -> Optional[float]:
+    """Shadow-only: predicted VMAF at the EFFECTIVE (final) operating point, for
+    ledger calibration tracking (outcome_ledger.shadow_report's advisor block).
+    Never used to steer the real encode -- _MODEL is an unvalidated learner
+    (see post_encode_learn's shadow-mode note), this only logs a prediction."""
+    try:
+        x = _feat_vec(feats or {}, int(v_bps or 0), int(a_bps or 0))
+        try:
+            _MODEL.purge_incompatible(len(x))
+        except Exception:
+            pass
+        return float(_MODEL.predict(x))
+    except Exception:
+        return None
 
 
 def _set_current_input(input_path: str | None) -> None:
@@ -443,9 +466,23 @@ def post_encode_learn(input_path: str,
                       target_bytes: int,
                       actual_bytes: int,
                       a_bps_used: int,
-                      v_bps_used: int) -> None:
-    
+                      v_bps_used: int,
+                      measured_quality: float | None = None) -> None:
+    """
+    Trains _MODEL on a real measured outcome.
+
+    measured_quality must be an actual VMAF/XPSNR-derived score (0-100) for
+    the completed encode. Without one there is nothing to learn from, so the
+    call is skipped rather than fabricating a label from the same closed-form
+    formula predict() already uses as its analytical fallback — training a
+    model to reproduce its own baseline is not learning, it's a no-op that
+    poisons the sample store with self-referential data.
+    """
     if not input_path or not os.path.exists(input_path):
+        return
+    if measured_quality is None:
+        try: LOG.debug("post_encode_learn skipped: no measured_quality supplied")
+        except Exception: pass
         return
     try:
         feats = extract_media_features(input_path)
@@ -454,13 +491,9 @@ def post_encode_learn(input_path: str,
         fps = float(feats.get("fps", 0.0))
         area = max(1.0, w * h)
         fps  = max(1.0, fps)
-        vbppf = float(v_bps_used) / (area * fps)
         sc = float(feats.get("spatial_complexity", 5.5))
 
-        q = 100.0 - 120.0 * math.exp(-4000.0 * max(1e-8, vbppf))
-        if sc >= 7.0:
-            q -= max(0.0, 12.0 * (0.10 - vbppf) * 12.0)
-        q = float(max(40.0, min(99.8, q)))
+        q = float(max(40.0, min(99.8, float(measured_quality))))
 
         _CSV_HEADER = (
             "ts,encoder,width,height,fps,spatial_complexity,entropy_p95,edge_p95,sparsity_mean,"

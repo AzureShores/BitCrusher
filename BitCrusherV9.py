@@ -446,7 +446,7 @@ def _load_theme_choice(default_name: str = "Dark") -> str:
 
 import os, sys, time, platform, traceback, logging, threading, subprocess
 from logging.handlers import RotatingFileHandler
-from smart_rate import learn_from_result, guardrail_adjust
+from smart_rate import learn_from_result, guardrail_adjust, load_stats, save_stats, update_overshoot
 from ai_advisor import (choose_bitrates_advised as choose_bitrates,
                         cache_store_advised as cache_store,
                         cache_lookup_advised as cache_lookup,
@@ -2401,7 +2401,8 @@ def _format_webhook_summary(stats: dict) -> str:
 
 
 def _post_webhook_hardened(url: str, *, file_path: str | None = None,
-                           json_payload: dict | None = None, max_mb: int = 25):
+                           json_payload: dict | None = None, max_mb: int = 25) -> bool:
+    _ok = False
     try:
         import time as _t
         if json_payload:
@@ -2417,6 +2418,7 @@ def _post_webhook_hardened(url: str, *, file_path: str | None = None,
                 try:
                     _r = requests.post(url, json=post_body, timeout=15)
                     if _r is not None and _r.status_code < 500:
+                        _ok = True
                         break
                 except Exception:
                     pass
@@ -2427,12 +2429,15 @@ def _post_webhook_hardened(url: str, *, file_path: str | None = None,
                 for delay in (0, 2, 4):
                     try:
                         with open(file_path, "rb") as f:
-                            requests.post(url, files={"file": f}, timeout=60)
+                            _r2 = requests.post(url, files={"file": f}, timeout=60)
+                        if _r2 is not None and _r2.status_code < 500:
+                            _ok = True
                         break
                     except Exception:
                         _t.sleep(delay)
     except Exception:
         pass
+    return _ok
 
 def _remux_copy(src: str, dst: str, extra_args: list[str] | None = None) -> bool:
 
@@ -2791,6 +2796,31 @@ def default_ffprobe():
 
 def default_ffmpeg():
     return "ffmpeg.exe"     if platform.system() == "Windows" else "ffmpeg"
+
+_FFMPEG_VERSION_CACHE: dict = {}
+
+def ffmpeg_build_version() -> str:
+    """Cached (per-process) ffmpeg build/version string, for ledger provenance
+    -- a silent encoder-build upgrade can shift the rate-distortion curve, and
+    without this tag there was no way to tell an old prediction's inputs from
+    a new one's."""
+    if "v" in _FFMPEG_VERSION_CACHE:
+        return _FFMPEG_VERSION_CACHE["v"]
+    v = ""
+    try:
+        _, _, ff = load_paths()
+    except Exception:
+        ff = default_ffmpeg()
+    try:
+        r = subprocess.run([ff or default_ffmpeg(), "-version"],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           text=True, timeout=5)
+        first_line = (r.stdout or "").splitlines()[0] if r.stdout else ""
+        v = first_line.replace("ffmpeg version ", "").strip()[:80]
+    except Exception:
+        v = ""
+    _FFMPEG_VERSION_CACHE["v"] = v
+    return v
 
 def load_paths():
     print(f"Looking for config.json at: {CONFIG_PATH}")
@@ -3986,6 +4016,29 @@ _ENCODER_CANON = {
     "vp9": "vp9", "libvpx-vp9": "vp9",
     "vvc": "vvc", "libvvenc": "vvc", "h266": "vvc",
 }
+
+
+def _merge_params_string(base: str, overrides: str) -> str:
+    """
+    Merge a colon-separated key=value params string (x264-params/x265-params
+    style) onto another, key-by-key: overrides replace matching keys in base
+    and unmatched override keys are appended. Order of base is preserved.
+    """
+    def _parts(s: str):
+        return [p for p in (s or "").split(":") if p]
+    merged: dict[str, str] = {}
+    order: list[str] = []
+    for p in _parts(base):
+        k = p.split("=", 1)[0]
+        if k not in merged:
+            order.append(k)
+        merged[k] = p
+    for p in _parts(overrides):
+        k = p.split("=", 1)[0]
+        if k not in merged:
+            order.append(k)
+        merged[k] = p
+    return ":".join(merged[k] for k in order)
 
 
 def _canonical_encoder(encoder: str | None) -> str:
@@ -6401,6 +6454,36 @@ def _best_audio_codec(container: str, audio_fmt_pref: str) -> str:
 
 
 
+def _ledger_log_failure(input_path: str, features: dict, stage: str,
+                        error_code: str, error_message: str) -> None:
+    """Best-effort ledger record for an ABORTED encode (undecodable source,
+    infeasible budget, exhausted fallback chain) — closes the learning
+    system's biggest blind spot: previously the ledger only ever saw
+    successful encodes, so nothing recorded what fails or why. Called right
+    before the real error propagates; must never itself raise or mask it."""
+    try:
+        from outcome_ledger import build_record, build_op, ledger_append
+        stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
+        rec = build_record(
+            input_path=input_path,
+            features=(features or {}),
+            src={},
+            op=build_op(target_bytes=0, encoder_req="", encoder_eff="",
+                       width=0, height=0, fps=0.0, v_bps=0, audio_bps=0,
+                       audio_copy=False, preset=None, quality_mode=None,
+                       preproc=None, film_grain=None, film_grain_ratio=None,
+                       spotlight=None, dur=0.0),
+            attempts=[], race=None,
+            outcome={"success": False, "error_stage": str(stage),
+                    "error_code": str(error_code),
+                    "error_message": str(error_message)[:300]},
+            shadow=None, vmaf_model="vmaf_v0.6.1")
+        with _STATS_LOCK:
+            ledger_append(stats_dir, rec)
+    except Exception:
+        pass
+
+
 def compress_video(input_path: str, save_path: str, status_cb,
                    target_size_mb: int, webhook_url: str,
                    advanced_options: dict, cancel_cb) -> dict:
@@ -6516,8 +6599,22 @@ def compress_video(input_path: str, save_path: str, status_cb,
     # (already cached, so this doesn't add a second probe later) is enough to
     # catch a genuinely unreadable file up front without rejecting unusual-but
     # -valid streams that ffmpeg can still decode.
-    if not (_probe_media_cached(input_path).get("streams") or []):
+    _probe_streams = _probe_media_cached(input_path).get("streams") or []
+    if not _probe_streams:
+        _ledger_log_failure(input_path, {}, "probe", "probe_undecodable",
+                            f"Source undecodable or unreadable: {input_path}")
         raise RuntimeError(f"[Probe] Source undecodable or unreadable: {input_path}")
+    # Extension-based routing (get_media_type) only looks at the filename, so an
+    # audio file saved with a video extension (e.g. a voice memo exported as
+    # .mp4) still lands here. It has streams (audio), so the check above passes,
+    # but with no video stream, width/height never get repaired downstream and
+    # the encode is attempted against a degenerate 0x0 geometry — guaranteed to
+    # fail through every fallback tier before raising a generic error. Catch it
+    # here, cheaply, using the probe we already have.
+    if not any(str(s.get("codec_type") or "") == "video" for s in _probe_streams):
+        _ledger_log_failure(input_path, {}, "probe", "probe_no_video_stream",
+                            f"Source has no video stream: {input_path}")
+        raise RuntimeError(f"[Probe] Source has no video stream: {input_path}")
 
     # scene-zones (heuristic fallback): compute once per input; the planner's
     # zone export later overrides these when it produces params. Values are
@@ -6571,6 +6668,9 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 )
 
                 if not _ok_lossless or not os.path.exists(tmp_final):
+                    _ledger_log_failure(input_path, {}, "encode",
+                                        "near_lossless_fallback_failed",
+                                        "Near-lossless fallback encode failed")
                     raise RuntimeError("Near-lossless fallback encode failed")
 
                 out_file = _build_output_path("video", input_path, save_path,
@@ -6663,24 +6763,32 @@ def compress_video(input_path: str, save_path: str, status_cb,
             except Exception:
                 pass
 
-            try:
-                _container = (os.path.splitext(out_file)[1] or ".mp4").lstrip(".").lower() or "mp4"
-                _encoder   = _canonical_encoder(advanced_options.get("encoder") or "x264")
-                _stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
-                with _STATS_LOCK:
-                    learn_from_result(_stats_dir, _encoder, _container, int(target_bytes), int(final_size),
-                                      width_hint=None, fps_hint=None)
-                _jsonl_log("learned", {"encoder": _encoder, "container": _container,
-                                       "target_bytes": int(target_bytes), "actual_bytes": int(final_size)})
-                _adj = guardrail_adjust(int(final_size), int(target_bytes))
-                if _adj is not None:
-                    _jsonl_log("guardrail_suggest", {"scale": float(_adj)})
-            except Exception:
-                pass
+            # Only log a learning outcome when an actual encode ran (the shrink
+            # race won). A pure passthrough remux never exercised the encoder's
+            # rate/quality behavior, so it carries no information for the rate
+            # model — and when the shrink race DID win, the file on disk was
+            # produced by _sc_enc, not the originally-requested encoder; the
+            # ledger/rate-model must attribute to the encoder that actually ran.
+            if _delivered_shrink:
+                try:
+                    _container = (os.path.splitext(out_file)[1] or ".mp4").lstrip(".").lower() or "mp4"
+                    _encoder   = _canonical_encoder(_sc_enc)
+                    _stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
+                    with _STATS_LOCK:
+                        learn_from_result(_stats_dir, _encoder, _container, int(target_bytes), int(final_size),
+                                          width_hint=None, fps_hint=None)
+                    _jsonl_log("learned", {"encoder": _encoder, "container": _container,
+                                           "target_bytes": int(target_bytes), "actual_bytes": int(final_size)})
+                    _adj = guardrail_adjust(int(final_size), int(target_bytes))
+                    if _adj is not None:
+                        _jsonl_log("guardrail_suggest", {"scale": float(_adj)})
+                except Exception:
+                    pass
 
             stats = {
                 "original_size": os.path.getsize(input_path),
                 "compressed_size": final_size,
+                "ceiling_exceeded": bool(int(final_size) > int(target_bytes)),
                 "used_crf": None,
                 "duration": None,
                 "width": None,
@@ -6691,9 +6799,14 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 "passthrough": (not _delivered_shrink),
             }
             _jsonl_log("encode_end", {"type": "video", **stats})
-            
+
             if webhook_url:
-                _post_webhook_hardened(webhook_url, json_payload=stats, file_path=out_file)
+                _wh_ok = _post_webhook_hardened(webhook_url, json_payload=stats, file_path=out_file)
+                try:
+                    from outcome_ledger import record_webhook_outcome as _ol_wh
+                    _ol_wh(os.path.join(USER_SETTINGS_DIR, "stats"), input_path, _wh_ok)
+                except Exception:
+                    pass
             return stats
     except Exception:
         pass
@@ -6937,15 +7050,40 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 advanced_options["preset"] = str(_ppreset)
             if _ptune and not (advanced_options or {}).get("tune"):
                 tune = str(_ptune)
+            # Content-aware AQ/psy-RD tuning: select_profile() computes this for
+            # x264 but nothing downstream ever read it (only preset/tune were
+            # consumed here). x264 only — x265's equivalent output is NOT wired
+            # in: BitCrusherV9.py's x265 two-pass path (~1575) carries a measured
+            # comment that x265 defaults beat psy-rd/aq overrides by ~2 VMAF, so
+            # applying select_profile()'s x265-params here would silently revert
+            # that measured result. Merged onto the existing tuned default (not
+            # replaced) so mbtree/deblock/rc-lookahead/etc. are preserved.
+            _pxp = _prof.get("x264-params")
+            if _pxp:
+                _x264_base_default = ("aq-mode=3:aq-strength=1.00:mbtree=1:deblock=-1,-1:psy-rd=1.10,0.15:"
+                                       "rc-lookahead=80:qcomp=0.70:ipratio=1.30:pbratio=1.20:trellis=2:bframes=8:ref=5")
+                _x264_existing = str((advanced_options or {}).get("x264_params") or "").strip() or _x264_base_default
+                advanced_options["x264_params"] = _merge_params_string(_x264_existing, str(_pxp))
     except Exception as _prof_e:
         status_cb(f"Profile model skipped: {type(_prof_e).__name__}", level="DEBUG")
     manual_bps = int(target_bitrate)
+    _manual_locked = False
 
     try:
         if advanced_options and advanced_options.get("manual_bitrate"):
             manual_bps = int(float(advanced_options["manual_bitrate"]))
+            _manual_locked = True
     except Exception:
         pass
+    # --bitrate / GUI manual bitrate is an explicit user override: it must win
+    # over every heuristic bitrate estimate below (microprobe, planner, ledger
+    # seed), same "honor explicit input" policy already applied to encoder
+    # choice. The feasibility clamp further down still applies — it's a hard
+    # physical constraint (can't fit more bits than the size cap allows), not
+    # a heuristic guess, so an infeasible manual request is still capped/rejected.
+    if _manual_locked and advanced_options is not None:
+        advanced_options["_manual_override"] = True
+        advanced_options["_manual_bitrate_requested"] = int(manual_bps)
 
     # === Microprobe: predict bit budget & choose strategy (fast) ===
     try:
@@ -6978,10 +7116,14 @@ def compress_video(input_path: str, save_path: str, status_cb,
         )
 
     # Use the microprobe's video bitrate estimate as the starting point
+    # (unless the user set an explicit manual bitrate — that wins outright).
     try:
-        target_bitrate = int(max(160_000, mpred.get("video_bps", float(target_bitrate))))
+        _mp_bps = int(max(160_000, mpred.get("video_bps", float(target_bitrate))))
     except Exception:
-        target_bitrate = int(target_bitrate)
+        _mp_bps = int(target_bitrate)
+    if advanced_options is not None:
+        advanced_options["_advised_v_bps"] = _mp_bps
+    target_bitrate = int(manual_bps) if _manual_locked else _mp_bps
 
 
     # Optional planner integration: derive conservative seed rates + params.
@@ -7019,7 +7161,10 @@ def compress_video(input_path: str, save_path: str, status_cb,
             settings_dir=USER_SETTINGS_DIR,
         ))
 
-        target_bitrate = int(max(160_000, int(_plan.video_bps)))
+        _plan_bps = int(max(160_000, int(_plan.video_bps)))
+        if advanced_options is not None:
+            advanced_options["_advised_v_bps"] = _plan_bps
+        target_bitrate = int(manual_bps) if _manual_locked else _plan_bps
         bitrate = int(target_bitrate)
         if not audio_copy:
             audio_br = int(max(48_000, int(_plan.audio_bps)))
@@ -7030,12 +7175,19 @@ def compress_video(input_path: str, save_path: str, status_cb,
         if _ep.get("tune"):
             tune = str(_ep.get("tune"))
         if _ep.get("x264_params"):
-            advanced_options["x264_params"] = str(_ep.get("x264_params"))
-            os.environ["BC_X264_PARAMS"] = str(_ep.get("x264_params"))
+            # Merge onto encoder_profiles' AQ/psy-RD tuning (set above) instead
+            # of overwriting it — the zones string and the AQ/psy params are
+            # different keys in the same colon-separated x264-params value.
+            _prior264 = str((advanced_options or {}).get("x264_params") or "").strip()
+            _zones264 = str(_ep.get("x264_params"))
+            advanced_options["x264_params"] = f"{_prior264}:{_zones264}" if _prior264 else _zones264
+            os.environ["BC_X264_PARAMS"] = advanced_options["x264_params"]
         # x265 zone/params output used to be silently dropped here.
         if _ep.get("x265_params"):
-            advanced_options["x265_params"] = str(_ep.get("x265_params"))
-            os.environ["BC_X265_PARAMS"] = str(_ep.get("x265_params"))
+            _prior265 = str((advanced_options or {}).get("x265_params") or "").strip()
+            _zones265 = str(_ep.get("x265_params"))
+            advanced_options["x265_params"] = f"{_prior265}:{_zones265}" if _prior265 else _zones265
+            os.environ["BC_X265_PARAMS"] = advanced_options["x265_params"]
         if _scene_zones_on and (_ep.get("x264_params") or _ep.get("x265_params")):
             status_cb("[Zones] Scene-aware bitrate zones injected into encoder params.", "INFO")
     except Exception as _plan_e:
@@ -7121,6 +7273,21 @@ def compress_video(input_path: str, save_path: str, status_cb,
             _cands = [_cur_tag, ("x265" if _cur_tag == "x264" else "x264")]
             if _race_av1:
                 _cands.append("av1")
+            # Ecosystem market-share skip: don't spend time racing a codec
+            # that has never once won for this content class after enough
+            # history (skip_race_candidates), the incumbent always stays in
+            # (it's what ships if racing is skipped outright below).
+            try:
+                from outcome_ledger import skip_race_candidates as _ol_skip_race
+                _never_wins = _ol_skip_race(os.path.join(USER_SETTINGS_DIR, "stats"),
+                                            os.environ.get("BC_CONTENT_CLASS") or None, _cands)
+                _never_wins.discard(_cur_tag)
+                if _never_wins:
+                    status_cb(f"[Codec] Skipping race for {sorted(_never_wins)}: never won a race for "
+                              f"this content class across enough prior history.", "DEBUG")
+                    _cands = [c for c in _cands if c not in _never_wins]
+            except Exception:
+                pass
             _race_sink: dict = {}
             _winner = choose_best_codec_by_vmaf(
                 input_path,
@@ -7170,6 +7337,21 @@ def compress_video(input_path: str, save_path: str, status_cb,
     # Floor at HALF the feasible rate: the controller must be able to go BELOW
     # the seed to correct encoder overshoot (rate control is sloppy at low bps).
     _v_floor = int(max(24_000, min(140_000, _feasible_v_bps // 2)))
+    # Hard infeasibility: once _feasible_v_bps drops below 48 kbps, _v_floor's
+    # own 24 kbps minimum is forced ABOVE what actually fits the target, so
+    # every retry lands on the same floor and overshoots identically — no
+    # amount of retrying or downscaling changes an absolute bitrate floor.
+    # Shared by CLI and GUI since this runs inside compress_video() itself.
+    # Threshold matches _v_floor's own clamp (max(24_000, ...)): below 24_000,
+    # the floor is forced ABOVE what fits. 48_000 was 2x too conservative and
+    # false-positive-rejected feasible jobs in [24_000, 48_000).
+    if _feasible_v_bps < 24_000:
+        _ledger_log_failure(input_path, _feats_ctx, "budget", "budget_infeasible",
+                            f"Target {target_bytes} bytes infeasible for {dur:.1f}s of video")
+        raise RuntimeError(
+            f"[Budget] Target {target_bytes} bytes is infeasible for {dur:.1f}s of video: "
+            f"even at the minimum viable bitrate (~{_v_floor} bps) the output cannot fit under "
+            f"the target. Raise the target size, shorten the clip, or lower audio bitrate.")
     if 0 < _feasible_v_bps < int(target_bitrate):
         status_cb(f"[Budget] Small target for this duration: capping video to "
                   f"~{max(24_000, _feasible_v_bps)//1000} kbps so the size cap is reachable"
@@ -7261,6 +7443,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
     # and the size controller still corrects every later attempt. Predictions
     # keep being logged against reality, so shadow_report stays a permanent
     # self-audit; disable with learned_seed=False / --no-learned-seed.
+    _ol_dev, _ol_n = 1.0, 0  # safe defaults if the predictor errors before assigning below
     try:
         from outcome_ledger import predict_deviation as _ol_predict, seed_adjust as _ol_seed
         _ol_stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
@@ -7278,7 +7461,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
             float(fps or fr or 30.0), float(target_bitrate), op_flags=_ol_flags)
         _ol_acted = False
         _ol_seed_on = bool((advanced_options or {}).get(
-            "learned_seed", ADVANCED_DEFAULTS.get("learned_seed", True)))
+            "learned_seed", ADVANCED_DEFAULTS.get("learned_seed", True))) and not _manual_locked
         if _ol_seed_on:
             _ol_new_bps, _ol_acted = _ol_seed(
                 float(target_bitrate), _ol_dev, _ol_n,
@@ -7514,6 +7697,8 @@ def compress_video(input_path: str, save_path: str, status_cb,
         )
         seeded_from_bitrate_observation = False
         if not ok:
+            _ledger_log_failure(input_path, _feats_ctx, "encode", "encode_chain_exhausted",
+                                "Encode failed (bitrate + software fallback + CRF + ffmpeg emergency)")
             raise RuntimeError("Encode failed (bitrate + software fallback + CRF + ffmpeg emergency)")
 
 
@@ -7543,6 +7728,14 @@ def compress_video(input_path: str, save_path: str, status_cb,
     # Bitrate that produced the CURRENTLY KEPT file (used by the result cache
     # and the Max-Quality packing search). Previously only refine updated it.
     accepted_v_bps = int(used_seed_v)
+
+    # Per-attempt ledger trail: every bitrate/resolution attempt across the
+    # whole size-targeting pipeline (primary, seed-calibration, refine, retry
+    # loop, downscale, packing), with an accept/reject reason. Built as its
+    # own explicit list rather than threaded through SizeController._obs so
+    # the tuned retry-loop internals stay untouched — this list is purely
+    # additive bookkeeping for the ledger.
+    _ledger_attempts: list = [(int(used_seed_v), int(final_size), True, "primary")]
 
     # Wall-clock budget: improvement passes (refine/retry/pack) stop once the
     # job has run this long; whatever valid output exists is kept. Guards
@@ -7619,6 +7812,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
             os.replace(cal_tmp, out_file)
             final_size = os.path.getsize(out_file)
             seeded_from_bitrate_observation = True
+            _ledger_attempts.append((int(used_seed_v), int(final_size), True, "seed_calibration"))
         else:
             status_cb("[Seed] Bitrate calibration pass failed; continuing with best available output.", "WARNING")
     # 2) One-shot refine pass if we undershot by >1% (aims at 99% of the
@@ -7653,7 +7847,10 @@ def compress_video(input_path: str, save_path: str, status_cb,
         )
         if _ok_refine and os.path.exists(retry_tmp):
             _refine_size = os.path.getsize(retry_tmp)
-            if _is_better_size(_refine_size, final_size):
+            _refine_accepted = _is_better_size(_refine_size, final_size)
+            _ledger_attempts.append((int(new_v_bitrate), int(_refine_size), bool(_refine_accepted),
+                                     "refine" if _refine_accepted else "refine_worse_than_best"))
+            if _refine_accepted:
                 os.replace(retry_tmp, out_file)
                 final_size = _refine_size
                 used_seed_v = int(new_v_bitrate)
@@ -7679,8 +7876,34 @@ def compress_video(input_path: str, save_path: str, status_cb,
     _qmode_ctl = str((advanced_options or {}).get("quality_mode") or "max").lower()
     _max_attempts_ctl = int((advanced_options or {}).get("iterative_max_attempts")
                             or (3 if _qmode_ctl == "fast" else max(7, ITERATIVE_MAX_ATTEMPTS)))
+
+    # Warm-start the controller's bytes-per-bit search window from the ledger's
+    # own size-deviation prediction (_ol_dev/_ol_n, already computed above)
+    # instead of always starting from the same cold [0.35, 1.80] range. This is
+    # a DIFFERENT lever than the existing live bitrate seed (_ol_seed): that one
+    # picks the first attempt's bitrate; this narrows the controller's internal
+    # k-estimate bounds so fewer retries are needed to bracket a good value,
+    # even when it's already seeded well. Same >=3-neighbor trust gate as the
+    # rest of the ledger's live-acting predictions (seed_adjust's min_n=3).
+    _k_low_ctl, _k_high_ctl = 0.55, 1.25  # SizeController's own cold-start defaults
+    if _ol_n >= 3 and _ol_dev:
+        try:
+            _aud_frac = float(aud_bps_guess) / max(1.0, float(used_seed_v))
+            _k_prior = max(0.35, min(1.80, float(_ol_dev) * (1.0 + _aud_frac) - _aud_frac))
+            _k_low_ctl = max(0.35, _k_prior * 0.85)
+            _k_high_ctl = min(1.80, _k_prior * 1.15)
+        except Exception:
+            _k_low_ctl, _k_high_ctl = 0.55, 1.25
+
     controller = SizeController(
-        target_bytes=int(hard_target_bytes),
+        _k_low=_k_low_ctl, _k_high=_k_high_ctl,
+        # soft_target_bytes (tightened by guardrail_adjust after a same-run
+        # overshoot, always <= hard_target_bytes) so the controller's own
+        # bisection aims a bit under the ceiling next time instead of repeating
+        # the same overshoot. Final accept/reject below still checks the real
+        # hard_target_bytes independently, so this only tightens aim, never
+        # loosens the ceiling.
+        target_bytes=int(soft_target_bytes),
         duration_s=float(dur),
         audio_bps=int(aud_bps_guess),
         container_overhead=1.02,
@@ -7735,7 +7958,13 @@ def compress_video(input_path: str, save_path: str, status_cb,
 
         if _ok_retry and os.path.exists(retry_tmp):
             last_attempt_size = os.path.getsize(retry_tmp)
-            if _is_better_size(last_attempt_size, final_size):
+            _retry_accepted = _is_better_size(last_attempt_size, final_size)
+            _retry_reason = ("retry" if _retry_accepted
+                             else ("retry_over_ceiling" if last_attempt_size > hard_target_bytes
+                                   else "retry_worse_than_best"))
+            _ledger_attempts.append((int(new_v_bitrate), int(last_attempt_size),
+                                     bool(_retry_accepted), _retry_reason))
+            if _retry_accepted:
                 os.replace(retry_tmp, out_file)
                 final_size = int(last_attempt_size)
                 accepted_v_bps = int(new_v_bitrate)
@@ -7767,7 +7996,8 @@ def compress_video(input_path: str, save_path: str, status_cb,
                                   target_bytes=int(target_bytes),
                                   actual_bytes=int(final_size),
                                   width_hint=int(new_w or w or 0),
-                                  fps_hint=float(fps or fr or 0.0))
+                                  fps_hint=float(fps or fr or 0.0),
+                                  klass_hint=(os.environ.get("BC_CONTENT_CLASS") or None))
         except Exception:
             pass
         try:
@@ -7809,7 +8039,10 @@ def compress_video(input_path: str, save_path: str, status_cb,
             if not (_ok and os.path.exists(_tmp)):
                 return None
             _sz = os.path.getsize(_tmp)
-            if _is_better_size(_sz, final_size):
+            _ds_accepted = _is_better_size(_sz, final_size)
+            _ledger_attempts.append((int(v_bps), int(_sz), bool(_ds_accepted),
+                                     "downscale" if _ds_accepted else "downscale_worse_than_best"))
+            if _ds_accepted:
                 os.replace(_tmp, out_file)
                 final_size = int(_sz)
                 accepted_v_bps = int(v_bps)
@@ -7838,6 +8071,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
             _ds_ctl = SizeController(
                 target_bytes=int(hard_target_bytes), duration_s=float(dur),
                 audio_bps=int(aud_bps_guess),
+                min_v_bitrate=int(_v_floor),
                 quality_mode=("quality_first" if _qmode_ctl != "fast" else "balanced"),
                 target_policy="no_overshoot_near_max",
                 max_target_attempts=3)
@@ -7860,7 +8094,11 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 status_cb(f"[Ceiling] Fit under target at {new_w}x{new_h}: {final_size} bytes.", "INFO")
                 break
 
-    if not _within_near_target(int(final_size)):
+    if int(final_size) > int(hard_target_bytes):
+        status_cb(f"[Size] CEILING EXCEEDED: {final_size} bytes vs target {hard_target_bytes} bytes "
+                  f"(over by {int(final_size) - int(hard_target_bytes)}). Retry/downscale exhausted without "
+                  f"reaching the target; shipping the smallest overshoot found.", "ERROR")
+    elif not _within_near_target(int(final_size)):
         status_cb(f"[Size] Final output remains outside target window: {final_size} vs {hard_target_bytes} (window=+/-{_near_tol} bytes).", "WARNING")
 
     # === Max Quality: pack the remaining budget (measured search) ===
@@ -7947,6 +8185,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
             _pk_size = os.path.getsize(pack_tmp)
             controller.record_external(int(_v_try), int(_pk_size))
             if _pk_size > hard_target_bytes:
+                _ledger_attempts.append((int(_v_try), int(_pk_size), False, "pack_over_ceiling"))
                 try:
                     os.remove(pack_tmp)
                 except Exception:
@@ -7955,6 +8194,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 status_cb(f"[Pack] Overshot ceiling ({_pk_size} > {hard_target_bytes}); refining estimate.", "INFO")
                 continue
             if _pk_size <= final_size:
+                _ledger_attempts.append((int(_v_try), int(_pk_size), False, "pack_no_gain"))
                 try:
                     os.remove(pack_tmp)
                 except Exception:
@@ -7968,6 +8208,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
                     _pk_vmaf = float(_pv["vmaf"]) if _pv else None
                 except Exception:
                     _pk_vmaf = None
+            _ledger_attempts.append((int(_v_try), int(_pk_size), True, "pack"))
             os.replace(pack_tmp, out_file)
             final_size = int(_pk_size)
             accepted_v_bps = int(_v_try)
@@ -7994,8 +8235,22 @@ def compress_video(input_path: str, save_path: str, status_cb,
         with _STATS_LOCK:
             # fps may be None (encoder kept source rate) — float(None) used to
             # silently kill this whole block, so learning/caching never happened.
+            _klass_hint = os.environ.get("BC_CONTENT_CLASS") or None
             learn_from_result(_stats_dir, _encoder, _container, int(target_bytes), int(final_size),
-                              width_hint=int(new_w or w or 0), fps_hint=float(fps or fr or 0.0))
+                              width_hint=int(new_w or w or 0), fps_hint=float(fps or fr or 0.0),
+                              klass_hint=_klass_hint)
+            # update_overshoot was the only writer of stats["overshoot"], but had
+            # zero call sites anywhere — planner.py's get_dynamic_overshoot() read
+            # a permanently-inert default=1.00. Wire it so the "learned overshoot
+            # correction" the planner comment describes actually happens.
+            try:
+                _ov_stats = load_stats(_stats_dir)
+                update_overshoot(_ov_stats, _encoder, _container, int(target_bytes), int(final_size),
+                                 width=int(new_w or w or 0), fps=float(fps or fr or 0.0),
+                                 klass=_klass_hint)
+                save_stats(_stats_dir, _ov_stats)
+            except Exception:
+                pass
         # Always record the outcome so repeat jobs can skip probing entirely
         # (previously only retried jobs ever wrote the abr cache).
         try:
@@ -8166,6 +8421,10 @@ def compress_video(input_path: str, save_path: str, status_cb,
     stats = {
         "original_size": os.path.getsize(input_path),
         "compressed_size": final_size,
+        # True only when the ceiling invariant was actually violated (final_size
+        # > hard_target_bytes) after retries/downscale exhausted. Callers should
+        # surface this as a failure, not a quiet log line.
+        "ceiling_exceeded": bool(int(final_size) > int(hard_target_bytes)),
         # ABR/two-pass encodes have no CRF; logging the heuristic suggestion
         # (always ~22) as "used_crf" made every run look identical in the logs.
         "used_crf": (suggested_crf if not (bitrate or target_bitrate) else None),
@@ -8200,26 +8459,128 @@ def compress_video(input_path: str, save_path: str, status_cb,
     # One rich record per completed encode: features + full EFFECTIVE operating
     # point + every retry observation + race scoreboard + v1 VMAF outcome.
     try:
-        from outcome_ledger import build_record, ledger_append, build_op
+        from outcome_ledger import build_record, ledger_append, build_op, recent_prior_ts
         _ol_stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
+        try:
+            from ml_heuristics import _bc_file_sig as _ol_sig_fn
+            _ol_input_sig = _ol_sig_fn(input_path)
+        except Exception:
+            _ol_input_sig = None
         _vm_tag = resolve_vmaf_model() or "version=vmaf_v0.6.1"
         if _vm_tag.startswith("path="):
             _vm_tag = os.path.splitext(os.path.basename(_vm_tag[5:]))[0]
         elif _vm_tag.startswith("version="):
             _vm_tag = _vm_tag[len("version="):]
-        try:
-            _ol_attempts = [(o.v_bps, o.actual_bytes) for o in getattr(controller, "_obs", [])]
-        except Exception:
-            _ol_attempts = []
+        _ol_attempts = list(_ledger_attempts or [])
         _ol_aud_bps = (int((audio_meta or {}).get("bitrate") or 128_000) if audio_copy
                        else int(audio_br or 128_000))
+        _ol_final_v_bps = int(accepted_v_bps or target_bitrate or 0)
+
+        # Measured-vs-predicted mux overhead (self-audit, read-only -- see
+        # build_op's docstring note; overhead.py's own learned-update wiring
+        # is a separate, out-of-scope fix).
+        _overhead_predicted, _overhead_measured = None, None
+        try:
+            from overhead import get_overhead_factor as _ol_overhead_pred
+            _overhead_predicted = _ol_overhead_pred(USER_SETTINGS_DIR, _out_container,
+                                                    int(new_w or 0), int(new_h or 0), float(fps or fr or 0.0))
+            _core_bytes = (float(_ol_final_v_bps) + float(_ol_aud_bps)) * max(0.1, float(dur or 0.0)) / 8.0
+            if _core_bytes > 0 and final_size:
+                _overhead_measured = float(final_size) / _core_bytes
+        except Exception:
+            pass
+
+        # Predicted-vs-actual for every active shadow predictor, not just the
+        # ledger's own dev_pred: probe_predictor's rate fit (previously had no
+        # calibration tracking anywhere) and ai_advisor's quality prediction at
+        # the FINAL effective operating point (its early call, inside
+        # choose_bitrates_advised, predicts for a pre-heuristic bitrate that
+        # never ships). Both are read-only, shadow-only — logged, never acted on.
+        try:
+            _probe_dev_pred = float(mpred.get("video_bps")) if isinstance(mpred, dict) and mpred.get("video_bps") else None
+        except Exception:
+            _probe_dev_pred = None
+        _probe_dev_actual = float(_ol_final_v_bps) if _ol_final_v_bps else None
+        try:
+            from ai_advisor import predict_effective_quality as _ol_adv_q
+            _advisor_q_pred = _ol_adv_q(_feats_ctx or {}, _ol_final_v_bps, _ol_aud_bps)
+        except Exception:
+            _advisor_q_pred = None
+
+        # ai_advisor's Ridge model (_MODEL) was never actually trained in
+        # production: its only prior caller, cache_store_advised (aliased
+        # `cache_store` above), fires before VMAF is measured in this
+        # function, so measured_quality was always None and post_encode_learn
+        # always skipped (by design -- it refuses to self-label). VMAF IS
+        # measured by now (vmaf_result, used for outcome.vmaf below), so learn
+        # from it here instead. Still a no-op whenever VMAF wasn't measured.
+        try:
+            from ai_advisor import post_encode_learn as _ol_advisor_learn
+            _ol_advisor_learn(
+                input_path=input_path, output_path=out_file, encoder=str(encoder or ""),
+                target_bytes=int(hard_target_bytes), actual_bytes=int(final_size or 0),
+                a_bps_used=int(_ol_aud_bps), v_bps_used=_ol_final_v_bps,
+                measured_quality=(vmaf_result or {}).get("vmaf"))
+        except Exception:
+            pass
+
+        # Content class (screen_ui/film_grain/sports_action/flat_camera/general,
+        # set by ai_advisor.choose_bitrates_advised earlier in this encode) --
+        # tagging it on the record is what makes any FUTURE per-class accuracy
+        # analysis (which predictor to trust for which content) possible at
+        # all; without it, ledger records carry raw features but nothing a
+        # meta-predictor could group by.
+        _ol_klass = os.environ.get("BC_CONTENT_CLASS") or None
+
+        # Meta-predictor, shadow-only: log which predictor's aggregate logged
+        # accuracy (shadow_report's mean-abs-err per predictor, extended in
+        # this same phase) currently looks best, WITHOUT routing to it -- live
+        # routing is future work once there's a per-content-class accuracy
+        # comparison (this record's new content_class tag) to justify it, same
+        # promotion bar seed_adjust already had to clear.
+        _ol_meta_favored = None
+        try:
+            from outcome_ledger import shadow_report as _ol_sr
+            _sr = _ol_sr(_ol_stats_dir)
+            _candidates = {"ledger_dev": _sr.get("pred_mean_abs_err"),
+                          "probe": (_sr.get("probe") or {}).get("mean_abs_pct_err"),
+                          "advisor": (_sr.get("advisor") or {}).get("mean_abs_vmaf_err")}
+            _scored = {k: v for k, v in _candidates.items() if v is not None}
+            if _scored:
+                _ol_meta_favored = min(_scored, key=_scored.get)
+        except Exception:
+            _ol_meta_favored = None
+
+        _ol_shadow = dict((advanced_options or {}).get("_ledger_shadow") or {})
+        _ol_shadow["probe_dev_pred"] = _probe_dev_pred
+        _ol_shadow["probe_dev_actual"] = _probe_dev_actual
+        _ol_shadow["advisor_q_pred"] = _advisor_q_pred
+        _ol_shadow["meta_predictor_favored"] = _ol_meta_favored
+
+        # Implicit reject signal: same input re-sent through recently usually
+        # means the prior result wasn't kept. Forward-pointing only.
+        try:
+            _ol_reencode_of = recent_prior_ts(_ol_stats_dir, input_path, lookback_hours=24.0)
+        except Exception:
+            _ol_reencode_of = None
+
         _ol_rec = build_record(
             input_path=input_path,
             features=(_feats_ctx or {}),
             src={"codec": str(_probe_video_stream(input_path).get("codec_name") or ""),
                  "w": int(w or 0), "h": int(h or 0), "fps": float(fr or 0.0),
                  "dur": float(dur or 0.0), "bitrate": int(br or 0),
-                 "size": int(os.path.getsize(input_path)) if os.path.exists(input_path) else 0},
+                 "size": int(os.path.getsize(input_path)) if os.path.exists(input_path) else 0,
+                 "input_sig": _ol_input_sig,
+                 # Full source color/HDR characterization -- already computed
+                 # by extract_media_features (ml_heuristics.py), previously
+                 # dropped entirely at this call site.
+                 "pix_fmt": (_feats_ctx or {}).get("pix_fmt"),
+                 "color_range": (_feats_ctx or {}).get("color_range"),
+                 "color_primaries": (_feats_ctx or {}).get("color_primaries"),
+                 "profile": (_feats_ctx or {}).get("profile"),
+                 "codec_name": (_feats_ctx or {}).get("codec_name"),
+                 "is_hdr": bool((_feats_ctx or {}).get("is_hdr"))},
             # EFFECTIVE operating point: encoder_eff is the encoder that actually
             # ran (codec-race winner), never the request — see build_op.
             op=build_op(
@@ -8228,7 +8589,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 encoder_eff=encoder,
                 width=new_w, height=new_h,
                 fps=(fps or fr),
-                v_bps=(accepted_v_bps or target_bitrate),
+                v_bps=_ol_final_v_bps,
                 audio_bps=_ol_aud_bps, audio_copy=audio_copy,
                 preset=(advanced_options or {}).get("preset"),
                 quality_mode=(advanced_options or {}).get("quality_mode"),
@@ -8236,10 +8597,21 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 film_grain=((advanced_options or {}).get("_film_grain") or {}).get("level"),
                 film_grain_ratio=((advanced_options or {}).get("_film_grain") or {}).get("size_ratio"),
                 spotlight=(advanced_options or {}).get("_spotlight_secs"),
-                dur=dur),
+                dur=dur,
+                manual_bitrate_requested=(advanced_options or {}).get("_manual_bitrate_requested"),
+                advised_v_bps=(advanced_options or {}).get("_advised_v_bps"),
+                override_applied=bool((advanced_options or {}).get("_manual_override")),
+                # Any attempt beyond the primary (retry/refine/downscale/pack)
+                # ran with turbo=True (faster, lower-quality first pass) —
+                # a real quality knob degraded under retry pressure.
+                degraded=bool(len(_ledger_attempts or []) > 1),
+                two_pass=bool(two_pass), encoder_version=ffmpeg_build_version(),
+                hwaccel=hwaccel,
+                overhead_predicted=_overhead_predicted, overhead_measured=_overhead_measured),
             attempts=_ol_attempts,
             race=(advanced_options or {}).get("_race_scores"),
-            outcome={"size": int(final_size or 0),
+            outcome={"success": True,
+                     "size": int(final_size or 0),
                      "vmaf": (vmaf_result or {}).get("vmaf"),
                      "harmonic": (vmaf_result or {}).get("harmonic"),
                      "p5": (vmaf_result or {}).get("p5"),
@@ -8250,16 +8622,27 @@ def compress_video(input_path: str, save_path: str, status_cb,
                      "series_span_s": (vmaf_result or {}).get("series_span_s"),
                      "xpsnr": (xpsnr_result or {}).get("xpsnr"),
                      "xpsnr_min_window": (xpsnr_result or {}).get("min_window"),
-                     "encode_seconds": round(time.time() - t_start, 1)},
-            shadow=(advanced_options or {}).get("_ledger_shadow"),
+                     "encode_seconds": round(time.time() - t_start, 1),
+                     "reencode_of_prior_ts": _ol_reencode_of,
+                     # Flywheel leading indicator: fewer retries -> faster
+                     # ledger growth -> better predictions -> fewer retries.
+                     "retries_per_encode": max(0, len(_ledger_attempts or []) - 1),
+                     "content_class": _ol_klass},
+            shadow=_ol_shadow,
             vmaf_model=_vm_tag)
-        ledger_append(_ol_stats_dir, _ol_rec)
+        with _STATS_LOCK:
+            ledger_append(_ol_stats_dir, _ol_rec)
     except Exception as _ol_e:
         status_cb(f"[Ledger] Record skipped: {type(_ol_e).__name__}", "DEBUG")
 
 
     if webhook_url:
-        _post_webhook_hardened(webhook_url, json_payload=stats, file_path=out_file)
+        _wh_ok = _post_webhook_hardened(webhook_url, json_payload=stats, file_path=out_file)
+        try:
+            from outcome_ledger import record_webhook_outcome as _ol_wh
+            _ol_wh(os.path.join(USER_SETTINGS_DIR, "stats"), input_path, _wh_ok)
+        except Exception:
+            pass
 
 
     status_cb(f"Compress done in {time.time()-t_start:.1f}s")
@@ -13909,6 +14292,12 @@ class CompressorGUI:
                     pass
 
                 if not is_audio:
+                    # Informational only: compress_video() itself now hard-fails
+                    # (RuntimeError) if the target is genuinely infeasible against
+                    # real duration/bitrate math, so we no longer silently rewrite
+                    # the user's requested target_bytes here — that hid failures
+                    # instead of surfacing them, and diverged from CLI (which had
+                    # no equivalent clamp and just shipped an oversized file).
                     from tkinter import messagebox as mbox
                     self._ask_on_main(lambda: mbox.showwarning(
                         self.tr("unreal.title"),
@@ -13924,9 +14313,6 @@ class CompressorGUI:
                         f"{self.tr('unreal.opt.scale')}\n"
                         f"{self.tr('unreal.opt.codec')}"
                     ), default=None)
-
-                    target_bytes = max(1, int(src_bytes * 0.06))
-                    ratio = target_bytes / float(src_bytes)
         except Exception:
             pass
 
@@ -14014,7 +14400,7 @@ class CompressorGUI:
         stats = {}
         try:
 
-            self._current_target_bytes = int(target_bytes)
+            self._last_target_bytes = int(target_bytes)
 
             stats = auto_compress(
                 filepath,
@@ -14028,6 +14414,11 @@ class CompressorGUI:
 
             if stats and stats.get("compressed_size") is not None:
 
+                if stats.get("ceiling_exceeded"):
+                    _status(f"CEILING EXCEEDED: {os.path.basename(filepath)} compressed to "
+                            f"{format_bytes(stats['compressed_size'])}, over the {format_bytes(int(target_bytes))} "
+                            f"target. Retry/downscale could not fit this content under the target.", level="ERROR")
+
                 rec = {
                     "filename":        os.path.basename(filepath),
                     "original_size":   stats["original_size"],
@@ -14035,6 +14426,7 @@ class CompressorGUI:
                     "ratio":           stats["compressed_size"] / stats["original_size"],
                     "time_taken":      time.time() - t0,
                     "vmaf":            stats.get("vmaf"),
+                    "ceiling_exceeded": bool(stats.get("ceiling_exceeded")),
                 }
                 self.stats_list.append(rec)
 
@@ -16500,6 +16892,13 @@ def build_arg_parser():
                    help="Predict delivered size / VMAF / worst-scene / encode time from the "
                         "outcome ledger for each input WITHOUT encoding, then exit. "
                         "Estimates one codec (--encoder) or x264/x265/av1 when unset.")
+    p.add_argument("--learning-trend", action="store_true",
+                   help="Print whether the ledger's shadow predictors (size-deviation, "
+                        "probe rate fit, advisor quality model) are getting more accurate "
+                        "over time, then exit. No input files required.")
+    p.add_argument("--ledger-audit", action="store_true",
+                   help="Print anomalous encodes (where every active predictor missed) "
+                        "and a VMAF-scale population report, then exit. No input files required.")
     p.add_argument("--min-vmaf", type=int, default=0,
                    help="Spend spare budget until output reaches this VMAF (0 = off)")
     p.add_argument("--no-measure", action="store_true",
@@ -16598,6 +16997,39 @@ def cli_main():
         print(msg)
         return 0 if ok else 1
 
+    if getattr(args, "learning_trend", False):
+        from outcome_ledger import ledger_load as _ol_load
+        from dashboard import build_trend_model as _ol_trend
+        _stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
+        _trend = _ol_trend(_ol_load(_stats_dir))
+        _labels = {"ledger_dev": "Ledger size-deviation predictor",
+                  "probe": "Probe rate-fit predictor",
+                  "advisor": "AI-advisor quality predictor",
+                  "retries_per_encode": "Retries per encode (flywheel speed)"}
+        print("[Learning trend] (first-half vs second-half mean, chronological order)")
+        for key, label in _labels.items():
+            t = _trend.get(key) or {}
+            n = t.get("n", 0)
+            if not n:
+                print(f"  {label}: no data yet")
+                continue
+            fm, sm = t.get("first_half_mean"), t.get("second_half_mean")
+            verdict = "improving" if t.get("improving") else "not improving (or too little data to tell)"
+            print(f"  {label}: n={n}  first-half={fm}  second-half={sm}  -> {verdict}")
+        return 0
+
+    if getattr(args, "ledger_audit", False):
+        from outcome_ledger import detect_anomalies as _ol_anom, audit_vmaf_scale as _ol_scale
+        _stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
+        _anoms = _ol_anom(_stats_dir)
+        print(f"[Ledger audit] {len(_anoms)} anomalous record(s) (every active predictor missed):")
+        for a in _anoms[-20:]:
+            print(f"  {a['ts']}  {a['input']}  missed_by={a['missed_by']}")
+        _scale = _ol_scale(_stats_dir)
+        print(f"[Ledger audit] VMAF-scale population: {_scale['counts']}")
+        print(f"  note: {_scale['note']}")
+        return 0
+
     # Send-To / single-instance hand-off: try to give the file(s) to a running
     # window; if none is listening, stash them and fall through to launch the GUI.
     if getattr(args, "enqueue", None):
@@ -16639,6 +17071,9 @@ def cli_main():
     # Prediction-only mode: estimate size/VMAF/time from the ledger, no encode.
     if getattr(args, "estimate", False):
         from outcome_ledger import estimate_encode as _ol_est
+        from outcome_ledger import lookup_by_signature as _ol_sig_lookup
+        from outcome_ledger import nearest_neighbors as _ol_neighbors
+        from ml_heuristics import _bc_file_sig as _ol_sig_fn
         _model = resolve_vmaf_model() or "version=vmaf_v0.6.1"
         _tgt_bytes = max(1, int(round(args.target_size))) * 1024 * 1024
         _encs = ([args.encoder] if getattr(args, "encoder", None)
@@ -16658,6 +17093,16 @@ def cli_main():
             v_bps = max(24_000, int((_tgt_bytes * 8.0 / max(1.0, dur) - _aud) * 0.94))
             print(f"{os.path.basename(src)}  ({w}x{h} {fps:.3g}fps {dur:.0f}s)"
                   f"  ->  target {args.target_size:g} MB")
+            try:
+                _sig = _ol_sig_fn(src)
+                _known = _ol_sig_lookup(_stats_dir, _sig, _tgt_bytes,
+                                        encoder=(args.encoder if getattr(args, "encoder", None) else None))
+                if _known:
+                    print(f"   [known-good] this exact file was already encoded near this target: "
+                          f"{_known['encoder']} @ {_known['v_bps']} bps -> {_known['size']} bytes "
+                          f"({_known['ts']})")
+            except Exception:
+                pass
             for enc in _encs:
                 est = _ol_est(_stats_dir, feats, enc, w, h, fps, v_bps,
                               _tgt_bytes, dur, vmaf_model=_model)
@@ -16671,6 +17116,13 @@ def cli_main():
                 wo = f"worst ~{est['worst']:.0f}" if est["worst"] is not None else "worst n/a"
                 tm = f"~{est['seconds']:.0f}s" if est["seconds"] is not None else "time n/a"
                 print(f"   {fam:5}  ~{sz:5.2f} MB  {vm:11}  {wo:10}  enc {tm:8}  (n={est['n']})")
+                try:
+                    _nn = _ol_neighbors(_stats_dir, feats, enc, w, h, fps, v_bps, k=3)
+                    for _nb in _nn:
+                        print(f"           - similar: {_nb['input']}  "
+                              f"size_ratio x{_nb['size_ratio']:.2f}  (dist {_nb['dist']:.2f}, {_nb['ts']})")
+                except Exception:
+                    pass
         return 0 if _any else 1
 
     out_dir = _infer_save_dir(args.output, files[0])
@@ -16736,6 +17188,9 @@ def cli_main():
                 s["compressed_size"] = os.path.getsize(outp)
             except Exception:
                 pass
+        if s.get("ceiling_exceeded"):
+            status_cb(f"[FAIL] {name} - CEILING EXCEEDED: {s.get('compressed_size')} bytes vs "
+                      f"target {int(target_mb * 1024 * 1024)} bytes.", level="ERROR")
         # Copy-result-to-clipboard (CF_HDROP) when requested (--clipboard).
         try:
             if bool(job_adv.get("copy_to_clipboard")) and outp and os.path.isfile(outp):
@@ -16765,7 +17220,10 @@ def cli_main():
 
     _print_summary(stats_all)
     _n_ok = sum(1 for s in stats_all if s.get("compressed_size"))
-    return 0 if _n_ok else 1
+    _n_over = sum(1 for s in stats_all if s.get("ceiling_exceeded"))
+    if _n_over:
+        _cli_status(f"{_n_over} of {len(stats_all)} file(s) exceeded the size ceiling.", "ERROR")
+    return 0 if (_n_ok and not _n_over) else 1
 
 
 # ---------------------------------------------------------------------------

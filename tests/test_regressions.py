@@ -967,6 +967,457 @@ def test_ledger_records_effective_encoder():
     assert ol.encoder_family(rec["op"]["encoder_eff"]) == "av1"
 
 
+def test_ledger_build_record_attempts_with_reject_reason():
+    """build_record's attempts field must accept the richer
+    [v_bps, actual_bytes, accepted, reason] shape (per-attempt rejection
+    tracking) while staying backward compatible with plain [v_bps, bytes]
+    pairs, and record_deviation (which only ever reads index 0/1) must keep
+    working unchanged against the richer shape."""
+    import outcome_ledger as ol
+
+    op = ol.build_op(target_bytes=5_000_000, encoder_req="x264", encoder_eff="x264",
+                     width=1920, height=1080, fps=30.0, v_bps=1_000_000,
+                     audio_bps=128_000, audio_copy=False, preset="slow",
+                     quality_mode="max", preproc=None, film_grain=None,
+                     film_grain_ratio=None, spotlight=None, dur=60.0)
+    rec = ol.build_record(
+        input_path="x.mp4", features={}, src={}, op=op,
+        attempts=[(1_000_000, 6_000_000, True, "primary"),
+                 (700_000, 4_500_000, False, "retry_worse_than_best"),
+                 (0, 0, False, "encode_failed"),          # zero-byte: must be dropped
+                 (500_000, 4_200_000)],                   # legacy 2-tuple still accepted
+        race=None, outcome={"size": 4_200_000}, shadow=None, vmaf_model="vmaf_v1")
+
+    assert rec["attempts"][0] == [1_000_000, 6_000_000, True, "primary"]
+    assert rec["attempts"][1] == [700_000, 4_500_000, False, "retry_worse_than_best"]
+    assert rec["attempts"][2] == [500_000, 4_200_000]      # legacy pair, no crash
+    assert len(rec["attempts"]) == 3                       # the (0, 0) pair was dropped
+
+    dev = ol.record_deviation(rec)
+    assert dev is not None
+    assert dev == ol.attempt_deviation(1_000_000, 6_000_000, 60.0, 128_000)
+
+
+def test_ledger_build_op_manual_override_fields():
+    """build_op's manual-override fields default safely and round-trip the
+    user-override delta (requested vs advised vs whether it was applied)."""
+    import outcome_ledger as ol
+
+    default_op = ol.build_op(target_bytes=1, encoder_req="x264", encoder_eff="x264",
+                             width=1, height=1, fps=30.0, v_bps=1, audio_bps=1,
+                             audio_copy=False, preset=None, quality_mode=None,
+                             preproc=None, film_grain=None, film_grain_ratio=None,
+                             spotlight=None, dur=1.0)
+    assert default_op["manual_bitrate_requested"] is None
+    assert default_op["advised_v_bps"] is None
+    assert default_op["override_applied"] is False
+
+    op = ol.build_op(target_bytes=1, encoder_req="x264", encoder_eff="x264",
+                     width=1, height=1, fps=30.0, v_bps=300_000, audio_bps=1,
+                     audio_copy=False, preset=None, quality_mode=None,
+                     preproc=None, film_grain=None, film_grain_ratio=None,
+                     spotlight=None, dur=1.0,
+                     manual_bitrate_requested=300_000, advised_v_bps=1_800_000,
+                     override_applied=True)
+    assert op["manual_bitrate_requested"] == 300_000
+    assert op["advised_v_bps"] == 1_800_000
+    assert op["override_applied"] is True
+
+
+def test_video_ledger_records_failure_on_infeasible_budget(monkeypatch, tmp_path):
+    """The ledger must see FAILED encodes, not just successes -- previously
+    every RuntimeError abort (undecodable source, infeasible budget, exhausted
+    fallback chain) skipped the ledger-write block entirely, so nothing ever
+    recorded what fails or why."""
+    import pytest
+    import BitCrusherV9 as bc
+
+    settings_dir = tmp_path / "user_settings"
+    monkeypatch.setattr(bc, "USER_SETTINGS_DIR", str(settings_dir))
+
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"x" * 5_000_000)
+    _stub_video_backend(bc, monkeypatch, duration=600.0)  # 10 min @ 1MB target -> infeasible
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("encoder must not be invoked for an infeasible target")
+    monkeypatch.setattr(bc, "compress_with_handbrake", _must_not_run)
+    monkeypatch.setattr(bc, "_remux_smart", _must_not_run)
+
+    with pytest.raises(RuntimeError, match=r"\[Budget\] Target .* is infeasible"):
+        bc.compress_video(
+            str(src), str(tmp_path), lambda *_a, **_k: None,
+            target_size_mb=1, webhook_url=None,
+            advanced_options={"scene_zones": False, "measure_quality": False,
+                               "quality_mode": "max", "auto_codec": False},
+            cancel_cb=lambda: False,
+        )
+
+    ledger_file = settings_dir / "stats" / "ledger.jsonl"
+    assert ledger_file.exists()
+    recs = [json.loads(l) for l in ledger_file.read_text().splitlines() if l.strip()]
+    assert len(recs) == 1
+    assert recs[0]["outcome"]["success"] is False
+    assert recs[0]["outcome"]["error_stage"] == "budget"
+    assert recs[0]["outcome"]["error_code"] == "budget_infeasible"
+
+
+def test_video_ledger_attempts_carry_accept_reject_reason(monkeypatch, tmp_path):
+    """Every attempt across the retry/downscale pipeline must land in the
+    ledger's attempts field tagged accepted/rejected with a reason -- not just
+    an opaque (v_bps, bytes) pair -- and the accepted (primary) attempt must
+    be present."""
+    import BitCrusherV9 as bc
+
+    settings_dir = tmp_path / "user_settings"
+    monkeypatch.setattr(bc, "USER_SETTINGS_DIR", str(settings_dir))
+
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"x" * 5_000_000)  # skip passthrough
+    _stub_video_backend(bc, monkeypatch, duration=5.0, width=640, height=360)
+
+    target_mb = 2
+    oversized_bytes = int(target_mb * 1024 * 1024 * 1.5)  # always over ceiling
+
+    def fake_handbrake(*, output_path, **_kw):
+        with open(output_path, "wb") as f:
+            f.write(b"z" * oversized_bytes)
+        return True
+
+    monkeypatch.setattr(bc, "compress_with_handbrake", fake_handbrake)
+    monkeypatch.setattr(bc, "_remux_smart", lambda *_a, **_k: False)
+
+    bc.compress_video(
+        str(src), str(tmp_path), lambda *_a, **_k: None,
+        target_size_mb=target_mb, webhook_url=None,
+        advanced_options={"scene_zones": False, "measure_quality": False,
+                           "quality_mode": "max", "auto_codec": False},
+        cancel_cb=lambda: False,
+    )
+
+    ledger_file = settings_dir / "stats" / "ledger.jsonl"
+    recs = [json.loads(l) for l in ledger_file.read_text().splitlines() if l.strip()]
+    assert len(recs) == 1
+    attempts = recs[0]["attempts"]
+    assert len(attempts) >= 2                       # primary + at least one retry/downscale
+    assert all(len(a) == 4 for a in attempts)        # [v_bps, bytes, accepted, reason]
+    assert attempts[0][2] is True and attempts[0][3] == "primary"
+    reasons = {a[3] for a in attempts}
+    assert reasons - {"primary"}                     # at least one non-primary reason present
+    assert all(a[2] is False for a in attempts[1:])  # every retry/downscale here was rejected
+
+
+def test_smart_rate_learn_from_result_confidence_grows_with_observations(tmp_path):
+    """learn_from_result must pass a REAL per-bucket confidence into
+    update_overshoot instead of the old hardcoded 0.5 -- a thin bucket (first
+    observation) should move its overshoot factor much less than a
+    well-observed bucket (many prior observations) reacting to the same
+    fresh ratio."""
+    import pytest
+    import smart_rate as sr
+
+    d = str(tmp_path)
+
+    # First observation ever for this bucket: confidence must be ~0 (n=0
+    # before this update) and the factor should barely move off 1.00.
+    sr.learn_from_result(d, encoder="x264", container="mp4",
+                         target_bytes=1_000_000, actual_bytes=1_100_000,
+                         width_hint=1920, fps_hint=30.0)
+    s = sr.load_stats(d)
+    factor_after_1 = sr.get_dynamic_overshoot(s, "x264", "mp4", width=1920, fps=30.0)
+    assert sr.get_overshoot_confidence(s, "x264", "mp4", width=1920, fps=30.0) == pytest.approx(0.1)
+
+    # Feed the SAME bucket 9 more observations so confidence saturates near 1.0.
+    for _ in range(9):
+        sr.learn_from_result(d, encoder="x264", container="mp4",
+                             target_bytes=1_000_000, actual_bytes=1_100_000,
+                             width_hint=1920, fps_hint=30.0)
+    s = sr.load_stats(d)
+    assert sr.get_overshoot_confidence(s, "x264", "mp4", width=1920, fps=30.0) == pytest.approx(1.0)
+
+    # A fresh, DIFFERENT bucket (different resolution) must start cold again
+    # (n=0 -> confidence 0), independent of the well-observed 1920-wide bucket.
+    assert sr.get_overshoot_confidence(s, "x264", "mp4", width=640, fps=30.0) == 0.0
+
+
+def test_video_warm_start_narrows_k_bounds_from_ledger_prior(monkeypatch, tmp_path):
+    """When the ledger has >=3 similar prior encodes, the SizeController must
+    be constructed with a narrower bytes-per-bit search window than the cold
+    [0.55, 1.25] default -- the warm-start lever that lets the retry loop
+    bracket a good bitrate faster instead of starting from scratch every time."""
+    import outcome_ledger as ol
+    import BitCrusherV9 as bc
+
+    settings_dir = tmp_path / "user_settings"
+    monkeypatch.setattr(bc, "USER_SETTINGS_DIR", str(settings_dir))
+    stats_dir = str(settings_dir / "stats")
+
+    # Seed 3 prior x264 records whose first-attempt deviation consistently
+    # overshoots (dev ~1.8x the naive size estimate) for a plain feature set,
+    # so predict_deviation returns a confident, non-neutral prediction.
+    for i in range(3):
+        rec = ol.build_record(
+            input_path=f"prior_{i}.mp4",
+            features={"entropy_p95": 5.0, "spatial_complexity": 5.0},
+            src={"w": 640, "h": 360, "fps": 30.0, "dur": 5.0},
+            op=ol.build_op(target_bytes=2_000_000, encoder_req="x264", encoder_eff="x264",
+                           width=640, height=360, fps=30.0, v_bps=1_000_000,
+                           audio_bps=128_000, audio_copy=False, preset="medium",
+                           quality_mode="max", preproc=None, film_grain=None,
+                           film_grain_ratio=None, spotlight=None, dur=5.0),
+            attempts=[[1_000_000, int(1_000_000 * 1.8)]],
+            race=None, outcome={"size": int(1_000_000 * 1.8)}, shadow=None,
+            vmaf_model="vmaf_v0.6.1")
+        ol.ledger_append(stats_dir, rec)
+
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"x" * 5_000_000)
+    _stub_video_backend(bc, monkeypatch, duration=5.0, width=640, height=360)
+
+    captured = {}
+    _RealController = bc.SizeController
+
+    class _CapturingController(_RealController):
+        def __init__(self, *a, **kw):
+            captured["_k_low"] = kw.get("_k_low")
+            captured["_k_high"] = kw.get("_k_high")
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(bc, "SizeController", _CapturingController)
+
+    def fake_handbrake(*, output_path, **_kw):
+        with open(output_path, "wb") as f:
+            f.write(b"z" * 1_800_000)
+        return True
+
+    monkeypatch.setattr(bc, "compress_with_handbrake", fake_handbrake)
+    monkeypatch.setattr(bc, "_remux_smart", lambda *_a, **_k: False)
+
+    bc.compress_video(
+        str(src), str(tmp_path), lambda *_a, **_k: None,
+        target_size_mb=2, webhook_url=None,
+        advanced_options={"scene_zones": False, "measure_quality": False,
+                           "quality_mode": "max", "auto_codec": False},
+        cancel_cb=lambda: False,
+    )
+
+    assert captured["_k_low"] is not None and captured["_k_high"] is not None
+    assert (captured["_k_low"], captured["_k_high"]) != (0.55, 1.25)
+    assert 0.35 <= captured["_k_low"] < captured["_k_high"] <= 1.80
+
+
+def test_smart_rate_klass_bucket_falls_back_when_thin(tmp_path):
+    """The graduated per-content-class trust ladder: get_dynamic_overshoot
+    must use the coarse (no-klass) bucket while the content-class-specific
+    bucket is thin (< _KLASS_MIN_N observations), then switch to the
+    class-specific factor once it earns enough data -- exactly the same
+    n-gated trust pattern outcome_ledger's codec-prior already uses,
+    generalized to smart_rate's overshoot buckets."""
+    import pytest
+    import smart_rate as sr
+
+    d = str(tmp_path)
+
+    # Coarse bucket learns a mild overshoot correction from "general" content.
+    for _ in range(5):
+        sr.learn_from_result(d, encoder="x264", container="mp4",
+                             target_bytes=1_000_000, actual_bytes=1_050_000,
+                             width_hint=1920, fps_hint=30.0, klass_hint=None)
+    # A "screen_ui" class bucket with only 1 observation, pulling HARD the
+    # other direction (heavy undershoot) -- must NOT be trusted yet. This
+    # update ALSO dual-writes the coarse bucket (never orphaned), so compare
+    # against the coarse factor as it stands right after this same call, not
+    # a stale pre-observation snapshot.
+    sr.learn_from_result(d, encoder="x264", container="mp4",
+                         target_bytes=1_000_000, actual_bytes=920_000,
+                         width_hint=1920, fps_hint=30.0, klass_hint="screen_ui")
+    s = sr.load_stats(d)
+    coarse_factor = sr.get_dynamic_overshoot(s, "x264", "mp4", width=1920, fps=30.0)
+    thin_klass_read = sr.get_dynamic_overshoot(s, "x264", "mp4", width=1920, fps=30.0, klass="screen_ui")
+    assert thin_klass_read == pytest.approx(coarse_factor, abs=1e-6)  # fell back to coarse
+
+    # Feed the class bucket up to the trust threshold with a CONSISTENT,
+    # strongly different ratio -- now it must win over the coarse bucket.
+    for _ in range(sr._KLASS_MIN_N + 2):
+        sr.learn_from_result(d, encoder="x264", container="mp4",
+                             target_bytes=1_000_000, actual_bytes=920_000,
+                             width_hint=1920, fps_hint=30.0, klass_hint="screen_ui")
+    s = sr.load_stats(d)
+    trusted_klass_read = sr.get_dynamic_overshoot(s, "x264", "mp4", width=1920, fps=30.0, klass="screen_ui")
+    coarse_factor_now = sr.get_dynamic_overshoot(s, "x264", "mp4", width=1920, fps=30.0)
+    # The class bucket's own EMA history (fewer, undershoot-only updates)
+    # necessarily diverged from the coarse bucket's (more updates, mixed
+    # ratios, dual-written on every call) -- and once trusted, the read
+    # returns the class-specific value, not the coarse one.
+    assert trusted_klass_read != pytest.approx(coarse_factor_now, abs=1e-6)
+    assert 0.90 <= trusted_klass_read <= 1.12
+
+    # A DIFFERENT class (unrelated, no observations) must still fall back cleanly.
+    fresh_klass_read = sr.get_dynamic_overshoot(s, "x264", "mp4", width=1920, fps=30.0, klass="film_grain")
+    assert fresh_klass_read == pytest.approx(coarse_factor_now, abs=1e-6)
+
+
+def test_dashboard_build_trend_model():
+    """build_trend_model aggregates predicted-vs-actual error across MULTIPLE
+    ledger records (not one, like build_dashboard_model) into a per-predictor
+    first-half-vs-second-half trend, so 'is this predictor getting better'
+    is answerable from the ledger."""
+    import pytest
+    import dashboard as dash
+
+    records = []
+    # Ledger-dev predictor: error shrinks from 0.5 to 0.1 across 4 records.
+    for i, dev_pred in enumerate([1.5, 1.4, 1.05, 1.0]):
+        records.append({
+            "attempts": [[1_000_000, 1_000_000]],   # dev == 1.0 (actual == naive expectation)
+            "op": {"dur": 8.0, "audio_bps": 0},
+            "src": {"dur": 8.0},
+            "shadow": {"dev_pred": dev_pred},
+            "outcome": {"retries_per_encode": i},
+        })
+
+    model = dash.build_trend_model(records)
+    ld = model["ledger_dev"]
+    assert ld["n"] == 4
+    assert ld["series"] == [pytest.approx(0.5), pytest.approx(0.4),
+                            pytest.approx(0.05), pytest.approx(0.0)]
+    assert ld["improving"] is True
+    assert ld["first_half_mean"] > ld["second_half_mean"]
+
+    assert model["probe"]["n"] == 0          # no probe_dev_pred/actual in the fixture
+    assert model["advisor"]["n"] == 0        # no advisor_q_pred/vmaf in the fixture
+    assert model["retries_per_encode"]["series"] == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_ledger_lookup_by_signature_exact_and_near_match(tmp_path):
+    """lookup_by_signature (the content-fingerprint recall cache) must find a
+    prior encode of the SAME input signature within tolerance_pct of the
+    requested target, prefer the most recent match, and return None for a
+    signature/target/encoder that was never seen."""
+    import outcome_ledger as ol
+
+    d = str(tmp_path)
+    sig = "abc123-same-file"
+
+    def _mk(sig_, target, ts, v_bps, encoder="x264"):
+        op = ol.build_op(target_bytes=target, encoder_req=encoder, encoder_eff=encoder,
+                         width=1280, height=720, fps=30.0, v_bps=v_bps,
+                         audio_bps=128_000, audio_copy=False, preset=None,
+                         quality_mode=None, preproc=None, film_grain=None,
+                         film_grain_ratio=None, spotlight=None, dur=10.0)
+        rec = ol.build_record(input_path="whatever.mp4", features={}, src={"input_sig": sig_},
+                              op=op, attempts=[[v_bps, target]], race=None,
+                              outcome={"size": target}, shadow=None, vmaf_model="vmaf_v0.6.1")
+        rec["ts"] = ts  # build_record stamps "now"; override for deterministic ordering
+        ol.ledger_append(d, rec)
+
+    _mk(sig, 2_000_000, "2026-01-01T00:00:00", 1_500_000)
+    _mk(sig, 2_010_000, "2026-01-02T00:00:00", 1_550_000)   # newer, still within tolerance
+    _mk(sig, 9_000_000, "2026-01-03T00:00:00", 6_000_000)   # way off target, must not match
+    _mk("different-file-sig", 2_000_000, "2026-01-04T00:00:00", 1_600_000)  # different input
+
+    hit = ol.lookup_by_signature(d, sig, 2_000_000, encoder="x264", tolerance_pct=3.0)
+    assert hit is not None
+    assert hit["ts"] == "2026-01-02T00:00:00"  # most recent within-tolerance match wins
+    assert hit["v_bps"] == 1_550_000
+
+    assert ol.lookup_by_signature(d, "never-seen-sig", 2_000_000) is None
+    assert ol.lookup_by_signature(d, sig, 2_000_000, encoder="av1") is None  # wrong family
+    assert ol.lookup_by_signature(d, "", 2_000_000) is None
+
+
+def test_ledger_detect_anomalies_requires_all_predictors_to_miss(tmp_path):
+    """detect_anomalies must flag a record only when EVERY predictor that had
+    an opinion missed badly -- a record where even one predictor was close
+    is not an anomaly, just normal predictor noise."""
+    import outcome_ledger as ol
+
+    d = str(tmp_path)
+
+    def _rec(dev_pred, probe_pred, probe_actual, advisor_pred, advisor_actual, ts):
+        op = ol.build_op(target_bytes=2_000_000, encoder_req="x264", encoder_eff="x264",
+                         width=1280, height=720, fps=30.0, v_bps=1_000_000,
+                         audio_bps=128_000, audio_copy=False, preset=None,
+                         quality_mode=None, preproc=None, film_grain=None,
+                         film_grain_ratio=None, spotlight=None, dur=10.0)
+        rec = ol.build_record(
+            input_path="x.mp4", features={}, src={}, op=op,
+            attempts=[[1_000_000, 1_500_000]],  # dev == 1.5 (actual/expected-ish)
+            race=None, outcome={"size": 1_500_000, "vmaf": advisor_actual}, shadow={
+                "dev_pred": dev_pred, "probe_dev_pred": probe_pred,
+                "probe_dev_actual": probe_actual, "advisor_q_pred": advisor_pred,
+            }, vmaf_model="vmaf_v0.6.1")
+        rec["ts"] = ts
+        ol.ledger_append(d, rec)
+
+    # Ledger-dev predictor was close (1.45 vs actual ~1.42..1.5); NOT anomalous
+    # even though probe/advisor are wildly off.
+    _rec(dev_pred=1.45, probe_pred=3_000_000, probe_actual=1_000_000,
+        advisor_pred=20.0, advisor_actual=90.0, ts="2026-01-01T00:00:00")
+    # Every present predictor missed badly here -> anomalous.
+    _rec(dev_pred=5.0, probe_pred=3_000_000, probe_actual=1_000_000,
+        advisor_pred=20.0, advisor_actual=90.0, ts="2026-01-02T00:00:00")
+
+    anomalies = ol.detect_anomalies(d)
+    assert len(anomalies) == 1
+    assert anomalies[0]["ts"] == "2026-01-02T00:00:00"
+    assert set(anomalies[0]["missed_by"]) == {"ledger_dev", "probe", "advisor"}
+
+
+def test_ledger_audit_vmaf_scale_counts(tmp_path):
+    """audit_vmaf_scale must report a population count per VMAF scale tag and
+    always include the standing safety note (predict_deviation has no scale
+    gate, but is safe only because it never touches VMAF values)."""
+    import outcome_ledger as ol
+
+    d = str(tmp_path)
+    for i, model in enumerate(["vmaf_v0.6.1", "vmaf_v0.6.1", "vmaf_v1"]):
+        op = ol.build_op(target_bytes=1, encoder_req="x264", encoder_eff="x264",
+                         width=1, height=1, fps=30.0, v_bps=1, audio_bps=1,
+                         audio_copy=False, preset=None, quality_mode=None,
+                         preproc=None, film_grain=None, film_grain_ratio=None,
+                         spotlight=None, dur=1.0)
+        rec = ol.build_record(input_path=f"x{i}.mp4", features={}, src={}, op=op,
+                              attempts=[], race=None, outcome={}, shadow=None,
+                              vmaf_model=model)
+        ol.ledger_append(d, rec)
+
+    result = ol.audit_vmaf_scale(d)
+    assert result["counts"].get("v0.6.1") == 2
+    assert result["counts"].get("v1") == 1
+    assert "predict_deviation" in result["note"]
+
+
+def test_ledger_build_op_provenance_and_overhead_fields():
+    """build_op's two_pass/encoder_version/hwaccel/overhead fields round-trip
+    and default to None/False safely when omitted."""
+    import outcome_ledger as ol
+
+    default_op = ol.build_op(target_bytes=1, encoder_req="x264", encoder_eff="x264",
+                             width=1, height=1, fps=30.0, v_bps=1, audio_bps=1,
+                             audio_copy=False, preset=None, quality_mode=None,
+                             preproc=None, film_grain=None, film_grain_ratio=None,
+                             spotlight=None, dur=1.0)
+    assert default_op["two_pass"] is None
+    assert default_op["encoder_version"] is None
+    assert default_op["hwaccel"] is None
+    assert default_op["overhead_predicted"] is None
+    assert default_op["overhead_measured"] is None
+
+    op = ol.build_op(target_bytes=1, encoder_req="x264", encoder_eff="x264",
+                     width=1, height=1, fps=30.0, v_bps=1, audio_bps=1,
+                     audio_copy=False, preset=None, quality_mode=None,
+                     preproc=None, film_grain=None, film_grain_ratio=None,
+                     spotlight=None, dur=1.0,
+                     two_pass=True, encoder_version="ffmpeg 7.1", hwaccel="NVENC",
+                     overhead_predicted=1.02, overhead_measured=1.031)
+    assert op["two_pass"] is True
+    assert op["encoder_version"] == "ffmpeg 7.1"
+    assert op["hwaccel"] == "NVENC"
+    assert op["overhead_predicted"] == 1.02
+    assert op["overhead_measured"] == 1.031
+
+
 def test_ledger_neighbor_op_flags(tmp_path):
     """Operating-point flags steer neighbour matching: two clusters with
     identical content but opposite film-grain settings and opposite size
@@ -1254,6 +1705,149 @@ def test_video_shrink_race_adopts_only_a_clear_win(monkeypatch, tmp_path):
     assert result2["compressed_size"] == int(len(src_bytes) * 0.5)
 
 
+def test_video_shrink_race_attributes_actual_encoder(monkeypatch, tmp_path):
+    """When the source-as-candidate shrink race wins, the ledger/rate-model
+    learning call must attribute the outcome to the encoder that ACTUALLY ran
+    (source_candidate_encoder, default x265), never the originally requested
+    encoder -- the same poisoned-cache bug class the main path already fixed,
+    regressed in this parallel passthrough code path."""
+    import BitCrusherV9 as bc
+
+    src = tmp_path / "in.mp4"
+    src_bytes = b"x" * 3_000_000
+    src.write_bytes(src_bytes)
+
+    def fake_remux(_src, dst, _privacy=None):
+        with open(dst, "wb") as f:
+            f.write(src_bytes)
+        return True
+
+    def fake_shrink_adopt(*, input_path, output_path, **_kw):
+        with open(output_path, "wb") as f:
+            f.write(b"y" * int(len(src_bytes) * 0.5))
+        return True
+
+    _stub_video_backend(bc, monkeypatch)
+    monkeypatch.setattr(bc, "_remux_smart", fake_remux)
+    monkeypatch.setattr(bc, "extract_video_duration", lambda _p: 5.0)
+    monkeypatch.setattr(bc, "compress_with_handbrake", fake_shrink_adopt)
+    monkeypatch.setattr(bc, "compute_vmaf", lambda *_a, **_k: {"vmaf": 99.0})
+
+    captured = {}
+    monkeypatch.setattr(bc, "learn_from_result",
+                         lambda _dir, encoder, *_a, **_k: captured.setdefault("encoder", encoder))
+
+    adv = {"scene_zones": False, "measure_quality": True, "quality_mode": "max",
+           "encoder": "x264"}  # requested x264; shrink race defaults to x265
+    result = bc.compress_video(str(src), str(tmp_path), lambda *_a, **_k: None,
+                                5, None, adv, lambda: False)
+
+    assert result["passthrough"] is False  # shrink race won
+    assert captured["encoder"] == "x265"   # attributed to the encoder that ran, not "x264"
+
+
+def test_video_tiny_target_infeasible_fails_fast(monkeypatch, tmp_path):
+    """A target far below what the structural bitrate floor can reach for the
+    given duration must raise before any encode attempt, not silently proceed
+    to ship an oversized file (or worse, grind through the full retry/fallback
+    chain for 30 minutes before giving up)."""
+    import pytest
+    import BitCrusherV9 as bc
+
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"x" * 5_000_000)  # large enough to skip the passthrough branch
+
+    _stub_video_backend(bc, monkeypatch, duration=600.0)  # 10 min @ 1MB target
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("encoder must not be invoked for an infeasible target")
+
+    monkeypatch.setattr(bc, "compress_with_handbrake", _must_not_run)
+    monkeypatch.setattr(bc, "_remux_smart", _must_not_run)
+
+    with pytest.raises(RuntimeError, match=r"\[Budget\] Target .* is infeasible"):
+        bc.compress_video(
+            str(src), str(tmp_path), lambda *_a, **_k: None,
+            target_size_mb=1, webhook_url=None,
+            advanced_options={"scene_zones": False, "measure_quality": False,
+                               "quality_mode": "max", "auto_codec": False},
+            cancel_cb=lambda: False,
+        )
+
+
+def test_video_ceiling_exceeded_flag_set_after_retry_exhaustion(monkeypatch, tmp_path):
+    """When a target is feasible in principle but every encode attempt
+    (retries AND downscale steps) still lands over the ceiling, compress_video
+    must surface stats["ceiling_exceeded"]=True instead of only a WARNING log
+    that callers never check."""
+    import BitCrusherV9 as bc
+
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"x" * 5_000_000)  # skip passthrough
+
+    _stub_video_backend(bc, monkeypatch, duration=5.0, width=640, height=360)
+
+    target_mb = 2
+    oversized_bytes = int(target_mb * 1024 * 1024 * 1.5)  # always over ceiling
+
+    def fake_handbrake(*, output_path, **_kw):
+        with open(output_path, "wb") as f:
+            f.write(b"z" * oversized_bytes)
+        return True
+
+    monkeypatch.setattr(bc, "compress_with_handbrake", fake_handbrake)
+    monkeypatch.setattr(bc, "_remux_smart", lambda *_a, **_k: False)
+
+    result = bc.compress_video(
+        str(src), str(tmp_path), lambda *_a, **_k: None,
+        target_size_mb=target_mb, webhook_url=None,
+        advanced_options={"scene_zones": False, "measure_quality": False,
+                           "quality_mode": "max", "auto_codec": False},
+        cancel_cb=lambda: False,
+    )
+
+    assert result["ceiling_exceeded"] is True
+    assert result["compressed_size"] > target_mb * 1024 * 1024
+
+
+def test_video_manual_bitrate_override_wins(monkeypatch, tmp_path):
+    """advanced_options['manual_bitrate'] (GUI manual-bitrate field / CLI
+    --bitrate) must actually reach the encoder call, overriding the
+    microprobe/planner/ledger-seed heuristic picks -- it was previously
+    computed and then silently discarded, so --bitrate had zero effect."""
+    import BitCrusherV9 as bc
+
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"x" * 5_000_000)  # large enough to skip passthrough
+
+    _stub_video_backend(bc, monkeypatch, duration=5.0, width=640, height=360)
+
+    captured = {}
+    target_bytes = 2 * 1024 * 1024  # smaller than source: skips the passthrough branch
+
+    def fake_handbrake(*, output_path, bitrate=None, **_kw):
+        if bitrate is not None:
+            captured.setdefault("bitrate", bitrate)
+        with open(output_path, "wb") as f:
+            f.write(b"z" * int(target_bytes * 0.9))
+        return True
+
+    monkeypatch.setattr(bc, "compress_with_handbrake", fake_handbrake)
+    monkeypatch.setattr(bc, "_remux_smart", lambda *_a, **_k: False)
+
+    manual_bps = 300_000  # deliberately far below what heuristics would pick
+    bc.compress_video(
+        str(src), str(tmp_path), lambda *_a, **_k: None,
+        target_size_mb=2, webhook_url=None,
+        advanced_options={"scene_zones": False, "measure_quality": False,
+                           "quality_mode": "max", "auto_codec": False,
+                           "manual_bitrate": str(manual_bps)},
+        cancel_cb=lambda: False,
+    )
+
+    assert captured["bitrate"] == manual_bps
+
+
 def test_video_undecodable_source_fails_fast(monkeypatch, tmp_path):
     """An unreadable/undecodable source must raise immediately with a specific
     [Probe] error, never reach the primary + 5-fallback encode chain."""
@@ -1275,3 +1869,135 @@ def test_video_undecodable_source_fails_fast(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match=r"\[Probe\] Source undecodable or unreadable"):
         bc.compress_video(str(src), str(tmp_path), lambda *_a, **_k: None,
                            2, None, {"scene_zones": False}, lambda: False)
+
+
+def test_video_audio_only_with_video_extension_fails_fast(monkeypatch, tmp_path):
+    """An audio file saved with a video extension (e.g. a voice memo exported
+    as .mp4) has streams (audio), so the undecodable-source guard alone would
+    pass it through -- but with no video stream, width/height never get
+    repaired downstream and the encode would be attempted against degenerate
+    0x0 geometry. Must fail fast here instead, before the encoder chain."""
+    import pytest
+    import BitCrusherV9 as bc
+
+    src = tmp_path / "voice_memo.mp4"
+    src.write_bytes(b"not a real container")
+
+    monkeypatch.setattr(bc, "_probe_media_cached", lambda _p: {
+        "streams": [{"codec_type": "audio", "codec_name": "aac"}]
+    })
+    monkeypatch.setattr(bc, "_jsonl_log", lambda *_a, **_k: None)
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("encoder must not be invoked for a video-less source")
+
+    monkeypatch.setattr(bc, "_remux_smart", _must_not_run)
+    monkeypatch.setattr(bc, "compress_with_handbrake", _must_not_run)
+
+    with pytest.raises(RuntimeError, match=r"\[Probe\] Source has no video stream"):
+        bc.compress_video(str(src), str(tmp_path), lambda *_a, **_k: None,
+                           2, None, {"scene_zones": False}, lambda: False)
+
+
+def test_ai_advisor_quality_floor_bump_is_shadow_only(monkeypatch):
+    """_MODEL is an unvalidated learner (post_encode_learn has no accuracy
+    gate) -- its quality-floor prediction must be logged, never applied to
+    the real encode bitrate."""
+    work = ROOT / "tmp" / "test_regressions"
+    work.mkdir(parents=True, exist_ok=True)
+    src = work / "in_advisor_bump.mp4"
+    src.write_bytes(b"x")
+    os.environ["BC_CURRENT_INPUT"] = str(src)
+
+    import smart_rate
+
+    monkeypatch.setattr(smart_rate, "choose_bitrates", lambda *a, **k: (600_000, 128_000, 1.02))
+    monkeypatch.setattr(smart_rate, "estimate_mux_overhead", lambda **k: 0)
+    monkeypatch.setattr(adv, "extract_media_features", lambda _p: {
+        "width": 1920, "height": 1080, "fps": 30.0,
+        "spatial_complexity": 7.8, "entropy_p95": 7.6, "edge_p95": 6.2,
+        "sparsity_mean": 0.08, "temporal_ssim_std": 0.05, "motion_mad": 0.04,
+        "scene_rate": 0.15, "banding_risk": 0.20, "text_edge_density": 0.12,
+        "graininess": 0.25, "blockiness": 2.0,
+    })
+    # Force a predicted quality far below any difficulty-derived floor
+    # (quality_floor is clamped to >= 0.90, so 10.0/100 is below it regardless
+    # of content features).
+    monkeypatch.setattr(adv._MODEL, "predict", lambda _x: 10.0)
+    monkeypatch.setattr(adv, "analyze_scenes", lambda *_a, **_k: {"zones_str": "", "gop": 60, "aq_strength": 1.0})
+
+    # Small target so audio dominates the budget and the mux-overhead
+    # correction (which independently overwrites v_bps) is skipped -- isolates
+    # whether the quality-floor bump itself still mutates v_bps.
+    v_bps, a_bps, ov = adv.choose_bitrates_advised(
+        duration_s=60.0, target_bytes=500_000, encoder="x264", container="mp4",
+    )
+    assert v_bps == 600_000  # shadow-only: predicted bump must NOT steer real bitrate
+
+
+def test_post_encode_learn_requires_measured_quality(monkeypatch, tmp_path):
+    """Without a real measured quality score, post_encode_learn must skip
+    training rather than fabricating a label from the same closed-form
+    formula predict() uses as its analytical fallback (training a model to
+    reproduce its own baseline is not learning)."""
+    src = tmp_path / "learn_src.mp4"
+    src.write_bytes(b"x")
+
+    monkeypatch.setattr(adv, "_DATA_CSV", tmp_path / "samples.csv")
+
+    def _must_not_fit(*_a, **_k):
+        raise AssertionError("fit_incremental must not run without a real measured_quality")
+
+    monkeypatch.setattr(adv._MODEL, "fit_incremental", _must_not_fit)
+
+    adv.post_encode_learn(
+        input_path=str(src), output_path=str(tmp_path / "out.mp4"),
+        encoder="x264", target_bytes=1_000_000, actual_bytes=950_000,
+        a_bps_used=128_000, v_bps_used=800_000,
+    )
+    assert not (tmp_path / "samples.csv").exists()
+
+
+def test_plan_zone_export_survives_legacy_zones_field():
+    """The PBAE zone exporter's output (zone_plan['export']) must survive even
+    when inputs.scene also carries a legacy 'zones' key -- a prior bug
+    reassigned zone_plan wholesale after the export was built, silently
+    discarding the injected x264-params zones string despite the planner
+    logging a success message."""
+    import planner as pl
+
+    scenes = [
+        {"start": 0.0, "end": 3.0, "difficulty": 0.8},
+        {"start": 3.0, "end": 6.0, "difficulty": 0.2},
+    ]
+    inputs = pl.PlanInputs(
+        target_bytes=5_000_000,
+        duration_s=6.0,
+        encoder="x264",
+        container="mp4",
+        width=1280,
+        height=720,
+        fps=30.0,
+        audio_bps_hint=128_000,
+        scene={"scenes": scenes, "zones": [], "zones_str": ""},
+    )
+    out = pl.plan(inputs)
+    assert out.zone_plan is not None
+    assert "export" in out.zone_plan
+    assert "pbae" in out.zone_plan
+
+
+def test_smart_rate_cache_key_distinguishes_same_named_files(tmp_path):
+    """Two different files that happen to share a filename (common across
+    folders/re-exports) must not collide in the ABR cache and silently reuse
+    a stale v_bps/width/fps record for unrelated content."""
+    import smart_rate as sr
+
+    d1 = tmp_path / "a"; d1.mkdir()
+    d2 = tmp_path / "b"; d2.mkdir()
+    f1 = d1 / "clip.mp4"; f1.write_bytes(b"aaaaaaaaaa")
+    f2 = d2 / "clip.mp4"; f2.write_bytes(b"bbbbbbbbbbbbbbbbbbbb")
+
+    k1 = sr._cache_key(str(f1), 10, "x264")
+    k2 = sr._cache_key(str(f2), 10, "x264")
+    assert k1 != k2
