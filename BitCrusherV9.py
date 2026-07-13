@@ -455,6 +455,8 @@ from ml_heuristics import analyze_and_advise, extract_media_features
 from size_controller import SizeController
 from encoder_profiles import select_profile
 from planner import PlanInputs, plan as plan_encode
+from text_utils import _EMOJI_RE, _mojibake_score, _normalize_text, format_bytes
+from webhook import DiscordWebhookClient, _format_webhook_summary, _post_webhook_hardened
 
 def _ensure_dir(p):
     try: os.makedirs(p, exist_ok=True)
@@ -463,107 +465,6 @@ def _ensure_dir(p):
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _LOG_DIR = _ensure_dir(os.path.join(_SCRIPT_DIR, "logs"))
-
-def _mojibake_score(s: str) -> int:
-    try:
-        t = str(s or "")
-    except Exception:
-        return 0
-    markers = ("Ã", "Â", "â", "ð", "Ð", "Ñ", "�")
-    return sum(t.count(m) for m in markers)
-
-def _normalize_text(msg) -> str:
-    """
-    Repair common UTF-8/CP1252 mojibake and normalize risky UI glyphs.
-    """
-    try:
-        text = str(msg)
-    except Exception:
-        return str(msg)
-
-    # Fast path fixes for already-corrupted sequences seen in UI/logs.
-    direct_map = {
-        "…": "...",
-        "–": "-",
-        "—": "-",
-        "•": "-",
-        "→": "->",
-        "←": "<-",
-        "↑": "Up",
-        "↓": "Down",
-        "×": "x",
-        "≥": ">=",
-        "≤": "<=",
-        "±": "+/-",
-        "“": '"',
-        "”": '"',
-        "‘": "'",
-        "’": "'",
-    }
-    for bad, good in direct_map.items():
-        text = text.replace(bad, good)
-
-    best = text
-    best_score = _mojibake_score(best)
-
-    for _ in range(3):
-        improved = False
-        for codec in ("cp1252", "latin1"):
-            try:
-                cand = best.encode(codec, errors="strict").decode("utf-8", errors="strict")
-            except Exception:
-                continue
-            score = _mojibake_score(cand)
-            if score < best_score:
-                best, best_score = cand, score
-                improved = True
-        if not improved:
-            break
-
-    # Convert typographic characters to plain ASCII for consistent GUI rendering.
-    ascii_map = {
-        "\u2026": "...",
-        "\u2013": "-",
-        "\u2014": "-",
-        "\u2022": "-",
-        "\u2192": "->",
-        "\u2190": "<-",
-        "\u2191": "Up",
-        "\u2193": "Down",
-        "\u00d7": "x",
-        "\u2265": ">=",
-        "\u2264": "<=",
-        "\u00b1": "+/-",
-        "\u2018": "'",
-        "\u2019": "'",
-        "\u201c": '"',
-        "\u201d": '"',
-        "\ufeff": "",
-    }
-    for bad, good in ascii_map.items():
-        best = best.replace(bad, good)
-
-    # Strip decorative emoji/pictographs. They read as unprofessional in the UI
-    # and turn into mojibake ("") in non-UTF-8 log sinks. Punctuation stays.
-    best = _EMOJI_RE.sub("", best)
-    best = re.sub(r"[ \t]{2,}", " ", best)          # tidy gaps left behind
-    best = re.sub(r"(?m)^[ \t]+", "", best)          # trim leading space per line
-    return best.strip("\n") if "\n" in best else best.strip()
-
-
-# Emoji / pictograph / symbol ranges (dingbats, supplemental symbols, flags,
-# variation selectors, ZWJ) — everything the status messages decorate with.
-_EMOJI_RE = re.compile(
-    "["
-    "\U0001F000-\U0001FAFF"
-    "\U00002600-\U000027BF"
-    "\U00002B00-\U00002BFF"
-    "\U0001F1E6-\U0001F1FF"
-    "\U0000FE00-\U0000FE0F"
-    "\U0000200D"
-    "\U00002190-\U000021FF"
-    "]+"
-)
 
 class _MojibakeFilter(logging.Filter):
     def filter(self, record):
@@ -1811,106 +1712,6 @@ def log_exc(msg="Unhandled exception"): LOG.exception(msg)
 def log_tool_paths(handbrake, ffmpeg, ffprobe):
     LOG.info("Tool paths - HandBrakeCLI=%s | ffmpeg=%s | ffprobe=%s", handbrake, ffmpeg, ffprobe)
 
-class DiscordWebhookClient:
-    """
-    Robust Discord webhook client with:
-      • session reuse + timeouts
-      • jittered exponential backoff with 429 'Retry-After' honor
-      • message auto-chunking (2k chars)
-      • optional username, avatar_url, tts, thread_id, silent flag
-      • basic embed/file support (≤25MB)
-    """
-    def __init__(self, url: str, *, username: str|None=None, avatar_url: str|None=None,
-                 tts: bool=False, thread_id: str|None=None, timeout: float=15.0,
-                 max_retries: int=5, silent: bool=False):
-        import requests, time, random
-        self.url = (url or "").strip()
-        self.username = username
-        self.avatar_url = avatar_url
-        self.tts = bool(tts)
-        self.thread_id = thread_id
-        self.timeout = float(timeout)
-        self.max_retries = int(max_retries)
-        self.silent = bool(silent)
-        self._session = requests.Session()
-        self._session.headers.update({"User-Agent": "BitCrusher/9 Webhook"})
-        self._alive = bool(self.url)
-
-    def set_options(self, **kw):
-        for k,v in kw.items():
-            if hasattr(self, k): setattr(self, k, v)
-
-    def set_url(self, url: str):
-        # Was called by load_profile / settings-apply but never defined, so
-        # changing the webhook URL silently never took effect. Update + re-arm.
-        self.url = (url or "").strip()
-        self._alive = bool(self.url)
-
-    def _post(self, json=None, files=None):
-        import time, random
-        if not self._alive: return False
-        url = self.url
-        params = {}
-        if self.thread_id: params["thread_id"] = str(self.thread_id)
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                r = self._session.post(url, params=params, json=json, files=files, timeout=self.timeout)
-                if r.status_code == 204 or (200 <= r.status_code < 300):
-                    return True
-                if r.status_code == 429:
-                    retry_after = float(r.headers.get("Retry-After", "1"))
-                    time.sleep(max(0.5, retry_after))
-                else:
-                    # jittered backoff on transient 5xx
-                    if 500 <= r.status_code < 600 and attempt < self.max_retries:
-                        time.sleep(min(10.0, (2 ** attempt) + random.random()))
-                    else:
-                        return False
-            except Exception:
-                if attempt >= self.max_retries: return False
-                time.sleep(min(10.0, (2 ** attempt) + random.random()))
-
-    def send_text(self, text: str, *, allow_everyone: bool=False):
-        text = _normalize_text(text)
-        if not self._alive or not text: return False
-        # Split into ≤2000 char chunks
-        CHUNK = 1900
-        chunks = [text[i:i+CHUNK] for i in range(0, len(text), CHUNK)] or [text]
-        ok = True
-        for c in chunks:
-            payload = {
-                "content": c,
-                "tts": self.tts,
-                "allowed_mentions": ({"parse": ["everyone","roles","users"]} if allow_everyone else {"parse": []}),
-            }
-            if self.username:   payload["username"] = self.username
-            if self.avatar_url: payload["avatar_url"] = self.avatar_url
-            if self.silent:     payload["flags"] = 4096  # suppress embeds
-            ok = self._post(json=payload) and ok
-        return ok
-
-    def send_file(self, file_path: str, *, caption: str|None=None):
-        import os
-        if not self._alive or not os.path.exists(file_path): return False
-        try:
-            size = os.path.getsize(file_path)
-            if size > 25*1024*1024:  # cannot upload; send text fallback
-                name = os.path.basename(file_path)
-                return self.send_text(f"{caption or ''}\n`{name}` ({size//1024} KB) too large for upload.")
-            with open(file_path, "rb") as f:
-                files = {"file": (os.path.basename(file_path), f, "application/octet-stream")}
-                payload = {}
-                if caption:
-                    payload["content"] = caption
-                    if self.username:   payload["username"] = self.username
-                    if self.avatar_url: payload["avatar_url"] = self.avatar_url
-                return self._post(json=payload or None, files=files)
-        except Exception:
-            return False
-
-
 def bridge_gui_logger_color(widget):
     
 
@@ -2380,64 +2181,6 @@ def _privacy_args(preset: str | None):
         return []
     else:  # default
         return ["-map_metadata", "-1"]
-
-def _format_webhook_summary(stats: dict) -> str:
-    """Turn an encode-result stats dict into a readable Discord message."""
-    try:
-        name = os.path.basename(str(stats.get("output_path") or stats.get("filename") or "output"))
-        o = stats.get("original_size")
-        c = stats.get("compressed_size")
-        parts = [f"**{name}**"]
-        if o and c:
-            pct = (c / o * 100.0) if o else 0.0
-            parts.append(f"{format_bytes(int(o))} -> {format_bytes(int(c))} ({pct:.1f}% of original)")
-        if stats.get("vmaf") is not None:
-            parts.append(f"VMAF {float(stats['vmaf']):.1f}")
-        if stats.get("encoder"):
-            parts.append(str(stats["encoder"]))
-        return _normalize_text(" | ".join(parts))[:1900] or "BitCrusher: done."
-    except Exception:
-        return "BitCrusher: compression complete."
-
-
-def _post_webhook_hardened(url: str, *, file_path: str | None = None,
-                           json_payload: dict | None = None, max_mb: int = 25) -> bool:
-    _ok = False
-    try:
-        import time as _t
-        if json_payload:
-            # Discord rejects a raw stats dict with HTTP 400 "Cannot send an empty
-            # message" (it needs content/embeds/file) — so this summary post used to
-            # silently no-op. Format the stats into a readable message instead.
-            if isinstance(json_payload, dict) and not ({"content", "embeds"} & set(json_payload)):
-                _msg = _format_webhook_summary(json_payload)
-                post_body = {"content": _msg, "allowed_mentions": {"parse": []}}
-            else:
-                post_body = json_payload
-            for delay in (0, 2, 4):
-                try:
-                    _r = requests.post(url, json=post_body, timeout=15)
-                    if _r is not None and _r.status_code < 500:
-                        _ok = True
-                        break
-                except Exception:
-                    pass
-                _t.sleep(delay)
-        if file_path and os.path.exists(file_path):
-            sz = os.path.getsize(file_path)
-            if sz <= max_mb * 1024 * 1024:
-                for delay in (0, 2, 4):
-                    try:
-                        with open(file_path, "rb") as f:
-                            _r2 = requests.post(url, files={"file": f}, timeout=60)
-                        if _r2 is not None and _r2.status_code < 500:
-                            _ok = True
-                        break
-                    except Exception:
-                        _t.sleep(delay)
-    except Exception:
-        pass
-    return _ok
 
 def _remux_copy(src: str, dst: str, extra_args: list[str] | None = None) -> bool:
 
@@ -5642,14 +5385,6 @@ def log_message(log_widget, msg, level="INFO"):
     except Exception:
         pass
 
-def format_bytes(size: int) -> str:
-    power = 2 ** 10
-    n = 0
-    units = ["B", "KB", "MB", "GB"]
-    while size > power and n < len(units) - 1:
-        size /= power
-        n += 1
-    return f"{size:.2f} {units[n]}"
 
 
 # Standard delivery-width ladder for the last-resort ceiling downscale-retry.
