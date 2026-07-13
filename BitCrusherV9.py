@@ -457,6 +457,9 @@ from encoder_profiles import select_profile
 from planner import PlanInputs, plan as plan_encode
 from text_utils import _EMOJI_RE, _mojibake_score, _normalize_text, format_bytes
 from webhook import DiscordWebhookClient, _format_webhook_summary, _post_webhook_hardened
+from ffmpeg_exec import (si, NO_WIN, _render_cmd, _tail, _orig_check_output,
+                         _check_output_logged, _sp_check_output, _ffmpeg_has_filter,
+                         set_ffmpeg_path as _set_ffmpeg_exec_path)
 
 def _ensure_dir(p):
     try: os.makedirs(p, exist_ok=True)
@@ -640,21 +643,6 @@ def _patch_tk_report_callback_exception():
 _patch_tk_report_callback_exception()
 
 _orig_run = subprocess.run
-_orig_check_output = subprocess.check_output
-
-def _render_cmd(cmd):
-    try:
-        return " ".join(str(c) for c in cmd)
-    except Exception:
-        return repr(cmd)
-
-def _tail(txt, n=80):
-    try:
-        lines = (txt or "").splitlines()
-        if len(lines) <= n: return txt or ""
-        return "\n".join(lines[-n:])
-    except Exception:
-        return txt or ""
 
 def _run_logged(cmd, *args, **kwargs):
     t0 = time.time()
@@ -1656,35 +1644,9 @@ def _handbrake_encode(
 
 
 
-def _check_output_logged(cmd, *args, **kwargs):
-    t0 = time.time()
-    try:
-        out = _orig_check_output(cmd, *args, **kwargs)
-        LOG.debug("CHECK_OUTPUT OK (%.2fs): %s", time.time() - t0, _render_cmd(cmd))
-        return out
-    except subprocess.CalledProcessError as e:
-        so = getattr(e, 'stdout', b'')
-        se = getattr(e, 'stderr', b'')
-        try:
-            so = so if isinstance(so, str) else so.decode('utf-8', 'ignore')
-        except Exception:
-            so = ""
-        try:
-            se = se if isinstance(se, str) else se.decode('utf-8', 'ignore')
-        except Exception:
-            se = ""
-        LOG.error("CHECK_OUTPUT FAILED (rc=%s) for: %s\nSTDOUT tail:\n%s\nSTDERR tail:\n%s",
-                  e.returncode, _render_cmd(cmd), _tail(so, 60), _tail(se, 120))
-        raise
-    except Exception as e:
-        LOG.error("CHECK_OUTPUT EXCEPTION for: %s\n%s", _render_cmd(cmd), repr(e))
-        raise
-
 def _sp_run(cmd, *args, **kwargs):
     return _run_logged(cmd, *args, **kwargs)
 
-def _sp_check_output(cmd, *args, **kwargs):
-    return _check_output_logged(cmd, *args, **kwargs)
 
 def bridge_gui_logger(widget):
     
@@ -2483,16 +2445,6 @@ from plyer import notification
 
 import subprocess, platform
 
-if platform.system() == "Windows":
-
-    si = subprocess.STARTUPINFO()
-    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-    NO_WIN = subprocess.CREATE_NO_WINDOW
-else:
-    si = None
-    NO_WIN = 0
-
 
 import os
 
@@ -2601,6 +2553,7 @@ def load_paths():
 
 HANDBRAKE_CLI, FFPROBE, FFMPEG = load_paths()
 log_tool_paths(HANDBRAKE_CLI, FFMPEG, FFPROBE)
+_set_ffmpeg_exec_path(FFMPEG)
 
 def resource_path(rel_path: str) -> str:
     base = getattr(sys, "_MEIPASS", os.path.abspath("."))
@@ -3819,23 +3772,6 @@ def vmaf_quality_label(score: float) -> str:
     if s >= 60.0:  return "mediocre"
     return "poor"
 
-
-def _ffmpeg_has_filter(name: str) -> bool:
-    """Cached check for whether the local ffmpeg build exposes a given filter."""
-    cache = getattr(_ffmpeg_has_filter, "_cache", None)
-    if cache is None:
-        cache = {}
-        try:
-            out = _sp_check_output([FFMPEG, "-hide_banner", "-filters"],
-                                   text=True, startupinfo=si, creationflags=NO_WIN)
-            for line in (out or "").splitlines():
-                parts = line.split()
-                if len(parts) >= 2:
-                    cache[parts[1]] = True
-        except Exception:
-            pass
-        setattr(_ffmpeg_has_filter, "_cache", cache)
-    return bool(cache.get(name))
 
 
 # =====================================================================
