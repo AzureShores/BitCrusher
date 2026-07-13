@@ -6438,6 +6438,30 @@ def _bc_build_output_path(input_path: str, out_dir: str, adv: dict, default_ext:
     # Back-compat shim: older code called this helper without the 'kind' parameter.
     return _build_output_path("video", input_path, out_dir, adv or {}, default_ext)
 
+def _dedup_safe_output_path(candidate: str, avoid: str) -> str:
+    # _build_output_path only guards a candidate against colliding with ITS OWN
+    # input path -- it has no notion of a sibling duplicate's already-written
+    # output. Two duplicate source files that happen to share a basename
+    # (e.g. "clip.mp4" copied into two different folders) produce the exact
+    # same candidate from _bc_build_output_path, so a reuse-copy would collide
+    # with the canonical's own output (SameFileError, or a silent overwrite,
+    # depending on write order). Disambiguate the same way _build_output_path
+    # already disambiguates against its own input: an incrementing suffix.
+    def _same(a, b):
+        try:
+            return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+        except Exception:
+            return False
+    if not _same(candidate, avoid) and not os.path.exists(candidate):
+        return candidate
+    root, ext = os.path.splitext(candidate)
+    n = 1
+    cand = f"{root}_dup{n}{ext}"
+    while _same(cand, avoid) or os.path.exists(cand):
+        n += 1
+        cand = f"{root}_dup{n}{ext}"
+    return cand
+
 
 def _best_audio_codec(container: str, audio_fmt_pref: str) -> str:
     """
@@ -13040,6 +13064,7 @@ class CompressorGUI:
 
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label=self._t("menu.clear_queue","Clear Queue"), command=self.clear_queue)
+        file_menu.add_command(label="Scan Queue for Duplicates...", command=self.scan_for_duplicates)
         file_menu.add_command(label=self._t("menu.exit","Exit"), command=self.on_exit)
         menubar.add_cascade(label=self._t("menu.file","File"), menu=file_menu)
 
@@ -15246,6 +15271,124 @@ class CompressorGUI:
                       foreground=muted).pack(anchor="w", padx=14, pady=(4, 4))
         ttk.Button(win, text="Close", command=win.destroy).pack(side="right", padx=12, pady=10)
 
+    def scan_for_duplicates(self):
+        """Advisory-only batch dedup review: scan the current queue for
+        byte-identical files and let the user confirm reusing an already-
+        encoded output instead of re-encoding confirmed duplicates. Runs only
+        on explicit menu action -- never automatically -- and writes nothing
+        to per_file_opts until Apply is clicked (Cancel/close is a no-op).
+        Hashing runs on a worker thread (full-file SHA-256 over a real queue
+        can take real wall-clock time) so the GUI stays responsive; the
+        review window itself is built on the main thread once hashing ends."""
+        from ml_heuristics import build_batch_dedup_index as _bc_dedup_index
+
+        snapshot = list(getattr(self, "file_list", []) or [])
+        norm = [_normalize_drop_path(p) for p in snapshot if isinstance(p, str)]
+        norm = list(dict.fromkeys(norm))  # a file queued twice is not a duplicate of itself
+        files = [p for p in norm if os.path.isfile(p)]
+        if not files:
+            messagebox.showinfo("Scan for Duplicates", "Queue is empty - add files first.")
+            return
+
+        busy = tk.Toplevel(self.root)
+        busy.title("Scanning for Duplicates")
+        busy.transient(self.root)
+        busy.geometry("360x90")
+        ttk.Label(busy, text=f"Hashing {len(files)} file(s)...").pack(expand=True, pady=20)
+        busy.update_idletasks()
+
+        def _worker():
+            try:
+                groups = _bc_dedup_index(files)
+                err = None
+            except Exception as e:
+                groups, err = [], e
+            self._ui(self._present_dedup_review, busy, groups, err)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _present_dedup_review(self, busy_win, groups, err=None):
+        """Main-thread continuation of scan_for_duplicates(), invoked once
+        background hashing completes."""
+        try:
+            busy_win.destroy()
+        except Exception:
+            pass
+
+        if err is not None:
+            messagebox.showerror("Scan for Duplicates", f"Duplicate scan failed: {err}")
+            return
+        if not groups:
+            messagebox.showinfo("Scan for Duplicates", "No byte-identical duplicates found in the queue.")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("Duplicate Files Found")
+        win.transient(self.root)
+        win.grab_set()  # modal: queue edits mid-review would orphan row_info's path keys
+        win.geometry("740x400")
+
+        tree_frame = ttk.Frame(win)
+        tree_frame.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+
+        cols = ("group", "duplicate_of", "action")
+        tree = ttk.Treeview(tree_frame, columns=cols, show="tree headings", height=10)
+        tree.heading("#0", text="File")
+        tree.column("#0", width=260, stretch=True)
+        for c, txt, w in (("group", "Group", 60), ("duplicate_of", "Duplicate Of", 220),
+                          ("action", "Action", 90)):
+            tree.heading(c, text=txt)
+            tree.column(c, width=w, anchor="w", stretch=False)
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        row_info = {}  # item_id -> {"path", "canonical", "confirm"}
+        for gi, grp in enumerate(groups, start=1):
+            canonical, dupes = grp[0], grp[1:]
+            for d in dupes:
+                item = tree.insert("", "end", text=os.path.basename(d),
+                                   values=(gi, os.path.basename(canonical), "Skip"))
+                row_info[item] = {"path": d, "canonical": canonical, "confirm": False}
+
+        n_dupes = sum(len(g) - 1 for g in groups)
+        ttk.Label(win, text=f"{len(groups)} duplicate group(s) found ({n_dupes} file(s) "
+                            "could be skipped). Select rows, choose Confirm Reuse or Skip - "
+                            "nothing happens until Apply.").pack(anchor="w", padx=14, pady=(0, 8))
+
+        def _set_action(action):
+            sel = tree.selection()
+            if not sel:
+                messagebox.showinfo("Scan for Duplicates", "Select one or more rows first.")
+                return
+            for item in sel:
+                info = row_info.get(item)
+                if not info:
+                    continue
+                info["confirm"] = (action == "Confirm Reuse")
+                tree.set(item, "action", action)
+
+        def _apply():
+            if not hasattr(self, "per_file_opts") or not isinstance(getattr(self, "per_file_opts", None), dict):
+                self.per_file_opts = {}
+            n = 0
+            for info in row_info.values():
+                if info["confirm"]:
+                    cur = dict(self.per_file_opts.get(info["path"], {}) or {})
+                    cur["_dedup_canonical_source"] = info["canonical"]
+                    self.per_file_opts[info["path"]] = cur
+                    n += 1
+            self.update_status(f"[Dedup] {n} file(s) marked to reuse a canonical encode.", level="INFO")
+            win.destroy()
+
+        btns = ttk.Frame(win)
+        btns.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(btns, text="Confirm Reuse", command=lambda: _set_action("Confirm Reuse")).pack(side="left")
+        ttk.Button(btns, text="Skip", command=lambda: _set_action("Skip")).pack(side="left", padx=(6, 0))
+        ttk.Button(btns, text="Apply", command=_apply).pack(side="right")
+        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right", padx=(0, 6))
+
     def _show_batch_summary(self):
         """Post-queue summary: per-file results + totals (main thread only)."""
         results = list(getattr(self, "batch_results", []) or [])
@@ -15283,13 +15426,14 @@ class CompressorGUI:
             v = r.get("vmaf")
             if isinstance(v, (int, float)):
                 vmafs.append(float(v))
+            _reused = bool(r.get("reused_duplicate_of"))
             _item = tree.insert("", "end",
-                        text=os.path.basename(str(r.get("path") or "")),
+                        text=os.path.basename(str(r.get("path") or "")) + (" (reused)" if _reused else ""),
                         values=((human_bytes(i_b) if i_b else "—"),
                                 (human_bytes(o_b) if o_b else ("FAILED" if not r.get("ok") else "—")),
                                 (f"{o_b * 100.0 / i_b:.0f}%" if (i_b and o_b) else "—"),
-                                (f"{float(v):.1f}" if isinstance(v, (int, float)) else "—"),
-                                f"{float(r.get('secs') or 0.0):.0f}s"))
+                                (f"{float(v):.1f}" if isinstance(v, (int, float)) else ("dedup" if _reused else "—")),
+                                ("reused" if _reused else f"{float(r.get('secs') or 0.0):.0f}s")))
             item_paths[_item] = str(r.get("path") or "")
         tree.pack(fill="both", expand=True, padx=12, pady=(12, 6))
 
@@ -15896,6 +16040,16 @@ class CompressorGUI:
         files = list(getattr(self, "_thread_file_list", []) or [])
         files = [_normalize_drop_path(p) for p in files if isinstance(p, str)]
         files = [p for p in files if os.path.isfile(p)]
+        # Confirmed dedup duplicates must dispatch after their canonical so
+        # _dedup_canonical_outputs already has an entry by the time _run_one()
+        # looks it up (sequential/single-worker case; under concurrent workers
+        # completion order isn't guaranteed regardless -- _run_one() falls
+        # back to a normal encode when the canonical isn't ready yet, so
+        # correctness never depends on this, only the time-saving optimization does).
+        _po_for_order = getattr(self, "per_file_opts", None) or {}
+        _is_dup = lambda p: isinstance(_po_for_order.get(p), dict) and "_dedup_canonical_source" in _po_for_order[p]
+        if any(_is_dup(p) for p in files):
+            files = [p for p in files if not _is_dup(p)] + [p for p in files if _is_dup(p)]
         total = len(files)
 
         if total == 0:
@@ -15965,6 +16119,16 @@ class CompressorGUI:
 
         t_start = time.time()
 
+        # Batch dedup: source path -> {"output_path", "target", "adv"} for every
+        # real (non-reused) encode that completes, filled in as _run_one()
+        # finishes. A confirmed duplicate (per_file_opts' _dedup_canonical_source)
+        # looks itself up here before encoding; if the canonical hasn't finished
+        # yet (e.g. concurrent workers) it falls through to a normal encode --
+        # correctness over speed.
+        _dedup_canonical_outputs: dict = {}
+        _DEDUP_SETTINGS_KEYS = ("encoder", "codec_pinned", "output_prefix", "output_suffix",
+                                "container", "trim_range", "spotlight_range")
+
         def _run_one(idx, path):
             if self.cancel_flag or self.compression_cancelled:
                 self._ui(self._job_update, path, status="cancelled")
@@ -15972,7 +16136,16 @@ class CompressorGUI:
                         "vmaf": None, "encoder": None, "secs": 0.0, "error": "cancelled"}
             out_dir = getattr(self, "_thread_save_path", "") or os.path.dirname(path) or os.getcwd()
             adv = dict(adv_base)
-            adv.update((getattr(self, "per_file_opts", {}) or {}).get(path, {}))
+            _po = getattr(self, "per_file_opts", None)
+            if isinstance(_po, dict) and path in _po:
+                adv.update(_po[path])
+                if "_dedup_canonical_source" in _po[path]:
+                    # Consume from the PERSISTENT store now, not just this local
+                    # adv copy -- compress_file_task() independently re-merges
+                    # per_file_opts[path] into adv_options, so leaving the key
+                    # there would resurrect a stale marker on a future run.
+                    _po[path] = {k: v for k, v in _po[path].items() if k != "_dedup_canonical_source"}
+            _dedup_canon_src = adv.pop("_dedup_canonical_source", None)
             # Watcher-rule per-file overrides (custom folder / target size for
             # files brought in by the folder watcher or Send-To).
             _file_target = tgt
@@ -15990,6 +16163,41 @@ class CompressorGUI:
                     _file_target = int(_wtb)
             except Exception:
                 _file_target = tgt
+
+            if _dedup_canon_src:
+                _canon = _dedup_canonical_outputs.get(_dedup_canon_src)
+                _settings_match = bool(_canon) and _file_target == _canon.get("target") and all(
+                    adv.get(k) == _canon["adv"].get(k) for k in _DEDUP_SETTINGS_KEYS)
+                if _canon and _settings_match and os.path.isfile(_canon.get("output_path", "")):
+                    try:
+                        from ml_heuristics import _bc_content_hash as _dedup_hash
+                        # TOCTOU guard: re-verify content now, not just at scan
+                        # time, in case the file changed between scan and encode.
+                        if _dedup_hash(path) == _dedup_hash(_dedup_canon_src):
+                            _dup_out = _bc_build_output_path(path, out_dir, adv,
+                                                             default_ext=os.path.splitext(_canon["output_path"])[1].lstrip("."))
+                            _dup_out = _dedup_safe_output_path(_dup_out, _canon["output_path"])
+                            shutil.copyfile(_canon["output_path"], _dup_out)
+                            in_b = os.path.getsize(path) if os.path.isfile(path) else 0
+                            out_b = os.path.getsize(_dup_out) if os.path.isfile(_dup_out) else 0
+                            self._ui(self._job_update, path, status="done", progress=100, eta="", size=out_b)
+                            self.update_status(f"[Dedup] Reused canonical output for "
+                                              f"{os.path.basename(path)}", level="INFO")
+                            return {"path": path, "ok": True, "in_bytes": in_b, "out_bytes": out_b,
+                                   "vmaf": None, "encoder": None, "secs": 0.0, "error": None,
+                                   "output_path": _dup_out, "reused_duplicate_of": _dedup_canon_src}
+                        else:
+                            self.update_status(f"[Dedup] {os.path.basename(path)} no longer matches "
+                                              f"its canonical (changed since scan) - encoding normally.",
+                                              level="INFO")
+                    except Exception as _dedup_e:
+                        self.update_status(f"[Dedup] Reuse failed for {os.path.basename(path)} "
+                                          f"({_dedup_e}) - encoding normally instead.", level="WARN")
+                        # fall through to a normal encode
+                elif _canon and not _settings_match:
+                    self.update_status(f"[Dedup] {os.path.basename(path)}'s settings differ from its "
+                                      f"canonical's - encoding normally instead of reusing.", level="INFO")
+
             try:
                 os.makedirs(os.path.join(USER_SETTINGS_DIR, "logs", "jobs"), exist_ok=True)
                 adv["job_log"] = os.path.join(
@@ -16014,6 +16222,11 @@ class CompressorGUI:
                        "vmaf": stats.get("vmaf"),
                        "encoder": stats.get("encoder"),
                        "secs": time.time() - t0, "error": None if ok else "no output"}
+                _out_path = stats.get("output_path") or stats.get("out_path") or stats.get("output")
+                if ok and _out_path:
+                    res["output_path"] = _out_path
+                    _dedup_canonical_outputs[path] = {"output_path": _out_path, "target": _file_target,
+                                                      "adv": {k: adv.get(k) for k in _DEDUP_SETTINGS_KEYS}}
             except Exception as e:
                 res = {"path": path, "ok": False, "in_bytes": 0, "out_bytes": 0,
                        "vmaf": None, "encoder": None,
@@ -16863,7 +17076,8 @@ def _print_summary(stats_list):
             in_sz = s.get("original_size")
             out_sz = s.get("compressed_size")
             ratio = (out_sz / in_sz) if in_sz else 0
-            print(f"- {s.get('filename') or ''}  "
+            _tag = " [Dedup-Reused]" if s.get("reused_duplicate_of") else ""
+            print(f"- {s.get('filename') or ''}{_tag}  "
                   f"{format_bytes(in_sz)} -> {format_bytes(out_sz)}  "
                   f"({ratio*100:.1f}% of original)")
         except Exception:
@@ -16888,6 +17102,10 @@ def build_arg_parser():
                    help="Quality mode: fast (quick), balanced, or max (pack the size cap, measured)")
     p.add_argument("--no-auto-codec", action="store_true",
                    help="Disable the VMAF-measured codec auto-pick (x265 vs AV1)")
+    p.add_argument("--dedup-scan", action="store_true",
+                   help="Before encoding, scan inputs for byte-identical duplicates "
+                        "and offer to reuse an already-encoded output instead of "
+                        "re-encoding confirmed matches (advisory-only, never auto-acts)")
     p.add_argument("--estimate", action="store_true",
                    help="Predict delivered size / VMAF / worst-scene / encode time from the "
                         "outcome ledger for each input WITHOUT encoding, then exit. "
@@ -17125,6 +17343,46 @@ def cli_main():
                     pass
         return 0 if _any else 1
 
+    # Batch exact-match dedup: advisory-only, explicit-request (--dedup-scan)
+    # only -- never runs otherwise, so plain single-file/batch encodes pay zero
+    # hashing cost. _confirmed_reuse/_dedup_canonical_outputs stay empty dicts
+    # when the flag is off, so _one()'s lookups below are always safe no-ops.
+    _confirmed_reuse: dict = {}
+    _dedup_canonical_outputs: dict = {}
+    if getattr(args, "dedup_scan", False):
+        from ml_heuristics import build_batch_dedup_index as _ol_dedup_index
+        groups = _ol_dedup_index(files)
+        if groups:
+            _interactive = sys.stdin.isatty() and sys.stdout.isatty()
+            for grp in groups:
+                canonical, dupes = grp[0], grp[1:]
+                print(f"[Dedup] {len(grp)} files look byte-identical:")
+                print(f"  keep + encode: {canonical}")
+                for d in dupes:
+                    print(f"  duplicate:     {d}")
+                if not _interactive:
+                    print("  (non-interactive session -- skipping, encoding all normally)")
+                    continue
+                try:
+                    ans = input("  Reuse the canonical encode for the duplicate(s) above? [y/N] ").strip().lower()
+                except Exception:
+                    ans = "n"
+                if ans == "y":
+                    for d in dupes:
+                        _confirmed_reuse[d] = canonical
+                else:
+                    print("  Skipped -- all files in this group will encode independently.")
+        else:
+            print("[Dedup] No byte-identical duplicates found in this batch.")
+        # Confirmed duplicates must dispatch after their canonical so the
+        # canonical's output_path is already recorded in _dedup_canonical_outputs
+        # by the time _one() looks it up (see _one below). Concurrent --jobs>1
+        # doesn't guarantee this ordering; _one() falls back to a normal encode
+        # if the canonical isn't done yet, so correctness never depends on it.
+        if _confirmed_reuse:
+            files = [f for f in files if f not in _confirmed_reuse] + \
+                    [f for f in files if f in _confirmed_reuse]
+
     out_dir = _infer_save_dir(args.output, files[0])
     adv = _build_adv_from_args(args)
     target_mb = max(1, int(round(args.target_size)))
@@ -17161,6 +17419,34 @@ def cli_main():
 
     def _one(src):
         name = os.path.basename(src)
+        _canon_src = _confirmed_reuse.get(src)
+        if _canon_src:
+            _canon = _dedup_canonical_outputs.get(_canon_src)
+            # No per-file settings variation exists in CLI mode (adv/target_mb
+            # are uniform across the whole invocation), so a settings-compat
+            # check would always trivially pass -- unlike the GUI path, which
+            # does need one (watcher-rule per-file overrides).
+            if _canon and os.path.isfile(_canon):
+                try:
+                    from ml_heuristics import _bc_content_hash as _dedup_hash
+                    # TOCTOU guard: re-verify content now, not just at scan time.
+                    if _dedup_hash(src) == _dedup_hash(_canon_src):
+                        _dup_out = _bc_build_output_path(src, out_dir, adv,
+                                                         default_ext=os.path.splitext(_canon)[1].lstrip("."))
+                        _dup_out = _dedup_safe_output_path(_dup_out, _canon)
+                        shutil.copyfile(_canon, _dup_out)
+                        _cli_status(f"[Dedup] Reused canonical output for {name} "
+                                   f"(duplicate of {os.path.basename(_canon_src)})")
+                        return {"filename": name, "original_size": os.path.getsize(src),
+                               "compressed_size": os.path.getsize(_dup_out),
+                               "output_path": _dup_out, "reused_duplicate_of": _canon_src}
+                    else:
+                        _cli_status(f"[Dedup] {name} no longer matches its canonical "
+                                   f"(changed since scan) - encoding normally.")
+                except Exception as _dedup_e:
+                    _cli_status(f"[Dedup] Reuse failed for {name} ({_dedup_e}) - "
+                               f"encoding normally instead.", level="WARN")
+                    # fall through to a normal encode
         job_adv = dict(adv)
         job_adv["job_id"] = src
         job_adv["progress_cb"] = _make_progress_cb(name)
@@ -17188,6 +17474,8 @@ def cli_main():
                 s["compressed_size"] = os.path.getsize(outp)
             except Exception:
                 pass
+        if outp:
+            _dedup_canonical_outputs[src] = outp
         if s.get("ceiling_exceeded"):
             status_cb(f"[FAIL] {name} - CEILING EXCEEDED: {s.get('compressed_size')} bytes vs "
                       f"target {int(target_mb * 1024 * 1024)} bytes.", level="ERROR")

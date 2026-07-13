@@ -2001,3 +2001,166 @@ def test_smart_rate_cache_key_distinguishes_same_named_files(tmp_path):
     k1 = sr._cache_key(str(f1), 10, "x264")
     k2 = sr._cache_key(str(f2), 10, "x264")
     assert k1 != k2
+
+
+def test_bc_content_hash_is_path_and_mtime_independent(tmp_path):
+    """_bc_content_hash must match byte-identical content saved at different
+    paths/mtimes -- unlike _bc_file_sig (intentionally path/mtime-sensitive
+    for single-file recall), this backs cross-file batch dedup where the
+    whole point is catching the same content living in two different files."""
+    d1 = tmp_path / "a"; d1.mkdir()
+    d2 = tmp_path / "b"; d2.mkdir()
+    f1 = d1 / "bumper.mp4"; f1.write_bytes(b"identical content" * 100)
+    f2 = d2 / "different_name.mp4"; f2.write_bytes(b"identical content" * 100)
+    os.utime(f2, (1000, 1000))  # force a different mtime than f1
+
+    assert mh._bc_content_hash(str(f1)) == mh._bc_content_hash(str(f2))
+
+
+def test_bc_content_hash_differs_for_different_content(tmp_path):
+    f1 = tmp_path / "one.mp4"; f1.write_bytes(b"content A")
+    f2 = tmp_path / "two.mp4"; f2.write_bytes(b"content B")
+    assert mh._bc_content_hash(str(f1)) != mh._bc_content_hash(str(f2))
+
+
+def test_bc_content_hash_unreadable_file_returns_none(tmp_path):
+    """Caller (build_batch_dedup_index) relies on None to exclude a file from
+    the dedup index without aborting the batch -- must never raise."""
+    missing = tmp_path / "does_not_exist.mp4"
+    assert mh._bc_content_hash(str(missing)) is None
+
+
+def test_build_batch_dedup_index_groups_exact_matches(tmp_path):
+    d1 = tmp_path / "a"; d1.mkdir()
+    d2 = tmp_path / "b"; d2.mkdir()
+    d3 = tmp_path / "c"; d3.mkdir()
+    dup1 = d1 / "bumper.mp4"; dup1.write_bytes(b"same bytes" * 50)
+    dup2 = d2 / "bumper_copy.mp4"; dup2.write_bytes(b"same bytes" * 50)
+    unique = d3 / "unique.mp4"; unique.write_bytes(b"totally different content")
+
+    groups = mh.build_batch_dedup_index([str(dup1), str(dup2), str(unique)])
+
+    assert len(groups) == 1
+    assert set(groups[0]) == {str(dup1), str(dup2)}
+
+
+def test_build_batch_dedup_index_no_duplicates_returns_empty(tmp_path):
+    f1 = tmp_path / "one.mp4"; f1.write_bytes(b"aaaa")
+    f2 = tmp_path / "two.mp4"; f2.write_bytes(b"bbbb")
+    assert mh.build_batch_dedup_index([str(f1), str(f2)]) == []
+
+
+def test_build_batch_dedup_index_excludes_unreadable_without_crashing(tmp_path):
+    """An unreadable/missing file must be silently dropped from the index,
+    not crash the whole batch scan -- the rest of the batch still encodes."""
+    d1 = tmp_path / "a"; d1.mkdir()
+    d2 = tmp_path / "b"; d2.mkdir()
+    dup1 = d1 / "bumper.mp4"; dup1.write_bytes(b"same bytes" * 50)
+    dup2 = d2 / "bumper_copy.mp4"; dup2.write_bytes(b"same bytes" * 50)
+    missing = tmp_path / "gone.mp4"
+
+    groups = mh.build_batch_dedup_index([str(dup1), str(dup2), str(missing)])
+
+    assert len(groups) == 1
+    assert set(groups[0]) == {str(dup1), str(dup2)}
+
+
+def test_build_batch_dedup_index_dedupes_repeated_input_path(tmp_path):
+    """The same path listed twice in the input (e.g. a file queued twice)
+    must never be treated as a duplicate of itself."""
+    f1 = tmp_path / "one.mp4"; f1.write_bytes(b"same bytes" * 50)
+    groups = mh.build_batch_dedup_index([str(f1), str(f1)])
+    assert groups == []
+
+
+def test_dedup_reuse_copy_uses_duplicates_own_output_path_not_canonical(tmp_path):
+    """Regression for review-loop-iteration-1 finding: the reuse-copy path in
+    both _one() (CLI) and _run_one() (GUI) must derive the duplicate's copied
+    output path from the DUPLICATE's own expected naming (_bc_build_output_path
+    on the duplicate's input path), never from the canonical's basename -- the
+    latter collides whenever canonical and duplicate share an output directory
+    (the common case), raising shutil.SameFileError and silently defeating the
+    entire feature. This exercises the exact sequence both call sites use:
+    build_batch_dedup_index -> _bc_build_output_path(duplicate) -> copyfile."""
+    import shutil
+    import BitCrusherV9 as bc
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+
+    canonical_src = src_dir / "bumper.mp4"
+    duplicate_src = src_dir / "bumper_copy.mp4"
+    payload = b"identical bumper bytes" * 200
+    canonical_src.write_bytes(payload)
+    duplicate_src.write_bytes(payload)
+
+    groups = mh.build_batch_dedup_index([str(canonical_src), str(duplicate_src)])
+    assert len(groups) == 1
+    canonical, duplicate = groups[0][0], groups[0][1]
+
+    # Simulate the canonical's real encode having already produced an output
+    # in the shared out_dir, exactly as _run_one()/_one() would record it.
+    canonical_out = bc._bc_build_output_path(canonical, str(out_dir), {}, default_ext="mp4")
+    with open(canonical_out, "wb") as f:
+        f.write(b"encoded canonical bytes")
+
+    # This is the fixed sequence: derive the DUPLICATE's own output path.
+    duplicate_out = bc._bc_build_output_path(duplicate, str(out_dir), {}, default_ext="mp4")
+
+    assert duplicate_out != canonical_out  # the bug this test guards against
+    shutil.copyfile(canonical_out, duplicate_out)  # must not raise SameFileError
+
+    assert os.path.isfile(canonical_out)
+    assert os.path.isfile(duplicate_out)
+    assert open(duplicate_out, "rb").read() == open(canonical_out, "rb").read()
+
+
+def test_dedup_reuse_copy_handles_same_basename_duplicates(tmp_path):
+    """Regression for review-loop-iteration-2 finding: _bc_build_output_path
+    only guards a candidate against colliding with ITS OWN input path -- it
+    has no notion of a sibling duplicate's already-written output. Two
+    duplicate source files that share a basename (e.g. the same filename
+    copied into two different folders -- a common real-world dedup trigger,
+    arguably more common than differently-named duplicates) produce the
+    IDENTICAL candidate from _bc_build_output_path alone, which would collide
+    with the canonical's own output. _dedup_safe_output_path must disambiguate
+    this case; both _one() and _run_one() call it after _bc_build_output_path,
+    before copyfile."""
+    import shutil
+    import BitCrusherV9 as bc
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    src_a = tmp_path / "ProjectA"; src_a.mkdir()
+    src_b = tmp_path / "ProjectB"; src_b.mkdir()
+
+    canonical_src = src_a / "clip.mp4"
+    duplicate_src = src_b / "clip.mp4"  # same basename, different source folder
+    payload = b"identical clip bytes" * 200
+    canonical_src.write_bytes(payload)
+    duplicate_src.write_bytes(payload)
+
+    groups = mh.build_batch_dedup_index([str(canonical_src), str(duplicate_src)])
+    assert len(groups) == 1
+    canonical, duplicate = groups[0][0], groups[0][1]
+
+    canonical_out = bc._bc_build_output_path(canonical, str(out_dir), {}, default_ext="mp4")
+    with open(canonical_out, "wb") as f:
+        f.write(b"encoded canonical bytes")
+
+    # Without _dedup_safe_output_path, this would equal canonical_out exactly
+    # (same basename -> same candidate) and shutil.copyfile would raise
+    # SameFileError -- the exact bug class iteration-1's fix didn't cover.
+    duplicate_out_raw = bc._bc_build_output_path(duplicate, str(out_dir), {}, default_ext="mp4")
+    assert duplicate_out_raw == canonical_out  # confirms this IS the collision case
+
+    duplicate_out = bc._dedup_safe_output_path(duplicate_out_raw, canonical_out)
+    assert duplicate_out != canonical_out
+
+    shutil.copyfile(canonical_out, duplicate_out)  # must not raise SameFileError
+
+    assert os.path.isfile(canonical_out)
+    assert os.path.isfile(duplicate_out)
+    assert open(duplicate_out, "rb").read() == open(canonical_out, "rb").read()

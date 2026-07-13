@@ -50,6 +50,37 @@ def _bc_file_sig(path: str) -> str:
         pass
     return h.hexdigest()
 
+def _bc_content_hash(path: str) -> str | None:
+    # Path- and mtime-independent whole-file hash for cross-file batch dedup --
+    # unlike _bc_file_sig (path+mtime+first-2MB, built for single-file re-encode
+    # recall), this must match byte-identical content regardless of where it's
+    # saved, so it hashes the full file and nothing else. Returns None on any
+    # read failure so callers can exclude the file from the dedup index without
+    # aborting the batch.
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+def build_batch_dedup_index(file_paths: list) -> list:
+    # O(n) exact-match grouping by content hash -- no pairwise/frame comparison.
+    # A path listed twice (file queued twice) is deduped first so it can't group
+    # as "a duplicate of itself." Files whose hash can't be computed are
+    # silently excluded from the index (not from the batch itself); only
+    # groups of 2+ distinct paths are duplicate candidates.
+    file_paths = list(dict.fromkeys(file_paths))
+    groups: dict = {}
+    for p in file_paths:
+        h = _bc_content_hash(p)
+        if h is None:
+            continue
+        groups.setdefault(h, []).append(p)
+    return [paths for paths in groups.values() if len(paths) >= 2]
+
 def _bc_cache_path(kind: str, sig: str) -> Path:
     return _bc_cache_dir() / f"{kind}_{sig}.json"
 
