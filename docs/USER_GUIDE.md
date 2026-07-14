@@ -21,8 +21,6 @@ max (default) - also packs the size cap and raises encoder effort. Slower, best 
 
 Encode time is treated as free, so max mode can take a while on long or high-res sources - it's doing real work with that time. Drop to fast if you're iterating quickly.
 
-This and every other Advanced Options toggle now correctly saves and restores across restarts.
-
 ADVANCED OPTIONS
 
 Encoder - x264, x265, AV1 (SVT or aom), VP9, VVC, or a hardware encoder if your GPU has one. Left on auto, BitCrusher measures your codec against AV1 by VMAF and keeps whichever wins.
