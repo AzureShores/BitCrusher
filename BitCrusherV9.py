@@ -6355,6 +6355,21 @@ class CompressorGUI:
         self.adv_auto_jpeg.set(1 if adv.get("auto_jpeg") else 0)
         self.adv_scene_zones.set(1 if adv.get("scene_zones", True) else 0)
         self.adv_hw_decode.set(1 if adv.get("hw_decode", True) else 0)
+        # These were added in later feature batches (quality-of-life toggles,
+        # learning-system toggles, quality mode) but never wired into this
+        # restore-from-settings block, so they silently reset to
+        # ADVANCED_DEFAULTS on every launch instead of the user's saved choice.
+        self.adv_grain_filter.set(1 if adv.get("grain_filter", True) else 0)
+        self.adv_discord_compat.set(1 if adv.get("discord_compat", False) else 0)
+        self.adv_smart_preproc.set(1 if adv.get("smart_preproc", True) else 0)
+        self.adv_learned_seed.set(1 if adv.get("learned_seed", True) else 0)
+        self.adv_preflight.set(1 if adv.get("preflight_advice", True) else 0)
+        self.adv_ceiling_downscale.set(1 if adv.get("ceiling_downscale_retry", True) else 0)
+        self.adv_embed_lyrics.set(1 if adv.get("embed_lyrics", True) else 0)
+        self.adv_copy_clipboard.set(1 if adv.get("copy_to_clipboard", False) else 0)
+        self.adv_audio_track_mode.set(str(adv.get("audio_track_mode", "keepfirst") or "keepfirst").strip().lower())
+        _qm_loaded = str(adv.get("quality_mode", "max") or "max").strip().lower()
+        self.adv_quality_mode.set(_qm_loaded if _qm_loaded in ("fast", "balanced", "max") else "max")
         self.save_path.set(self.settings.get("output_dir", ""))
 
 
