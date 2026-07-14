@@ -70,10 +70,6 @@ acceleration.
   case — low-light, high-motion crowd footage compressed **~8x** — and
   still lands "excellent" (VMAF 90.2, worst-scene 82.9).
 
-On the codec race: both video rows measured av1 beating the requested
-x264 on VMAF-per-bit (e.g. the 10 MB run: av1=87.1 vs x265=82.2 vs
-x264=71.3 on probe segments) and switched automatically.
-
 ## Requirements
 
 - Windows, [Python 3.10+](https://www.python.org/downloads/)
