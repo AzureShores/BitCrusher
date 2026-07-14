@@ -20,6 +20,11 @@ past encodes to make better first-attempt decisions over time.
 - Trim-aware compression, folder watcher, Explorer "Send to", Discord webhook.
 - A learning system that seeds future encodes from measured past outcomes.
 - Fully offline core — no data leaves your machine during a compression job.
+- Opt-in update check against GitHub Releases (asked once on first launch,
+  toggle any time in Settings > Check for Updates).
+- Advanced Options > Export Sanitized Logs makes a redacted copy of the
+  learning ledger, recent job logs, and settings — safe to paste into a bug
+  report (strips your home path and any saved webhook URL).
 
 ## Requirements
 

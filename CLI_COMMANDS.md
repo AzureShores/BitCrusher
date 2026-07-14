@@ -73,6 +73,7 @@ Ledger / diagnostics (no input files, print and exit):
 --estimate                  predict size/VMAF/worst-scene/time from the ledger, no encode
 --learning-trend             are the ledger's shadow predictors getting more accurate over time
 --ledger-audit               anomalous encodes + VMAF-scale population report
+--check-updates               check GitHub for a newer release, print result, exit
 
 Notes:
 Exit codes: 0 = at least one file compressed, 1 = nothing produced, 2 = argument error.

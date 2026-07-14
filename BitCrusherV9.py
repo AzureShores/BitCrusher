@@ -740,6 +740,8 @@ PRESETS = {
 }
 
 
+APP_VERSION = "1.0.0"
+
 ADVANCED_DEFAULTS = {
     "auto_retry": True,
     "overshoot_ratio": 1.00,
@@ -6262,6 +6264,11 @@ class CompressorGUI:
             try: self.size_unit_var.set(data["size_unit"])
             except Exception: pass
 
+        try:
+            self.root.after(800, self._startup_update_check)
+        except Exception:
+            pass
+
         import tkinter as tk  # ensure tk is in scope here
 
         self.webhook_var = tk.StringVar(value=self.settings.get("webhook_url", ""))
@@ -6651,6 +6658,76 @@ class CompressorGUI:
                     except Exception:
                         pass
 
+
+    def _startup_update_check(self):
+        """Deferred from __init__ via root.after — runs after the window is up,
+        never blocks GUI startup. First launch: ask consent once and persist
+        the answer. Every launch after that: silently respects it."""
+        consent = (self.settings or {}).get("update_check_consent", None)
+        if consent is None:
+            try:
+                turn_on = messagebox.askyesno(
+                    "Check for updates?",
+                    "BitCrusher can check GitHub for new releases on startup.\n\n"
+                    "Turn on the auto-updater?")
+            except Exception:
+                return
+            consent = bool(turn_on)
+            self.settings["update_check_consent"] = consent
+            try:
+                self.save_settings()
+            except Exception:
+                pass
+        if consent:
+            self.check_for_updates(silent=True)
+
+    def check_for_updates(self, silent: bool = False):
+        """Kick off a background update check. silent=True (startup path):
+        only surfaces a header label when an update IS found, no dialogs on
+        failure. silent=False (manual "Check for Updates..." menu item): also
+        shows an up-to-date/error dialog so the click feels acknowledged."""
+        def _worker():
+            try:
+                from support.update_check import fetch_latest_release, is_newer
+                info = fetch_latest_release()
+            except Exception:
+                info = None
+            self.root.after(0, lambda: self._on_update_check_done(info, silent=silent))
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_update_check_done(self, info: dict | None, silent: bool):
+        try:
+            self.settings["last_update_check_ts"] = time.time()
+        except Exception:
+            pass
+        from support.update_check import is_newer
+        if info and is_newer(info.get("tag", ""), APP_VERSION):
+            self._show_update_available(info)
+            if not silent:
+                messagebox.showinfo("Update available",
+                                    f"A newer version is available: {info['tag']}\n"
+                                    f"(you're on v{APP_VERSION})")
+            return
+        if not silent:
+            if info is None:
+                messagebox.showwarning("Check for updates",
+                                       "Could not reach GitHub. Check your connection and try again.")
+            else:
+                messagebox.showinfo("Check for updates", f"You're up to date (v{APP_VERSION}).")
+
+    def _show_update_available(self, info: dict):
+        try:
+            if getattr(self, "_update_label_shown", False) or not hasattr(self, "title_label"):
+                return
+            header = self.title_label.master
+            lbl = ttk.Label(header, text=f"  Update available: {info.get('tag','')}",
+                            style="Sub.TLabel", cursor="hand2")
+            lbl.pack(side="left", pady=(8, 0))
+            url = info.get("url") or "https://github.com/AzureShores/BitCrusher/releases"
+            lbl.bind("<Button-1>", lambda e: webbrowser.open(url))
+            self._update_label_shown = True
+        except Exception:
+            pass
 
     def open_advanced(self):
         try:
@@ -7441,6 +7518,7 @@ class CompressorGUI:
         settings_menu.add_command(label=self._t("menu.save_profile","Save Profile"), command=self.save_profile)
         settings_menu.add_command(label=self._t("menu.load_profile","Load Profile"), command=self.load_profile)
         settings_menu.add_command(label="Advanced Options...", command=self.open_advanced)
+        settings_menu.add_command(label="Check for Updates...", command=lambda: self.check_for_updates(silent=False))
         settings_menu.add_separator()
         settings_menu.add_command(label="Add 'Send to BitCrusher' (right-click menu)",
                                   command=self.register_send_to_menu)
@@ -8050,6 +8128,8 @@ class CompressorGUI:
             "webhook_url": "",
             "use_webhook": 0,
             "advanced": dict(ADVANCED_DEFAULTS),
+            "update_check_consent": None,
+            "last_update_check_ts": 0,
         }
         data = dict(defaults)
 
@@ -8078,7 +8158,8 @@ class CompressorGUI:
 
                 if isinstance(disk, dict):
                     for k in ("theme", "output_dir", "watch_folder", "enable_watch",
-                              "preset", "target_size", "webhook_url", "use_webhook"):
+                              "preset", "target_size", "webhook_url", "use_webhook",
+                              "update_check_consent", "last_update_check_ts"):
                         if k in disk:
                             data[k] = disk[k]
                     adv = dict(ADVANCED_DEFAULTS)
@@ -8295,6 +8376,8 @@ class CompressorGUI:
                 "pipeline_mode": (bool(self.pipeline_var.get()) if hasattr(self, "pipeline_var")
                                   else bool((getattr(self, "settings", {}) or {}).get("pipeline_mode", False))),
                 "watch_rules":  dict((getattr(self, "settings", {}) or {}).get("watch_rules", {}) or {}),
+                "update_check_consent": (getattr(self, "settings", {}) or {}).get("update_check_consent", None),
+                "last_update_check_ts": (getattr(self, "settings", {}) or {}).get("last_update_check_ts", 0),
             }
 
 
@@ -10101,6 +10184,29 @@ class CompressorGUI:
                     self.log_widget.insert("end", line)
         self.log_widget.config(state="disabled")
 
+    def export_sanitized_logs(self):
+        """Advanced Options button: export a redacted copy of the learning
+        ledger, recent job logs, and settings.json (webhook URL stripped) that
+        is safe to paste into a bug report. Read-only against user_settings/ --
+        this only ever writes the new zip, never the originals."""
+        try:
+            path = filedialog.asksaveasfilename(
+                title="Export Sanitized Logs",
+                defaultextension=".zip",
+                initialfile="bitcrusher_logs_sanitized.zip",
+                filetypes=[("Zip archive", "*.zip")])
+        except Exception:
+            path = None
+        if not path:
+            return
+        try:
+            from support.sanitize_export import export_sanitized_bundle
+            export_sanitized_bundle(USER_SETTINGS_DIR, path)
+            messagebox.showinfo("Export Sanitized Logs",
+                                f"Saved a redacted copy safe to share:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Export Sanitized Logs", f"Export failed: {e}")
+
     def open_advanced_options(self):
         import tkinter as tk
         from tkinter import ttk
@@ -10384,6 +10490,8 @@ class CompressorGUI:
             except Exception:
                 pass
             adv.destroy()
+        ttk.Button(btnbar, text="Export Sanitized Logs...", style="Ghost.TButton",
+                  command=self.export_sanitized_logs).pack(side="left")
         ttk.Button(btnbar, text="OK", command=_close_and_save).pack(side="right", padx=(6, 0))
         ttk.Button(btnbar, text="Cancel", style="Ghost.TButton", command=adv.destroy).pack(side="right")
 
@@ -11485,6 +11593,9 @@ def build_arg_parser():
     p.add_argument("--ledger-audit", action="store_true",
                    help="Print anomalous encodes (where every active predictor missed) "
                         "and a VMAF-scale population report, then exit. No input files required.")
+    p.add_argument("--check-updates", action="store_true",
+                   help="Check GitHub for a newer release, print the result, then exit. "
+                        "No input files required.")
     p.add_argument("--min-vmaf", type=int, default=0,
                    help="Spend spare budget until output reaches this VMAF (0 = off)")
     p.add_argument("--no-measure", action="store_true",
@@ -11614,6 +11725,18 @@ def cli_main():
         _scale = _ol_scale(_stats_dir)
         print(f"[Ledger audit] VMAF-scale population: {_scale['counts']}")
         print(f"  note: {_scale['note']}")
+        return 0
+
+    if getattr(args, "check_updates", False):
+        from support.update_check import fetch_latest_release, is_newer
+        info = fetch_latest_release()
+        if info is None:
+            print("[Update check] Could not reach GitHub (offline, rate-limited, or an error occurred).")
+        elif is_newer(info["tag"], APP_VERSION):
+            print(f"[Update check] A newer version is available: {info['tag']} (current: v{APP_VERSION})")
+            print(f"  {info['url']}")
+        else:
+            print(f"[Update check] You're up to date (v{APP_VERSION}).")
         return 0
 
     # Send-To / single-instance hand-off: try to give the file(s) to a running
