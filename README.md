@@ -38,11 +38,19 @@ acceleration.
 | 4K video, 14.01s @ 29.97fps, H.264, 39.40 MB (23.6 Mbps), high-motion/low-complexity stock clip | 10 MB | AV1 3840x2160, 9.85 MB (25.0% of source), two-pass, 357s | VMAF 86.9 mean / **85.5 worst-scene** @ 0:04, XPSNR 42.3 dB |
 | same 4K source | 5 MB | AV1 **downscaled to 1920x1080**, 4.95 MB (12.6% of source), two-pass, 137s | VMAF 74.4 mean / **71.5 worst-scene** @ 0:04, XPSNR 39.1 dB |
 | Commercial FLAC track, 4:33, 44.1kHz stereo, 30.40 MB (933 kbps), embedded cover art | 8 MB | Opus ~234 kbps, 7.85 MB (25.8% of source), 2s, cover art preserved | "transparent (perceptually lossless)" |
+| Casual clip, 1:56 @ 30fps, 848x464, H.264, 19.93 MB (1.4 Mbps), low source bitrate | 10 MB | AV1 848x464, 9.94 MB (49.9% of source), two-pass, 259s | VMAF 98.7 mean / **94.6 worst-scene** @ 1:53, XPSNR 37.3 dB |
+| Phone-shot vertical clip, 1:07 @ 30fps, 720x1280, H.264, 33.83 MB (4.2 Mbps) | 10 MB | AV1 720x1280, 9.85 MB (29.1% of source), two-pass, 445s | VMAF 99.6 mean / **95.6 worst-scene** @ 1:03, XPSNR 40.1 dB |
+| Concert video, 4:18 @ 30fps, 1280x720, H.264, 80.43 MB (2.6 Mbps), low-light/high-motion crowd footage | 10 MB | AV1 1280x720, 9.86 MB (**12.3% of source, ~8x**), two-pass, 517s | VMAF 90.2 mean / **82.9 worst-scene** @ 1:38, XPSNR 40.5 dB |
 
-Both video rows are the same source at two targets, showing the size
-controller trading resolution for bitrate as the cap tightens rather than
-just cranking CRF: at 10 MB it keeps full 4K; at 5 MB it drops to 1080p to
-protect quality-per-pixel instead of holding 4K at a starved bitrate.
+The first two rows are the same 4K source at two targets, showing the
+size controller trading resolution for bitrate as the cap tightens rather
+than just cranking CRF: at 10 MB it keeps full 4K; at 5 MB it drops to
+1080p to protect quality-per-pixel instead of holding 4K at a starved
+bitrate. The last three are ordinary phone/screen-capture footage, not
+curated test clips — the concert video is the hard case, an 8x
+compression ratio on low-light, high-motion crowd footage, and still
+lands "excellent" (VMAF 90.2 / worst-scene 82.9).
+
 Worst-scene VMAF (2-second rolling window) is bolded because that's the
 floor the pipeline actually optimizes for, not the mean — a good average
 can hide one bad scene.
