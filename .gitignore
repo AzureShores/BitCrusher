@@ -16,6 +16,8 @@ logs/
 tmp/
 test_pipeline/out/
 test_pipeline/*.log
+test_pipeline/*.err
+test_pipeline/corpus/
 test_pipeline/results_*.json
 
 # Vendored binary tools
