@@ -64,14 +64,10 @@ def _bc_build_output_path(input_path: str, out_dir: str, adv: dict, default_ext:
 
 
 def _dedup_safe_output_path(candidate: str, avoid: str) -> str:
-    # _build_output_path only guards a candidate against colliding with ITS OWN
-    # input path -- it has no notion of a sibling duplicate's already-written
-    # output. Two duplicate source files that happen to share a basename
-    # (e.g. "clip.mp4" copied into two different folders) produce the exact
-    # same candidate from _bc_build_output_path, so a reuse-copy would collide
-    # with the canonical's own output (SameFileError, or a silent overwrite,
-    # depending on write order). Disambiguate the same way _build_output_path
-    # already disambiguates against its own input: an incrementing suffix.
+    # _build_output_path only guards against colliding with its own input, not
+    # a sibling duplicate's already-written output -- two sources sharing a
+    # basename in different folders would collide. Disambiguate the same way:
+    # an incrementing suffix.
     def _same(a, b):
         try:
             return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))

@@ -1718,26 +1718,17 @@ def compress_video(input_path: str, save_path: str, status_cb,
     _jsonl_log("start_job", {"type": "video", "input": input_path, "target_bytes": target_bytes,
                              "quality_mode": _qmode})
 
-    # === Fail-fast on an undecodable/unreadable source ======================
-    # get_video_metadata() never raises on a bad stream - it silently returns
-    # fabricated defaults (10s/1280x720/30fps), so a corrupt source used to
-    # sail through into the full primary + 5-fallback encode chain and burn
-    # several minutes before a generic "Encode failed" error. A cheap ffprobe
-    # (already cached, so this doesn't add a second probe later) is enough to
-    # catch a genuinely unreadable file up front without rejecting unusual-but
-    # -valid streams that ffmpeg can still decode.
+    # Fail fast on an unreadable source: get_video_metadata() silently returns
+    # fabricated defaults on a bad stream, so check the (cached) probe here
+    # instead of burning the full fallback chain on a corrupt file.
     _probe_streams = _probe_media_cached(input_path).get("streams") or []
     if not _probe_streams:
         _ledger_log_failure(input_path, {}, "probe", "probe_undecodable",
                             f"Source undecodable or unreadable: {input_path}")
         raise RuntimeError(f"[Probe] Source undecodable or unreadable: {input_path}")
-    # Extension-based routing (get_media_type) only looks at the filename, so an
-    # audio file saved with a video extension (e.g. a voice memo exported as
-    # .mp4) still lands here. It has streams (audio), so the check above passes,
-    # but with no video stream, width/height never get repaired downstream and
-    # the encode is attempted against a degenerate 0x0 geometry — guaranteed to
-    # fail through every fallback tier before raising a generic error. Catch it
-    # here, cheaply, using the probe we already have.
+    # An audio file with a video extension (get_media_type is extension-based)
+    # passes the probe check above but has no video stream, which would
+    # degrade to a 0x0 geometry and fail every fallback tier. Catch it here.
     if not any(str(s.get("codec_type") or "") == "video" for s in _probe_streams):
         _ledger_log_failure(input_path, {}, "probe", "probe_no_video_stream",
                             f"Source has no video stream: {input_path}")
@@ -2177,14 +2168,10 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 advanced_options["preset"] = str(_ppreset)
             if _ptune and not (advanced_options or {}).get("tune"):
                 tune = str(_ptune)
-            # Content-aware AQ/psy-RD tuning: select_profile() computes this for
-            # x264 but nothing downstream ever read it (only preset/tune were
-            # consumed here). x264 only — x265's equivalent output is NOT wired
-            # in: BitCrusherV9.py's x265 two-pass path (~1575) carries a measured
-            # comment that x265 defaults beat psy-rd/aq overrides by ~2 VMAF, so
-            # applying select_profile()'s x265-params here would silently revert
-            # that measured result. Merged onto the existing tuned default (not
-            # replaced) so mbtree/deblock/rc-lookahead/etc. are preserved.
+            # x264-only AQ/psy-RD tuning from select_profile(); x265's equivalent
+            # is deliberately not wired in (measured: x265 defaults beat psy-rd/
+            # aq overrides by ~2 VMAF). Merged onto the tuned default, not
+            # replaced, so mbtree/deblock/rc-lookahead etc. are preserved.
             _pxp = _prof.get("x264-params")
             if _pxp:
                 _x264_base_default = ("aq-mode=3:aq-strength=1.00:mbtree=1:deblock=-1,-1:psy-rd=1.10,0.15:"
@@ -2464,14 +2451,8 @@ def compress_video(input_path: str, save_path: str, status_cb,
     # Floor at HALF the feasible rate: the controller must be able to go BELOW
     # the seed to correct encoder overshoot (rate control is sloppy at low bps).
     _v_floor = int(max(24_000, min(140_000, _feasible_v_bps // 2)))
-    # Hard infeasibility: once _feasible_v_bps drops below 48 kbps, _v_floor's
-    # own 24 kbps minimum is forced ABOVE what actually fits the target, so
-    # every retry lands on the same floor and overshoots identically — no
-    # amount of retrying or downscaling changes an absolute bitrate floor.
-    # Shared by CLI and GUI since this runs inside compress_video() itself.
-    # Threshold matches _v_floor's own clamp (max(24_000, ...)): below 24_000,
-    # the floor is forced ABOVE what fits. 48_000 was 2x too conservative and
-    # false-positive-rejected feasible jobs in [24_000, 48_000).
+    # Hard infeasibility: below 24_000 bps, _v_floor's own minimum is forced
+    # above what fits the target, so every retry overshoots identically.
     if _feasible_v_bps < 24_000:
         _ledger_log_failure(input_path, _feats_ctx, "budget", "budget_infeasible",
                             f"Target {target_bytes} bytes infeasible for {dur:.1f}s of video")
@@ -2526,17 +2507,12 @@ def compress_video(input_path: str, save_path: str, status_cb,
         except Exception as _pp_e:
             status_cb(f"[Preproc] Skipped: {type(_pp_e).__name__}", "DEBUG")
 
-    # === Film-grain synthesis decision (AV1 only, measured) =================
-    # Grain is incompressible: at a fixed size cap it steals bits from the real
-    # signal. SVT/libaom AV1 can strip it before encoding and re-synthesize it
-    # from a model on playback — the bits go to the picture, the grain comes back
-    # for free. Decide by MEASUREMENT (a probe that compares denoise-on vs -off
-    # size), not the graininess feature (which doesn't track real grain). Skipped
-    # when the encoder isn't AV1, in fast mode, or when the preproc chain already
-    # denoises (don't strip grain twice). NOTE: VMAF reads a grain-denoised encode
-    # slightly lower (it counts grain as detail), so the win shows as picture
-    # quality at size, not as a higher VMAF number — perceptual validation is the
-    # planned SSIMULACRA2 work.
+    # Film-grain synthesis (AV1 only): grain is incompressible, so strip it
+    # before encoding and let SVT/libaom re-synthesize it on playback, freeing
+    # bits for the real picture. Decided by measuring denoise-on vs -off size,
+    # not the graininess feature. Skipped off-AV1, in fast mode, or if preproc
+    # already denoised. VMAF scores this slightly lower (counts grain as
+    # detail) even though picture quality at size improves.
     advanced_options.pop("_film_grain", None)
     _fg_mode = str((advanced_options or {}).get(
         "film_grain", ADVANCED_DEFAULTS.get("film_grain", "auto"))).lower()
@@ -2562,15 +2538,9 @@ def compress_video(input_path: str, save_path: str, status_cb,
         except Exception as _fg_e:
             status_cb(f"[Grain] Probe skipped: {type(_fg_e).__name__}", "DEBUG")
 
-    # === Outcome-ledger prediction (learning stage 2a: LIVE) ================
-    # Predict this content's first-attempt size deviation from past outcomes
-    # and seed the first attempt with it. Promoted from shadow mode after the
-    # cold-start batch measured it beating the baseline (mean error 4.5% vs
-    # 6.9%, within-5% 72% vs 50%). Guardrails: needs >=3 similar encodes, the
-    # correction is clamped, upward corrections respect the feasibility cap,
-    # and the size controller still corrects every later attempt. Predictions
-    # keep being logged against reality, so shadow_report stays a permanent
-    # self-audit; disable with learned_seed=False / --no-learned-seed.
+    # Outcome-ledger prediction: predict this content's first-attempt size
+    # deviation from past outcomes and seed the attempt with it. Needs >=3
+    # similar encodes, correction is clamped; disable with --no-learned-seed.
     _ol_dev, _ol_n = 1.0, 0  # safe defaults if the predictor errors before assigning below
     try:
         from learning.outcome_ledger import predict_deviation as _ol_predict, seed_adjust as _ol_seed
@@ -2608,17 +2578,10 @@ def compress_video(input_path: str, save_path: str, status_cb,
     except Exception:
         advanced_options["_ledger_shadow"] = None
 
-    # === Pre-flight guardrail (learning stage 2b: ADVISORY) =================
-    # With the encoder, bitrate and delivery resolution now final, ask the
-    # ledger how this content/codec has fared before at a comparable operating
-    # point. Two signals, both advisory (this NEVER changes the encode on its
-    # own — the codec race already MEASURES when it can; prediction only speaks
-    # up on race-skipped paths and honours an explicit/pinned encoder):
-    #   - warn when the worst-scene quality is predicted to collapse, or the
-    #     content/encoder historically overshoots the size cap (the old-film-at-
-    #     3MB failure mode the cold-start batch surfaced);
-    #   - suggest a better-scoring codec when the encoder is free to change and
-    #     no race ran to settle it.
+    # Pre-flight guardrail (advisory only, never changes the encode itself):
+    # ask the ledger how this content/codec has fared before, then warn on a
+    # predicted quality collapse or size overshoot, and suggest a better
+    # codec on race-skipped paths where the encoder is free to change.
     if bool((advanced_options or {}).get(
             "preflight_advice", ADVANCED_DEFAULTS.get("preflight_advice", True))):
         try:
@@ -2655,13 +2618,9 @@ def compress_video(input_path: str, save_path: str, status_cb,
         except Exception:
             advanced_options["_preflight"] = None
 
-    # === Shared two-pass pass-log for the whole size-convergence loop ========
-    # Every two-pass encode below (initial, seed, refine, retries, downscale,
-    # packing, quality-floor) shares one pass-1 analysis per encode signature
-    # (codec/resolution/preset/tune/filters/fps) — only the target bitrate
-    # differs between them, and pass-1 stats are bitrate-independent. This keys
-    # the reuse; a resolution/filter change transparently forces a fresh pass 1.
-    # Roughly halves the loop's total encode time on slow presets (x265 "slow").
+    # Shared two-pass pass-log: every two-pass encode in this convergence loop
+    # reuses one pass-1 analysis per encode signature (bitrate-independent),
+    # roughly halving total encode time on slow presets.
     _pl_reuse_on = bool((advanced_options or {}).get(
         "twopass_passlog_reuse", ADVANCED_DEFAULTS.get("twopass_passlog_reuse", True)))
     # Bench/debug override: BC_TWOPASS_PL_REUSE=0 forces the old behaviour (a
@@ -3005,14 +2964,9 @@ def compress_video(input_path: str, save_path: str, status_cb,
     _max_attempts_ctl = int((advanced_options or {}).get("iterative_max_attempts")
                             or (3 if _qmode_ctl == "fast" else max(7, ITERATIVE_MAX_ATTEMPTS)))
 
-    # Warm-start the controller's bytes-per-bit search window from the ledger's
-    # own size-deviation prediction (_ol_dev/_ol_n, already computed above)
-    # instead of always starting from the same cold [0.35, 1.80] range. This is
-    # a DIFFERENT lever than the existing live bitrate seed (_ol_seed): that one
-    # picks the first attempt's bitrate; this narrows the controller's internal
-    # k-estimate bounds so fewer retries are needed to bracket a good value,
-    # even when it's already seeded well. Same >=3-neighbor trust gate as the
-    # rest of the ledger's live-acting predictions (seed_adjust's min_n=3).
+    # Warm-start the controller's k-estimate bounds from the same ledger
+    # prediction (_ol_dev/_ol_n) instead of the cold [0.35, 1.80] default, so
+    # fewer retries are needed to bracket a good value. Same >=3-neighbor gate.
     _k_low_ctl, _k_high_ctl = 0.55, 1.25  # SizeController's own cold-start defaults
     if _ol_n >= 3 and _ol_dev:
         try:
@@ -3135,15 +3089,9 @@ def compress_video(input_path: str, save_path: str, status_cb,
         except Exception:
             pass
 
-    # === Last-resort ceiling guard: downscale-and-retry ====================
-    # Every bitrate at the current resolution was tried and the best result is
-    # STILL over the ceiling (rate control can overshoot a very low target at a
-    # high resolution — the encoder cannot compress that much detail that far).
-    # Stepping the resolution down lets rate control actually reach the feasible
-    # bitrate, honouring the never-over invariant instead of shipping an
-    # oversized file. Toggle-gated, budget-bounded; only a genuinely-under
-    # result is ever kept (via _is_better_size), and new_w/new_h are updated so
-    # the ledger records the EFFECTIVE resolution.
+    # Last-resort ceiling guard: every bitrate at this resolution still
+    # overshot (too much detail for the target at this size), so step the
+    # resolution down and retry rather than ship an oversized file.
     _downscale_on = bool((advanced_options or {}).get(
         "ceiling_downscale_retry", ADVANCED_DEFAULTS.get("ceiling_downscale_retry", True)))
     if (int(final_size) > int(hard_target_bytes) and _downscale_on
@@ -3635,13 +3583,9 @@ def compress_video(input_path: str, save_path: str, status_cb,
         except Exception:
             _advisor_q_pred = None
 
-        # ai_advisor's Ridge model (_MODEL) was never actually trained in
-        # production: its only prior caller, cache_store_advised (aliased
-        # `cache_store` above), fires before VMAF is measured in this
-        # function, so measured_quality was always None and post_encode_learn
-        # always skipped (by design -- it refuses to self-label). VMAF IS
-        # measured by now (vmaf_result, used for outcome.vmaf below), so learn
-        # from it here instead. Still a no-op whenever VMAF wasn't measured.
+        # cache_store_advised fires before VMAF is measured, so it never had a
+        # measured_quality to learn from. VMAF is measured by now -- learn here
+        # instead. No-op whenever VMAF wasn't measured.
         try:
             from encode.ai_advisor import post_encode_learn as _ol_advisor_learn
             _ol_advisor_learn(
@@ -4445,15 +4389,9 @@ def settings_window():
     Button(win, text="Close", command=win.destroy).pack(pady=10)
 
 
-# =====================================================================
-# Trim-aware compression ("don't encode the boring parts")
-# =====================================================================
-# Every encoder-side trick fights for single-digit quality-per-bit percentages;
-# cutting duration is a 2-10x lever (half the clip = double the bitrate under
-# the same cap). A trim range produces a stream-copied intermediate (fast, zero
-# quality loss) that the whole pipeline then consumes unchanged — features,
-# codec race, preprocessing, VMAF and packing all operate on the trimmed
-# content automatically. The source file is never modified.
+# Trim-aware compression: a trim range produces a stream-copied intermediate
+# (fast, zero quality loss) that the whole pipeline then consumes unchanged;
+# the source file is never modified.
 
 def auto_compress(input_path: str, save_path: str, status_callback,
                   target_size_mb: int, webhook_url: str,
@@ -11946,15 +11884,8 @@ def cli_main():
 
 
 # ---------------------------------------------------------------------------
-# Folder-watcher method repair.
-# start/stop/toggle_folder_watcher were lost to an indentation slip:
-# start_folder_watcher became a module-level function (and referenced a
-# non-existent self.file_callback), while stop/toggle landed inside the
-# FolderWatcher class — so NONE were CompressorGUI methods. The "Enable watcher"
-# checkbox (getattr(self,"toggle_watch_folder",lambda:None)) was therefore a
-# silent no-op and every self.start_folder_watcher() call raised AttributeError.
-# Bind correct versions that drive the already-wired self.watcher (its
-# on_file_ready -> _enqueue_from_watcher path works).
+# start/stop/toggle_folder_watcher as CompressorGUI methods, driving the
+# already-wired self.watcher (on_file_ready -> _enqueue_from_watcher).
 def _cgui_start_folder_watcher(self):
     import os
     folder = (self.watch_folder.get() if hasattr(self, "watch_folder") else "").strip()

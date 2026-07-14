@@ -13,12 +13,9 @@ from encode.encoder_caps import best_av1_encoder
 from encode.media_probe import _probe_video_stream
 from encode.quality_metrics import _vmaf_model_opt
 
-# =====================================================================
-# Codec-race VMAF probing: short representative-segment A/B/... shootouts
-# used both to pick a winning encoder (choose_best_codec_by_vmaf) and to
-# validate preprocessing filter chains (preproc.py, via the same
-# _probe_ref_clip/_probe_codec_args/_probe_vmaf_fullrate primitives).
-# =====================================================================
+# Codec-race VMAF probing: short representative-segment shootouts used to
+# pick a winning encoder and to validate preprocessing filter chains
+# (preproc.py reuses these same probe primitives).
 
 
 def _rmtree_quiet(path: str | None) -> None:
@@ -271,12 +268,9 @@ def choose_best_codec_by_vmaf(input_path: str, *, duration_s: float, video_bps: 
                     scores.setdefault(tag, []).append(float(vm))
                     sizes[tag] = sizes.get(tag, 0) + os.path.getsize(clip)
 
-        # Bit-normalized scoring. Encoders don't hit -b:v exactly on short probe
-        # segments: SVT-AV1's VBR runs hot (observed 2.32MB vs x265's 0.52MB at
-        # the SAME target), so raw VMAF rewarded whichever codec overshot the
-        # budget hardest — not the one with the best quality-per-bit. Credit a
-        # codec that undershot and penalise one that overshot, both relative to
-        # the target bytes, so the race compares codecs at a common bit budget.
+        # Bit-normalized scoring: encoders don't hit -b:v exactly on short probe
+        # segments (SVT-AV1 runs hot), so raw VMAF rewarded whoever overshot
+        # hardest. Credit/penalise relative to target bytes instead.
         _VMAF_PER_DOUBLING = 4.0  # ~VMAF points gained per 2x bitrate in this range
         raw: dict[str, float] = {}
         results: dict[str, float] = {}

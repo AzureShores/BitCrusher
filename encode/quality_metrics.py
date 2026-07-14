@@ -27,24 +27,12 @@ def vmaf_quality_label(score: float) -> str:
 
 
 
-# =====================================================================
-# VMAF model resolution (prefer VMAF v1 when the build/model is available)
-# =====================================================================
-# Netflix released VMAF v1 (Jun 2026): NEG-by-default, banding + chroma aware,
-# unified viewing-distance model. libvmaf's built-in identifier for it varies by
-# build, and older builds don't embed it at all, so we RESOLVE the best available
-# model once (validated against the actual ffmpeg) instead of hardcoding one.
-#
-# Precedence (env BC_VMAF_MODEL or module pref, default "auto"):
-#   - a raw "model=" value (contains '=')      -> used verbatim
-#   - "default"/"v0.6.1"                        -> build default (vmaf_v0.6.1)
-#   - "neg"                                     -> vmaf_v0.6.1neg (anti-gaming, today)
-#   - "4k"                                      -> vmaf_4k_v0.6.1
-#   - "v1"                                      -> require v1 (file or embedded); warn if absent
-#   - "auto" (default)                          -> v1 if available, else v0.6.1 (no scale change)
-#
-# To enable v1 before your ffmpeg embeds it, drop the model .json into
-# tools/vmaf_models/ (offline; no download) or set BC_VMAF_MODEL.
+# VMAF model resolution. libvmaf's v1 identifier varies by build and older
+# builds don't embed it, so resolve the best available model once instead of
+# hardcoding one. Pref (env BC_VMAF_MODEL or module pref, default "auto"):
+# raw "model=..." used verbatim | "default"/"v0.6.1" | "neg" | "4k" |
+# "v1" (require, warn if absent) | "auto" = v1 if available else v0.6.1.
+# Drop a model .json into tools/vmaf_models/ to enable v1 offline.
 _VMAF_V1_CANDIDATES = ["vmaf_v1", "vmaf_v1neg", "vmaf_v1_neg",
                        "vmaf_v1_hd", "vmaf_v1_1080p", "vmaf_v1_4k", "vmaf_4k_v1"]
 _VMAF_MODEL_PREF = None            # GUI/CLI may set this; env still wins
@@ -266,21 +254,10 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
 
     n_threads = max(1, min(16, (os.cpu_count() or 4)))
     fps = max(1.0, float(sample_fps))
-    # Align BOTH streams to a common timeline before sampling:
-    #   setpts=PTS-STARTPTS  — rebase to t=0. Critical: many downloaded/re-muxed
-    #     files carry a start-PTS offset (e.g. one-frame 0.04s delay from an edit
-    #     list). The encoder strips it, so distorted starts at 0 while the source
-    #     starts at 0.04 — libvmaf's framesync then pairs every distorted frame
-    #     against the reference frame one position off, scoring rapid-cut scenes
-    #     ~0 and dragging a genuinely-fine encode down by 20-30 VMAF (a real file
-    #     measured 57 instead of ~82). Frame-INDEX decimation (select mod n) did
-    #     NOT fix this: the offset frame is decoded asymmetrically between the two
-    #     inputs, so the indices themselves drift.
-    #   fps=sample_fps      — resample both to the SAME fixed rate off that common
-    #     origin, so identical wall-clock frames are compared even on VFR sources
-    #     (the case index-decimation was originally meant to protect — the missing
-    #     piece was the PTS rebase, not the sampling method). Also cheaper than
-    #     full-rate scoring, with negligible accuracy loss.
+    # Rebase both streams to t=0 (PTS-STARTPTS) before sampling: a start-PTS
+    # offset from re-muxing otherwise misaligns libvmaf's framesync by one
+    # frame, tanking VMAF 20-30pts on rapid-cut content. Then resample both to
+    # the same fixed fps so VFR sources compare identical wall-clock frames.
     _sync = f"setpts=PTS-STARTPTS,fps={fps:g}"
     # Write the log to a bare filename inside a temp working dir: a full Windows
     # path like C:/... contains a colon that libvmaf's filter-option parser

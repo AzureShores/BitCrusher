@@ -253,13 +253,10 @@ def _encode_audio_once(input_path: str, output_path: str, *,
 
     af_chain = ",".join(af) if af else None
 
-    # Metadata + cover art. The old path used "-vn" (drops the album cover, which
-    # is stored as an attached-picture video stream) AND the privacy default
-    # "-map_metadata -1" (strips title/artist/album) — so every compressed track
-    # came out naked. For music that's a data-loss bug: tags/art are the point
-    # and aren't privacy-sensitive. Preserve both by default; only "strict"
-    # privacy strips. Cover art can only ride containers with a picture stream —
-    # ogg/opus cannot carry a copied mjpeg, so opus keeps tags but not the image.
+    # Preserve metadata + cover art by default (tags/art are the point for
+    # music, not privacy-sensitive); only "strict" privacy strips them.
+    # ogg/opus can't carry a copied mjpeg picture stream, so it keeps tags but
+    # not the image.
     _strict_privacy = str(privacy_preset or "").lower() == "strict"
     _out_ext = os.path.splitext(output_path)[1].lower().lstrip(".")
     _is_ogg = _out_ext in ("opus", "ogg")

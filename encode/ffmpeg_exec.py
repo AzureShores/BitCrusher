@@ -378,11 +378,9 @@ def _ffmpeg_run_with_progress(cmd: list, duration_s: float, pass_label: str, cwd
             text=True,
             bufsize=1,
         )
-        # IMPORTANT: x265 (and other encoders) write progress/info straight to
-        # stderr even at -loglevel error. If we don't drain stderr it fills the
-        # OS pipe buffer (~64 KB) and the encoder blocks mid-pass, silently
-        # failing the encode. Drain it on a background thread, keeping the tail
-        # for error diagnosis.
+        # x265 writes progress to stderr even at -loglevel error; an undrained
+        # stderr fills the OS pipe buffer and blocks the encoder mid-pass.
+        # Drain on a background thread, keeping the tail for diagnosis.
         from collections import deque
         _err_tail: deque = deque(maxlen=40)
         def _drain_stderr(pipe):
@@ -562,11 +560,9 @@ def _ffmpeg_two_pass_encode(
         a2 = ["-an"]
 
     preset = str(preset or "medium")
-    # Turbo used to run pass 1 at a faster PRESET, but x264/x265 two-pass stats
-    # are preset-specific — a fast→medium mismatch makes pass 2 fail to open the
-    # encoder ("Invalid argument"). x264 already runs a fast first pass
-    # internally (unless --slow-firstpass), so both passes must share a preset.
-    # VP9's per-pass -cpu-used speedup (below) IS pass-safe and still applies.
+    # x264/x265 two-pass stats are preset-specific -- a preset mismatch between
+    # passes makes pass 2 fail to open the encoder, so both share one preset.
+    # VP9's per-pass -cpu-used speedup below is pass-safe and still applies.
     preset_p1 = preset
     _adv = advanced_options or {}
 
@@ -575,14 +571,10 @@ def _ffmpeg_two_pass_encode(
     base = [FFMPEG, "-y", "-hide_banner", "-loglevel", "error"] + _hw + ["-i", input_path,
             "-map_metadata", "-1", "-map_chapters", "-1", "-sn", "-dn"]
 
-    # === Pass-1 stats reuse (shared pass-log) ==============================
-    # Pass 1 (whole-file complexity analysis) is identical for every encode of
-    # this source that shares codec + resolution + fps + preset + tune + filter
-    # chain + codec params; only the target bitrate differs, and pass-1 stats are
-    # bitrate-independent. When the caller supplies a shared pass-log dir (the
-    # size-convergence loop does), key the log on those invariants and reuse the
-    # stats across calls so only pass 2 re-runs — roughly halving the loop's
-    # encode time. A resolution/filter change yields a new key = a fresh pass 1.
+    # Pass-1 stats reuse: pass 1 is identical for every encode sharing the same
+    # codec/resolution/preset/tune/filter/params signature (bitrate-independent),
+    # so key on that and reuse it when the caller supplies a shared pass-log dir
+    # -- only pass 2 re-runs, roughly halving the loop's encode time.
     import hashlib as _hashlib
     _sig_src = "|".join([
         vcodec, str(int(width or 0)), str(int(round(float(fps or 0.0)))),
@@ -616,12 +608,9 @@ def _ffmpeg_two_pass_encode(
     # Codec-specific two-pass
     try:
         if vcodec == "libsvtav1":
-            # SVT-AV1 1-pass VBR is wildly loose on hard-cut content: on
-            # asdfmovie (a cut every ~2s) -b:v 605k produced 2.0x the target,
-            # and dropping the rate barely shrank the file — 1-pass hits a floor
-            # it can't plan past. 2-pass VBR measures the whole-file complexity
-            # in pass 1 and actually holds the budget in pass 2. SVT writes its
-            # stats to <passlogfile>-0.log via the generic ffmpeg -pass flags.
+            # SVT-AV1 1-pass VBR is wildly loose on hard-cut content (measured
+            # 2x target, unresponsive to rate drops). 2-pass measures whole-file
+            # complexity in pass 1 and actually holds the budget in pass 2.
             _svt_p = media_probe._SVT_PRESET_MAP.get(str(preset).lower(), "6")
             _svt_max = str((_adv or {}).get("quality_mode") or "").lower() == "max"
             if _svt_max:

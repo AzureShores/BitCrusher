@@ -43,12 +43,9 @@ _FEATURE_NORM = {
 _SHRINK_K = 3.0          # pseudo-samples pulling predictions toward the prior
 _MAX_RECORDS = 5000      # newest records kept in memory when loading
 
-# Soft weight for the categorical operating-point flags (film-grain synthesis,
-# preprocessing, spotlight) added to the neighbour distance. These op modes
-# change size/quality materially, so a mismatch should PENALISE a neighbour --
-# but softly, so the thin cold-start pool is not fragmented into empty buckets
-# the way a hard filter would. A mismatch on one flag adds (_OP_FLAG_WEIGHT**2)
-# to the squared distance; content features (scaled to ~0..2) still dominate.
+# Soft penalty for mismatched operating-point flags (film-grain, preproc,
+# spotlight) added to neighbour distance -- soft so the thin cold-start pool
+# isn't fragmented the way a hard filter would.
 _OP_FLAG_WEIGHT = 0.6
 
 
@@ -610,12 +607,9 @@ QUALITY_COLLAPSE_WORST = 60.0
 QUALITY_WARN_WORST = 75.0
 OVERSHOOT_WARN_RATIO = 1.06     # predicted achieved-size / target above this = cap risk
 _MIN_PRIOR_N = 3                # neighbors required before the prior will speak
-# Below this a min_window reading isn't "hard content", it's a black leader/
-# title-card frame tanking one VMAF window to near-zero (real worst-content
-# collapse bottoms around ~44, see QUALITY_COLLAPSE_WORST above) - untrustworthy
-# as a worst-window training signal. The record's mean VMAF is unaffected (a
-# few black frames barely move a whole-clip average) so only worst is dropped,
-# not the whole record.
+# Below this, min_window is a black leader/title-card frame tanking to near
+# zero, not real hard content -- drop only the worst-window signal, keep the
+# record's mean VMAF (barely moved by a few black frames).
 _WORST_WINDOW_TRUST_FLOOR = 5.0
 
 

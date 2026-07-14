@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import re
 
-# Emoji / pictograph / symbol ranges (dingbats, supplemental symbols, flags,
-# variation selectors, ZWJ) — everything the status messages decorate with.
-# Built from chr() rather than embedded as literal escapes so this module
-# (unlike the original monolith, which a BOM quirk exempts from the scan)
-# doesn't trip tests/test_regressions.py::test_logs_are_ascii_only on its own
-# pattern definition -- same technique that file's own _C1_RE already uses.
+# Emoji/pictograph/symbol ranges. Built from chr() rather than literal
+# escapes so this module's own pattern definition doesn't trip
+# test_logs_are_ascii_only.
 _EMOJI_RANGES = (
     (0x1F000, 0x1FAFF),
     (0x2600, 0x27BF),

@@ -51,12 +51,9 @@ def _bc_file_sig(path: str) -> str:
     return h.hexdigest()
 
 def _bc_content_hash(path: str) -> str | None:
-    # Path- and mtime-independent whole-file hash for cross-file batch dedup --
-    # unlike _bc_file_sig (path+mtime+first-2MB, built for single-file re-encode
-    # recall), this must match byte-identical content regardless of where it's
-    # saved, so it hashes the full file and nothing else. Returns None on any
-    # read failure so callers can exclude the file from the dedup index without
-    # aborting the batch.
+    # Path/mtime-independent whole-file hash for cross-file batch dedup (unlike
+    # _bc_file_sig, which is path+mtime+first-2MB). None on read failure so
+    # callers can exclude the file without aborting the batch.
     try:
         h = hashlib.sha256()
         with open(path, "rb") as f:

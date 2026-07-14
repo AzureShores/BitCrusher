@@ -11,19 +11,11 @@ from encode.ffmpeg_exec import si, NO_WIN, _ffmpeg_has_filter
 from encode.encoder_caps import best_av1_encoder
 from encode.codec_race import _probe_ref_clip, _probe_codec_args, _probe_vmaf_fullrate
 
-# =====================================================================
-# Artifact/texture-aware preprocessing (VMAF-validated)
-# =====================================================================
-# Re-compressed sources arrive pre-loaded with banding/blocking, and dense
-# texture (game footage, grainy captures) starves the encoder at Discord-sized
-# targets — it spends the whole budget faithfully reproducing noise. Targeted
-# prefilters (deband / deblock / denoise) let those bits go to structure
-# instead. The catch: prefilters can also HURT (smearing real detail), so no
-# filter ships on faith — every candidate chain is A/B probed against the
-# unfiltered encode at the real operating point (same encoder, same bitrate,
-# same delivery resolution, scored with full-rate VMAF against the pristine
-# source) and kept only when it measurably wins. With the VMAF v1 model active
-# the validator also SEES banding (CAMBI), so deband decisions are honest.
+# Artifact/texture-aware preprocessing: deband/deblock/denoise let a starved
+# encoder spend bits on structure instead of noise. Prefilters can also hurt
+# (smearing real detail), so every candidate chain is A/B probed against the
+# unfiltered encode at the real operating point and kept only if it measurably
+# wins full-rate VMAF against the pristine source.
 
 
 def _rmtree_quiet(path: str | None) -> None:

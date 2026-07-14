@@ -193,22 +193,10 @@ def _ratio_badge(r: float) -> str:
     return "AAA" if r >= 7 else ("AA" if r >= 4.5 else ("A" if r >= 3 else "LOW"))
 
 
-# =====================================================================
-# Theme Lab (reworked)
-# =====================================================================
-# Design principles of the rework:
-#  - NON-DESTRUCTIVE: all edits happen on a draft. Nothing touches theme_var,
-#    settings, or disk until Apply / Save As. Closing without applying restores
-#    the exact state you opened with (including fonts).
-#  - SMOOTH: the embedded preview panel repaints instantly from the draft
-#    (cheap direct tk configs); the full-app retheme is debounced to ~6/s.
-#    The old lab ran a full recursive widget retheme per slider tick, which is
-#    where the choppiness came from.
-#  - HONEST CONTROLS: the fake "corner radius" knob is gone (tk's clam theme
-#    cannot round corners); padding scale and border width remain because they
-#    actually work. Contrast badges get their own column and update live.
-#  - ONE pseudo-theme ("__themelab_preview__") exists only while the lab is
-#    open and is removed on close; committed themes are real named entries.
+# Theme Lab: edits happen on a non-destructive draft (nothing touches
+# theme_var/settings/disk until Apply/Save As); the full-app retheme is
+# debounced to ~6/s to avoid the old per-slider-tick choppiness; the preview
+# uses a temporary pseudo-theme removed on close.
 
 _THEMELAB_KEYS = ("APP_BG", "CARD_BG", "FG", "FG_SUB",
                   "ACCENT", "ACCENT_2", "ERROR", "WARN", "TITLE")

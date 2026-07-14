@@ -128,26 +128,20 @@ def determine_resolution(width: int, height: int, target_bitrate: int, fps_hint:
     pix_rate = float(width * max(1, int(height))) * fps
     bpppf = float(target_bitrate) / max(1.0, pix_rate)
 
-    # Content-aware: flat/simple content (screen recordings, UI, flat cartoons)
-    # compresses CHEAPLY at native resolution — downscaling it only smears its
-    # sharp text/edges for no real bitrate saving. The Shutter face-off caught
-    # BitCrusher losing a screen rec (2166->1280, VMAF 81) to a native-res 2-pass
-    # (VMAF 94). spatial_complexity separates it cleanly (~1 flat vs ~2.5+ natural),
-    # so boost the effective bits/pixel for LOW-complexity content to keep its
-    # resolution. Floored at 1.0 — never penalizes complex content.
+    # Flat/simple content (screen recordings, UI, flat cartoons) compresses
+    # cheaply at native resolution -- downscaling it just smears sharp
+    # text/edges for no real bitrate saving. spatial_complexity separates it
+    # cleanly (~1 flat vs ~2.5+ natural); boost effective bits/pixel for
+    # low-complexity content to hold its resolution. Floored at 1.0.
     try:
         _cx = float(complexity) if complexity is not None else 0.0
     except Exception:
         _cx = 0.0
-    # Cap 2.2 (numerator/denom-floored-at-1.0) topped out at 2.2x, which still left
-    # a 2166-wide screen rec (cx~0.97, ~600 kbps) at 1600w and it LOST a face-off
-    # to a native-res 2-pass (VMAF 94 vs 88.6 at a SMALLER size). Genuinely-flat
-    # content (cx < 1.2: screen/UI/flat cartoon) gets a stronger fixed boost so it
-    # reaches the native-res bpppf rung at realistic budgets. Gated at cx < 1.2 on
-    # PURPOSE: raising the shared numerator would also boost mid-complexity natural
-    # video (cx 2.2-3.0) and risk downscaling regressions on the 4K reference the
-    # original fix protected. cx >= 1.2 keeps the exact old 2.2/cx curve. Still
-    # floored by the bpppf ladder below, so a truly starved budget downscales anyway.
+    # cx < 1.2 (genuinely flat) gets a stronger fixed 3.0x boost -- the shared
+    # 2.2/cx curve alone wasn't enough to hold native res at realistic screen-
+    # rec budgets (measured: lost a face-off, VMAF 88.6 downscaled vs 94
+    # native, in a smaller file). Gated so it can't also boost mid-complexity
+    # natural video and risk a 4K downscale-threshold regression.
     _FLAT_KEEPRES_BOOST = 3.0
     if _cx > 0.0:
         if _cx < 1.2:

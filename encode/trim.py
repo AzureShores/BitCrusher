@@ -14,12 +14,9 @@ from encode.media_probe import get_video_metadata
 from encode.audio_encode import _probe_audio_meta
 from encode.feature_helpers import _count_audio_streams
 
-# ---- Trim-aware compression core -------------------------------------------
-# Cutting duration is a 2-10x lever (half the clip = double the bitrate under
-# the same cap). A trim range produces a stream-copied intermediate (fast, zero
-# quality loss) that the whole pipeline then consumes unchanged - features,
-# codec race, preprocessing, VMAF and packing all operate on the trimmed
-# content automatically. The source file is never modified.
+# Trim-aware compression: a trim range produces a stream-copied intermediate
+# (fast, zero quality loss) that the whole pipeline consumes unchanged. The
+# source file is never modified.
 
 
 def _rmtree_quiet(path: str | None) -> None:
@@ -169,14 +166,9 @@ def make_trim_intermediate(input_path: str, start_s: float, end_s: float, *,
         return None
 
 
-# ---- Trim suggestion markers (audio-energy analysis) ------------------------
-# Offline heuristic ASSISTANT for picking a trim range: windowed RMS loudness
-# per audio track, z-scored per track so a quiet mic and loud game audio are
-# comparable. Track 2+ (the OBS/ShadowPlay mic convention) is weighted higher —
-# a mic spike over steady game audio is the best available "something just
-# happened" signal. These are suggestions, never automatic cuts: semantically
-# important-but-silent moments (a great play in a card game) are undetectable
-# by any signal analysis, so manual trim stays the primary interface.
+# Trim suggestion markers: windowed RMS loudness per audio track, z-scored so
+# a quiet mic and loud game audio are comparable. Track 2+ (mic convention)
+# weighted higher. Suggestions only, never automatic cuts.
 
 def _fmt_ts(seconds: float) -> str:
     s = max(0, int(round(float(seconds))))

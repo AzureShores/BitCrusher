@@ -138,13 +138,10 @@ def probe_rate_quality(
     diagnostics: Dict[str, Any] = {"encoder": str(encoder)}
     points: List[Tuple[int, float]] = []
 
-    # Sample each CRF point at a DIFFERENT scene position (round-robin across the
-    # provided segments) so the fitted rate-quality curve reflects the whole
-    # video's complexity — a calm opening scene alone badly under-predicts the
-    # bitrate an action-heavy title needs, causing repeated size-correction
-    # re-encodes. To remove position bias from the curve, we also normalise each
-    # point's size by that segment's relative complexity, estimated from a single
-    # shared anchor CRF encoded on every segment.
+    # Sample each CRF point at a different scene position (round-robin) so the
+    # fitted curve reflects the whole video, not just a calm opening scene.
+    # Normalise each point's size by segment complexity (a shared anchor CRF
+    # encoded on every segment) to remove position bias.
     seg_list = [(float(s[0]), float(s[1])) for s in segments if float(s[1]) > 0.0]
     if not seg_list:
         seg_list = [(0.0, 1.0)]
