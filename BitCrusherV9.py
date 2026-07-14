@@ -294,7 +294,11 @@ except Exception:
     pass
 
 
-def _log_env_banner():
+def _log_env_banner(handbrake_cli=None, ffmpeg=None, ffprobe=None):
+    """Called after load_paths() resolves the real tool locations (tools/
+    folder, env vars, or PATH) -- probing bare tool names here instead used
+    to log a spurious ERROR for every install, including ones where the
+    tools are correctly sitting in tools/ and just not on PATH."""
     try:
         LOG.info("======== BitCrusher start ========")
         LOG.info("Python: %s", sys.version.replace("\n", " "))
@@ -309,14 +313,16 @@ def _log_env_banner():
                 return out[0] if out else ""
             except Exception:
                 return ""
-        for tool in ("HandBrakeCLI", "ffmpeg", "ffprobe"):
-            v = _first_line([tool, "-h"]) or _first_line([tool, "-version"])
+        for name, exe in (("HandBrakeCLI", handbrake_cli or "HandBrakeCLI"),
+                          ("ffmpeg", ffmpeg or "ffmpeg"),
+                          ("ffprobe", ffprobe or "ffprobe")):
+            v = _first_line([exe, "-h"]) or _first_line([exe, "-version"])
             if v:
-                LOG.info("%s: %s", tool, v)
+                LOG.info("%s: %s", name, v)
+            else:
+                LOG.warning("%s not found (looked for: %s)", name, exe)
     except Exception:
         LOG.exception("Failed to log environment banner")
-
-_log_env_banner()
 
 def _format_exc(exc_type, exc, tb):
     return "".join(traceback.format_exception(exc_type, exc, tb))
@@ -702,6 +708,7 @@ HANDBRAKE_CLI, FFPROBE, FFMPEG = load_paths()
 log_tool_paths(HANDBRAKE_CLI, FFMPEG, FFPROBE)
 _set_ffmpeg_exec_path(FFMPEG)
 _set_ffprobe_exec_path(FFPROBE)
+_log_env_banner(HANDBRAKE_CLI, FFMPEG, FFPROBE)
 _set_handbrake_exec_path(HANDBRAKE_CLI)
 
 def resource_path(rel_path: str) -> str:
@@ -11765,6 +11772,16 @@ def cli_main():
     files = _expand_inputs(args.inputs)
     if not files:
         print("No matching files found.")
+        return 1
+
+    _missing = [name for name, exe in (("HandBrakeCLI", HANDBRAKE_CLI),
+                                        ("ffmpeg", FFMPEG), ("ffprobe", FFPROBE))
+                if not shutil.which(exe)]
+    if _missing:
+        print("Missing required tool(s): " + ", ".join(_missing))
+        print("Install them and put them on PATH, drop the .exe files into the "
+             "'tools' folder next to BitCrusherV9.py, or set the BC_FFMPEG/BC_FFPROBE "
+             "env vars to point at them.")
         return 1
 
     # Analysis-only mode: print candidate trim ranges and exit (no compression).
