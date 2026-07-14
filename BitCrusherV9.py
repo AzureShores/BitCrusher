@@ -4870,52 +4870,6 @@ class DinoRunner:
 
 class CompressorGUI:
 
-    HB_URL = "https://github.com/HandBrake/HandBrake/releases/download/1.7.0/HandBrakeCLI-1.7.0-win64.zip"
-    # Full-featured build (BtbN GPL): includes SVT-AV1 (fast AV1), libvmaf and
-    # the wide filter set — required for the AV1 auto-pick on long content.
-    # (gyan.dev's "full" build is only distributed as .7z, which the installer
-    # cannot extract; BtbN ships an equivalent build as a plain .zip.)
-    FF_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-
-    def install_tool(self, name, url):
-        
-        tools_dir = os.path.join(SCRIPT_DIR, "tools")
-        os.makedirs(tools_dir, exist_ok=True)
-        dest_zip = os.path.join(tools_dir, f"{name}.zip")
-        self.update_status(f"Downloading {name}...", level="INFO")
-        try:
-            r = requests.get(url)
-            with open(dest_zip, "wb") as f:
-                f.write(r.content)
-            with zipfile.ZipFile(dest_zip, "r") as zip_ref:
-                zip_ref.extractall(tools_dir)
-            self.update_status(f"{name} installed.", level="INFO")
-        except Exception as e:
-            self.update_status(f"Failed to install {name}: {e}", level="ERROR")
-
-    def check_dependencies(self):
-        import shutil
-
-        hb = DEFAULT_HANDBRAKE  if os.path.exists(DEFAULT_HANDBRAKE) else shutil.which("HandBrakeCLI") or shutil.which("HandBrakeCLI.exe")
-        ff = DEFAULT_FFMPEG     if os.path.exists(DEFAULT_FFMPEG)    else shutil.which("ffmpeg")        or shutil.which("ffmpeg.exe")
-        fp = DEFAULT_FFPROBE    if os.path.exists(DEFAULT_FFPROBE)   else shutil.which("ffprobe")       or shutil.which("ffprobe.exe")
-
-        hb = hb or "HandBrakeCLI.exe"
-        ff = ff or "ffmpeg.exe"
-        fp = fp or "ffprobe.exe"
-
-        self.handbrake_path = hb
-        self.ffmpeg_path    = ff
-        self.ffprobe_path   = fp
-
-        
-
-        if not shutil.which(HANDBRAKE_CLI) or not os.path.isfile(HANDBRAKE_CLI):
-            self.install_tool("HandBrakeCLI", self.HB_URL)
-        if not shutil.which(FFMPEG) or not os.path.isfile(FFMPEG):
-            self.install_tool("ffmpeg", self.FF_URL)
-            
-
     def setup_directories(self):
         import os
         for folder in ["user_settings", "heuristics"]:
@@ -9204,81 +9158,15 @@ class CompressorGUI:
 
 
     def install_tool(self, name: str):
-        
-        import hashlib
-        from zipfile import ZipFile, is_zipfile
-
-        tool_urls = {
-            "HandBrakeCLI": {
-                "url": "https://github.com/HandBrake/HandBrake/releases/download/1.7.3/HandBrakeCLI-1.7.3-win-x86_64.zip",
-                "exe": "HandBrakeCLI.exe"
-            },
-            "ffmpeg": {
-                "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-                "exe": "ffmpeg.exe"
-            },
-            "ffprobe": {
-                "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-                "exe": "ffprobe.exe"
-            }
-        }
-
-        info = tool_urls.get(name)
-        if not info:
-            self.update_status(f"Unknown tool: {name}", level="ERROR")
-            return
-
-
+        """Delegates to support.tool_installer (safe zip-slip-checked extract,
+        retries, sha256-capable) instead of duplicating that logic here."""
+        from support.tool_installer import install_tool as _install_tool, ToolInstallError
         tools_dir = Path(SCRIPT_DIR) / "tools"
-        tools_dir.mkdir(exist_ok=True)
-
-        exe_path = tools_dir / info["exe"]
-        zip_path = tools_dir / f"{name}.zip"
-        url = info["url"]
-
-        if exe_path.exists():
-            self.update_status(f"{name} already installed at: {exe_path}")
-            return
-
-        self.update_status(f"Downloading {name}...")
-
-        for attempt in range(3):
-            try:
-                r = requests.get(url, stream=True, timeout=30)
-                r.raise_for_status()
-                with open(zip_path, "wb") as f:
-                    for chunk in r.iter_content(1024 * 1024):
-                        f.write(chunk)
-                break
-            except Exception as e:
-                if attempt == 2:
-                    self.update_status(f"Failed to download {name}: {e}", level="ERROR")
-                    return
-                time.sleep(2)
-
-        if not is_zipfile(zip_path):
-            self.update_status(f"Corrupted or invalid ZIP: {zip_path}", level="ERROR")
-            zip_path.unlink(missing_ok=True)
-            return
-
-        self.update_status(f"Extracting {name}...")
         try:
-            with ZipFile(zip_path, "r") as zip_ref:
-                members = [m for m in zip_ref.namelist() if m.endswith(info["exe"])]
-                if not members:
-                    self.update_status(f"{info['exe']} not found in ZIP", level="ERROR")
-                    return
-                for member in members:
-                    zip_ref.extract(member, tools_dir)
-
-                    extracted = tools_dir / member
-                    flattened = tools_dir / info["exe"]
-                    extracted.rename(flattened)
-            zip_path.unlink(missing_ok=True)
-            self.update_status(f"{name} installed to {exe_path}")
-        except Exception as e:
-            self.update_status(f"Extraction failed: {e}", level="ERROR")
-            zip_path.unlink(missing_ok=True)
+            _install_tool(name=name, tools_dir=tools_dir,
+                         status_cb=lambda msg, level: self.update_status(msg, level=level))
+        except ToolInstallError as e:
+            self.update_status(f"Failed to install {name}: {e}", level="ERROR")
 
 
 
@@ -11774,15 +11662,32 @@ def cli_main():
         print("No matching files found.")
         return 1
 
+    global HANDBRAKE_CLI, FFPROBE, FFMPEG
     _missing = [name for name, exe in (("HandBrakeCLI", HANDBRAKE_CLI),
                                         ("ffmpeg", FFMPEG), ("ffprobe", FFPROBE))
                 if not shutil.which(exe)]
     if _missing:
-        print("Missing required tool(s): " + ", ".join(_missing))
-        print("Install them and put them on PATH, drop the .exe files into the "
-             "'tools' folder next to BitCrusherV9.py, or set the BC_FFMPEG/BC_FFPROBE "
-             "env vars to point at them.")
-        return 1
+        from support.tool_installer import install_tool as _install_tool, ToolInstallError
+        print("Missing required tool(s): " + ", ".join(_missing) + " -- downloading...")
+        tools_dir = Path(SCRIPT_DIR) / "tools"
+        for name in _missing:
+            try:
+                _install_tool(name=name, tools_dir=tools_dir,
+                             status_cb=lambda msg, level: print(f"[{level}] {msg}"))
+            except ToolInstallError as e:
+                print(f"Failed to install {name}: {e}")
+                print("Install it manually and put it on PATH, drop the .exe into the "
+                     "'tools' folder next to BitCrusherV9.py, or set BC_FFMPEG/BC_FFPROBE.")
+                return 1
+        HANDBRAKE_CLI, FFPROBE, FFMPEG = load_paths()
+        _set_ffmpeg_exec_path(FFMPEG)
+        _set_ffprobe_exec_path(FFPROBE)
+        _still_missing = [name for name, exe in (("HandBrakeCLI", HANDBRAKE_CLI),
+                                                  ("ffmpeg", FFMPEG), ("ffprobe", FFPROBE))
+                          if not shutil.which(exe)]
+        if _still_missing:
+            print("Still missing after install attempt: " + ", ".join(_still_missing))
+            return 1
 
     # Analysis-only mode: print candidate trim ranges and exit (no compression).
     if getattr(args, "suggest_trim", None) is not None:
