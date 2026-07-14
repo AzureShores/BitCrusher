@@ -5,13 +5,13 @@ import logging
 import os
 import subprocess
 
-import ffmpeg_exec
-from ffmpeg_exec import si, NO_WIN, _sp_run
-from media_math import get_media_type
-from media_probe import _probe_video_stream
-from encoder_caps import best_av1_encoder
-from remux import _privacy_args
-from text_utils import format_bytes
+import encode.ffmpeg_exec as ffmpeg_exec
+from encode.ffmpeg_exec import si, NO_WIN, _sp_run
+from encode.media_math import get_media_type
+from encode.media_probe import _probe_video_stream
+from encode.encoder_caps import best_av1_encoder
+from encode.remux import _privacy_args
+from support.text_utils import format_bytes
 
 LOG = logging.getLogger("BitCrusher")
 

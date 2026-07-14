@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import dashboard as db
+import learning.dashboard as db
 
 
 def test_sparkline_points_map_into_box_and_flip_y():

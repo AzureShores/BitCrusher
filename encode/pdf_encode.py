@@ -9,10 +9,10 @@ from datetime import datetime
 
 from PIL import Image
 
-from ffmpeg_exec import si, NO_WIN, _sp_run
-from media_math import apply_target_size_margin
-from text_utils import format_bytes
-from webhook import _post_webhook_hardened
+from encode.ffmpeg_exec import si, NO_WIN, _sp_run
+from encode.media_math import apply_target_size_margin
+from support.text_utils import format_bytes
+from support.webhook import _post_webhook_hardened
 
 
 def _jsonl_log(event: str, data: dict | None = None):

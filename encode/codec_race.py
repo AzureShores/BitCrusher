@@ -7,11 +7,11 @@ import shutil
 import subprocess
 import tempfile
 
-import ffmpeg_exec
-from ffmpeg_exec import si, NO_WIN, _ffmpeg_has_filter
-from encoder_caps import best_av1_encoder
-from media_probe import _probe_video_stream
-from quality_metrics import _vmaf_model_opt
+import encode.ffmpeg_exec as ffmpeg_exec
+from encode.ffmpeg_exec import si, NO_WIN, _ffmpeg_has_filter
+from encode.encoder_caps import best_av1_encoder
+from encode.media_probe import _probe_video_stream
+from encode.quality_metrics import _vmaf_model_opt
 
 # =====================================================================
 # Codec-race VMAF probing: short representative-segment A/B/... shootouts

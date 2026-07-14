@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import glob
-from probe_predictor import predict_crf_and_bitrate
+from encode.probe_predictor import predict_crf_and_bitrate
 import threading
 import time
 import zipfile
@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from fractions import Fraction
 from pathlib import Path
 from tkinterdnd2 import TkinterDnD, DND_FILES
-from ui_aesthetics import init_aesthetics, animated_retheme, open_theme_lab
+from ui.ui_aesthetics import init_aesthetics, animated_retheme, open_theme_lab
 import yt_dlp
 import queue
 import webbrowser
@@ -114,30 +114,30 @@ def _install_crash_handler():
 
 
 
-from ui_settings import _ui_json_path, _save_theme_choice, _load_theme_choice
+from ui.ui_settings import _ui_json_path, _save_theme_choice, _load_theme_choice
 
 import os, sys, json, subprocess
 
-from i18n import (_i18n_dir, _open_folder, LANG_BUILTIN, LANG_CODES, LANG,
+from ui.i18n import (_i18n_dir, _open_folder, LANG_BUILTIN, LANG_CODES, LANG,
                   LANG_CODE_NAME, LANG_COVERAGE, LANG_SOURCE, LANG_DISPLAY,
                   _language_codes_ordered, _language_menu_label,
                   _load_language_choice, _save_language_choice,
                   _export_lang_templates, _load_lang_packs)
 import os, sys, time, platform, traceback, logging, threading, subprocess
 from logging.handlers import RotatingFileHandler
-from lifetime_stats import aggregate_lifetime_stats
-from smart_rate import learn_from_result, guardrail_adjust, load_stats, save_stats, update_overshoot
-from ai_advisor import (choose_bitrates_advised as choose_bitrates,
+from support.lifetime_stats import aggregate_lifetime_stats
+from encode.smart_rate import learn_from_result, guardrail_adjust, load_stats, save_stats, update_overshoot
+from encode.ai_advisor import (choose_bitrates_advised as choose_bitrates,
                         cache_store_advised as cache_store,
                         cache_lookup_advised as cache_lookup,
                         advisor_preview_for_gui)
-from ml_heuristics import analyze_and_advise, extract_media_features
-from size_controller import SizeController
-from encoder_profiles import select_profile
-from planner import PlanInputs, plan as plan_encode
-from text_utils import _EMOJI_RE, _mojibake_score, _normalize_text, format_bytes
-from webhook import DiscordWebhookClient, _format_webhook_summary, _post_webhook_hardened
-from ffmpeg_exec import (si, NO_WIN, _render_cmd, _tail, _orig_check_output,
+from encode.ml_heuristics import analyze_and_advise, extract_media_features
+from encode.size_controller import SizeController
+from encode.encoder_profiles import select_profile
+from encode.planner import PlanInputs, plan as plan_encode
+from support.text_utils import _EMOJI_RE, _mojibake_score, _normalize_text, format_bytes
+from support.webhook import DiscordWebhookClient, _format_webhook_summary, _post_webhook_hardened
+from encode.ffmpeg_exec import (si, NO_WIN, _render_cmd, _tail, _orig_check_output,
                          _check_output_logged, _sp_check_output, _ffmpeg_has_filter,
                          _orig_run, _run_logged, _sp_run,
                          _ffmpeg_emergency_encode, _detect_reencoding_risk,
@@ -146,49 +146,49 @@ from ffmpeg_exec import (si, NO_WIN, _render_cmd, _tail, _orig_check_output,
                          set_ffmpeg_path as _set_ffmpeg_exec_path,
                          set_ffprobe_path as _set_ffprobe_exec_path,
                          set_handbrake_path as _set_handbrake_exec_path)
-from quality_metrics import (vmaf_quality_label, set_vmaf_model_pref, resolve_vmaf_model,
+from encode.quality_metrics import (vmaf_quality_label, set_vmaf_model_pref, resolve_vmaf_model,
                              _vmaf_model_opt, _escape_vmaf_opt_path, _vmaf_low_metrics,
                              compute_vmaf, compute_xpsnr, xpsnr_quality_label,
                              vmaf_floor_score, set_vmaf_objective_pref, resolve_vmaf_objective)
-from trim import (_parse_timespec, _parse_trim_range, _prev_keyframe_time,
+from encode.trim import (_parse_timespec, _parse_trim_range, _prev_keyframe_time,
                   make_trim_intermediate, _fmt_ts, _rank_energy_windows,
                   _audio_energy_tracks, suggest_trim_ranges)
-from spotlight import (_SPOTLIGHT_BOOST, _X264_BASE_PARAMS, _X265_BASE_PARAMS,
+from encode.spotlight import (_SPOTLIGHT_BOOST, _X264_BASE_PARAMS, _X265_BASE_PARAMS,
                        _spotlight_zone_params)
-from feature_helpers import (set_clipboard_files, _count_audio_streams,
+from encode.feature_helpers import (set_clipboard_files, _count_audio_streams,
                              _audio_track_plan, _audio_map_ffmpeg_args,
                              _read_sibling_lrc, _embed_lyrics_into)
-from sendto_ipc import (_BC_IPC_HOST, _BC_IPC_PORT, _BC_STARTUP_FILES,
+from support.sendto_ipc import (_BC_IPC_HOST, _BC_IPC_PORT, _BC_STARTUP_FILES,
                         _bc_ipc_send, _sendto_shortcut_path, _sendto_launch_target,
                         register_send_to, unregister_send_to)
-from media_math import (bytes_from_value_unit, apply_target_size_margin, human_bytes,
+from encode.media_math import (bytes_from_value_unit, apply_target_size_margin, human_bytes,
                         _sanitize_int, next_lower_std_width, determine_audio_bitrate,
                         determine_tune_profile, determine_frame_rate, determine_resolution,
                         get_media_type, parse_dnd_files)
-from output_paths import (_build_vf_chain_for_noise, _build_output_path,
+from encode.output_paths import (_build_vf_chain_for_noise, _build_output_path,
                           _bc_build_output_path, _dedup_safe_output_path)
-from remux import _privacy_args, _remux_smart
-from encoder_caps import (_ENCODER_CANON, _merge_params_string, _canonical_encoder,
+from encode.remux import _privacy_args, _remux_smart
+from encode.encoder_caps import (_ENCODER_CANON, _merge_params_string, _canonical_encoder,
                           _software_quality_encoder, _ffmpeg_encoder_set,
                           _mark_hw_decode_broken, _available_hwaccels,
                           _hw_decode_args, _strip_hw_args, best_av1_encoder)
-from audio_encode import (_probe_audio_meta, _should_copy_audio, _adaptive_two_pass,
+from encode.audio_encode import (_probe_audio_meta, _should_copy_audio, _adaptive_two_pass,
                           _supports_true_two_pass, _build_opus_cover_meta,
                           _encode_audio_once, _best_audio_codec, _prepare_cover_file,
                           binary_search_audio_bitrate)
-from media_probe import (_MEDIA_PROBE_CACHE, _MEDIA_PROBE_LOCK, _probe_media_cached,
+from encode.media_probe import (_MEDIA_PROBE_CACHE, _MEDIA_PROBE_LOCK, _probe_media_cached,
                          _probe_video_stream, get_video_metadata, extract_video_duration,
                          calculate_bitrate, _is_hdr_source, _hdr_pixel_fmt,
                          _probe_is_hdr_path, _HDR_TONEMAP_VF, _hdr_tonemap_vf,
                          _SVT_PRESET_MAP, _svt_preset_for_duration, _AOM_CPU_USED_MAP,
                          _X265_VALID_TUNES, _codec_video_args, _strip_runtime_keys)
-from codec_race import (_FILM_GRAIN_RATIO_THR, _probe_film_grain, _probe_codec_args,
+from encode.codec_race import (_FILM_GRAIN_RATIO_THR, _probe_film_grain, _probe_codec_args,
                         _probe_vmaf_fullrate, _probe_ref_clip, choose_best_codec_by_vmaf)
-from preproc import (_PREPROC_BAND_THR, _PREPROC_BLOCK_THR, _PREPROC_GRAIN_THR,
+from encode.preproc import (_PREPROC_BAND_THR, _PREPROC_BLOCK_THR, _PREPROC_GRAIN_THR,
                      _PREPROC_ENTROPY_THR, _PREPROC_BPP_STARVED, _PREPROC_BPP_CRUSHED,
                      _PREPROC_KEEP_MARGIN, _PREPROC_FILTERS, _preproc_candidates,
                      _preproc_chain, _preproc_probe_variants, decide_preprocessing)
-from pdf_encode import _which, compress_pdf, _rasterize_pdf_to_target
+from encode.pdf_encode import _which, compress_pdf, _rasterize_pdf_to_target
 
 def _ensure_dir(p):
     try: os.makedirs(p, exist_ok=True)
@@ -989,7 +989,7 @@ load_user_themes_at_startup()
 
 APP_BG=CARD_BG=FG=FG_SUB=ACCENT=ACCENT_2=ERROR=WARN=TITLE=None
 
-from color_utils import _hsl_shift, _is_light_color, _contrast_fg
+from ui.color_utils import _hsl_shift, _is_light_color, _contrast_fg
 
 def _use_palette(name: str):
     
@@ -1588,7 +1588,7 @@ def _ledger_log_failure(input_path: str, features: dict, stage: str,
     successful encodes, so nothing recorded what fails or why. Called right
     before the real error propagates; must never itself raise or mask it."""
     try:
-        from outcome_ledger import build_record, build_op, ledger_append
+        from learning.outcome_ledger import build_record, build_op, ledger_append
         stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
         rec = build_record(
             input_path=input_path,
@@ -1749,7 +1749,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
     # legacy fallback and are unsafe under concurrent jobs.
     if bool((advanced_options or {}).get("scene_zones", True)):
         try:
-            from ml_heuristics import build_scene_params  # returns (x264_params_str, qpfile_path_or_None)
+            from encode.ml_heuristics import build_scene_params  # returns (x264_params_str, qpfile_path_or_None)
             _xparams, _qpfile = build_scene_params(input_path)
             if _xparams:
                 advanced_options["x264_params"] = _xparams
@@ -1930,7 +1930,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
             if webhook_url:
                 _wh_ok = _post_webhook_hardened(webhook_url, json_payload=stats, file_path=out_file)
                 try:
-                    from outcome_ledger import record_webhook_outcome as _ol_wh
+                    from learning.outcome_ledger import record_webhook_outcome as _ol_wh
                     _ol_wh(os.path.join(USER_SETTINGS_DIR, "stats"), input_path, _wh_ok)
                 except Exception:
                     pass
@@ -2261,12 +2261,12 @@ def compress_video(input_path: str, save_path: str, status_cb,
                        and str(encoder).lower() in ("x264", "libx264", "h264",
                                                     "x265", "libx265", "hevc"))
     try:
-        from smart_rate import load_stats
+        from encode.smart_rate import load_stats
         _stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
         _stats_map = load_stats(_stats_dir)
         _scene_hint = None
         try:
-            from ml_heuristics import analyze_scenes
+            from encode.ml_heuristics import analyze_scenes
             _scene_hint = analyze_scenes(input_path, encoder=str(encoder), fps_hint=float(fps or fr or 0.0))
         except Exception:
             _scene_hint = None
@@ -2405,7 +2405,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
             # history (skip_race_candidates), the incumbent always stays in
             # (it's what ships if racing is skipped outright below).
             try:
-                from outcome_ledger import skip_race_candidates as _ol_skip_race
+                from learning.outcome_ledger import skip_race_candidates as _ol_skip_race
                 _never_wins = _ol_skip_race(os.path.join(USER_SETTINGS_DIR, "stats"),
                                             os.environ.get("BC_CONTENT_CLASS") or None, _cands)
                 _never_wins.discard(_cur_tag)
@@ -2573,7 +2573,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
     # self-audit; disable with learned_seed=False / --no-learned-seed.
     _ol_dev, _ol_n = 1.0, 0  # safe defaults if the predictor errors before assigning below
     try:
-        from outcome_ledger import predict_deviation as _ol_predict, seed_adjust as _ol_seed
+        from learning.outcome_ledger import predict_deviation as _ol_predict, seed_adjust as _ol_seed
         _ol_stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
         # Operating-point flags for neighbour matching: film-grain synthesis,
         # preprocessing and spotlight change size/quality materially, so they
@@ -2622,7 +2622,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
     if bool((advanced_options or {}).get(
             "preflight_advice", ADVANCED_DEFAULTS.get("preflight_advice", True))):
         try:
-            from outcome_ledger import preflight_advice as _ol_advice
+            from learning.outcome_ledger import preflight_advice as _ol_advice
             _race_ran = bool((advanced_options or {}).get("_race_scores"))
             _enc_locked = bool(_codec_pinned or _race_ran
                                or str(encoder).lower() not in ("x264", "x265", "libx265", "hevc"))
@@ -2847,7 +2847,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
 
     final_size = os.path.getsize(out_file)
     # live size guardrail + one-shot refine for undershoot
-    from smart_rate import guardrail_adjust
+    from encode.smart_rate import guardrail_adjust
 
     # 1) Live guardrail: NEVER raise the hard target above the user request
     hard_target_bytes = int(target_bytes)
@@ -3587,10 +3587,10 @@ def compress_video(input_path: str, save_path: str, status_cb,
     # One rich record per completed encode: features + full EFFECTIVE operating
     # point + every retry observation + race scoreboard + v1 VMAF outcome.
     try:
-        from outcome_ledger import build_record, ledger_append, build_op, recent_prior_ts
+        from learning.outcome_ledger import build_record, ledger_append, build_op, recent_prior_ts
         _ol_stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
         try:
-            from ml_heuristics import _bc_file_sig as _ol_sig_fn
+            from encode.ml_heuristics import _bc_file_sig as _ol_sig_fn
             _ol_input_sig = _ol_sig_fn(input_path)
         except Exception:
             _ol_input_sig = None
@@ -3609,7 +3609,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
         # is a separate, out-of-scope fix).
         _overhead_predicted, _overhead_measured = None, None
         try:
-            from overhead import get_overhead_factor as _ol_overhead_pred
+            from encode.overhead import get_overhead_factor as _ol_overhead_pred
             _overhead_predicted = _ol_overhead_pred(USER_SETTINGS_DIR, _out_container,
                                                     int(new_w or 0), int(new_h or 0), float(fps or fr or 0.0))
             _core_bytes = (float(_ol_final_v_bps) + float(_ol_aud_bps)) * max(0.1, float(dur or 0.0)) / 8.0
@@ -3630,7 +3630,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
             _probe_dev_pred = None
         _probe_dev_actual = float(_ol_final_v_bps) if _ol_final_v_bps else None
         try:
-            from ai_advisor import predict_effective_quality as _ol_adv_q
+            from encode.ai_advisor import predict_effective_quality as _ol_adv_q
             _advisor_q_pred = _ol_adv_q(_feats_ctx or {}, _ol_final_v_bps, _ol_aud_bps)
         except Exception:
             _advisor_q_pred = None
@@ -3643,7 +3643,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
         # measured by now (vmaf_result, used for outcome.vmaf below), so learn
         # from it here instead. Still a no-op whenever VMAF wasn't measured.
         try:
-            from ai_advisor import post_encode_learn as _ol_advisor_learn
+            from encode.ai_advisor import post_encode_learn as _ol_advisor_learn
             _ol_advisor_learn(
                 input_path=input_path, output_path=out_file, encoder=str(encoder or ""),
                 target_bytes=int(hard_target_bytes), actual_bytes=int(final_size or 0),
@@ -3668,7 +3668,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
         # promotion bar seed_adjust already had to clear.
         _ol_meta_favored = None
         try:
-            from outcome_ledger import shadow_report as _ol_sr
+            from learning.outcome_ledger import shadow_report as _ol_sr
             _sr = _ol_sr(_ol_stats_dir)
             _candidates = {"ledger_dev": _sr.get("pred_mean_abs_err"),
                           "probe": (_sr.get("probe") or {}).get("mean_abs_pct_err"),
@@ -3767,7 +3767,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
     if webhook_url:
         _wh_ok = _post_webhook_hardened(webhook_url, json_payload=stats, file_path=out_file)
         try:
-            from outcome_ledger import record_webhook_outcome as _ol_wh
+            from learning.outcome_ledger import record_webhook_outcome as _ol_wh
             _ol_wh(os.path.join(USER_SETTINGS_DIR, "stats"), input_path, _wh_ok)
         except Exception:
             pass
@@ -7195,8 +7195,8 @@ class CompressorGUI:
         def _work():
             base_lines = []
             try:
-                from ml_heuristics import extract_media_features
-                from ai_advisor import choose_bitrates_advised as _choose
+                from encode.ml_heuristics import extract_media_features
+                from encode.ai_advisor import choose_bitrates_advised as _choose
                 feats = extract_media_features(fpath) or {}
                 dur = float(feats.get("duration", 0.0) or 0.0)
                 base_lines = [
@@ -7242,7 +7242,7 @@ class CompressorGUI:
             self._insights_text.insert("end", "No file selected.")
             self._insights_text.configure(state="disabled"); return
         try:
-            from ai_advisor import advisor_preview_for_gui as _advisor_popup
+            from encode.ai_advisor import advisor_preview_for_gui as _advisor_popup
         except Exception:
             _advisor_popup = None
         tips = [
@@ -7255,7 +7255,7 @@ class CompressorGUI:
 
     def _populate_history(self):
         try:
-            from smart_rate import load_stats as _load_stats
+            from encode.smart_rate import load_stats as _load_stats
             stats = _load_stats(os.path.join(self._ScriptDir, ".smart"))
         except Exception:
             stats = {"overshoot": {}}
@@ -7276,7 +7276,7 @@ class CompressorGUI:
         from tkinter import messagebox as mbox
 
         try:
-            from visual_compare import open_compare_viewer as _ext_view
+            from learning.visual_compare import open_compare_viewer as _ext_view
         except Exception:
             _ext_view = None
 
@@ -7321,7 +7321,7 @@ class CompressorGUI:
 
         dur_hint = 60.0
         try:
-            from ml_heuristics import extract_media_features
+            from encode.ml_heuristics import extract_media_features
             feats = extract_media_features(src)
             dur_hint = float(feats.get("duration", 60.0) or 60.0)
         except Exception:
@@ -8144,7 +8144,7 @@ class CompressorGUI:
             apply_theme(self.style, data["theme"])
             self.root.configure(bg=APP_BG)
             try:
-                from ui_aesthetics import retheme_runtime
+                from ui.ui_aesthetics import retheme_runtime
                 retheme_runtime(self, self.style, data["theme"])
             except Exception:
                 pass
@@ -9520,8 +9520,8 @@ class CompressorGUI:
         import tkinter as tk
         from tkinter import ttk
         try:
-            from outcome_ledger import estimate_encode as _est
-            from ml_heuristics import extract_media_features as _emf
+            from learning.outcome_ledger import estimate_encode as _est
+            from encode.ml_heuristics import extract_media_features as _emf
         except Exception:
             return
         files = list(getattr(self, "file_list", []) or [])[:8]
@@ -9589,7 +9589,7 @@ class CompressorGUI:
     def _latest_ledger_record(self, input_path: str):
         """Newest ledger record whose input basename matches (for the dashboard)."""
         try:
-            import outcome_ledger as ol
+            import learning.outcome_ledger as ol
             base = os.path.basename(str(input_path or "")).lower()
             recs = ol.ledger_load(os.path.join(USER_SETTINGS_DIR, "stats"))
             match = [r for r in recs
@@ -9604,7 +9604,7 @@ class CompressorGUI:
         import tkinter as tk
         from tkinter import ttk
         try:
-            import dashboard as _db
+            import learning.dashboard as _db
         except Exception:
             return
         rec = self._latest_ledger_record(input_path)
@@ -9696,7 +9696,7 @@ class CompressorGUI:
         Hashing runs on a worker thread (full-file SHA-256 over a real queue
         can take real wall-clock time) so the GUI stays responsive; the
         review window itself is built on the main thread once hashing ends."""
-        from ml_heuristics import build_batch_dedup_index as _bc_dedup_index
+        from encode.ml_heuristics import build_batch_dedup_index as _bc_dedup_index
 
         snapshot = list(getattr(self, "file_list", []) or [])
         norm = [_normalize_drop_path(p) for p in snapshot if isinstance(p, str)]
@@ -10586,7 +10586,7 @@ class CompressorGUI:
                     adv.get(k) == _canon["adv"].get(k) for k in _DEDUP_SETTINGS_KEYS)
                 if _canon and _settings_match and os.path.isfile(_canon.get("output_path", "")):
                     try:
-                        from ml_heuristics import _bc_content_hash as _dedup_hash
+                        from encode.ml_heuristics import _bc_content_hash as _dedup_hash
                         # TOCTOU guard: re-verify content now, not just at scan
                         # time, in case the file changed between scan and encode.
                         if _dedup_hash(path) == _dedup_hash(_dedup_canon_src):
@@ -11632,8 +11632,8 @@ def cli_main():
         return 0 if ok else 1
 
     if getattr(args, "learning_trend", False):
-        from outcome_ledger import ledger_load as _ol_load
-        from dashboard import build_trend_model as _ol_trend
+        from learning.outcome_ledger import ledger_load as _ol_load
+        from learning.dashboard import build_trend_model as _ol_trend
         _stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
         _trend = _ol_trend(_ol_load(_stats_dir))
         _labels = {"ledger_dev": "Ledger size-deviation predictor",
@@ -11653,7 +11653,7 @@ def cli_main():
         return 0
 
     if getattr(args, "ledger_audit", False):
-        from outcome_ledger import detect_anomalies as _ol_anom, audit_vmaf_scale as _ol_scale
+        from learning.outcome_ledger import detect_anomalies as _ol_anom, audit_vmaf_scale as _ol_scale
         _stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
         _anoms = _ol_anom(_stats_dir)
         print(f"[Ledger audit] {len(_anoms)} anomalous record(s) (every active predictor missed):")
@@ -11704,10 +11704,10 @@ def cli_main():
 
     # Prediction-only mode: estimate size/VMAF/time from the ledger, no encode.
     if getattr(args, "estimate", False):
-        from outcome_ledger import estimate_encode as _ol_est
-        from outcome_ledger import lookup_by_signature as _ol_sig_lookup
-        from outcome_ledger import nearest_neighbors as _ol_neighbors
-        from ml_heuristics import _bc_file_sig as _ol_sig_fn
+        from learning.outcome_ledger import estimate_encode as _ol_est
+        from learning.outcome_ledger import lookup_by_signature as _ol_sig_lookup
+        from learning.outcome_ledger import nearest_neighbors as _ol_neighbors
+        from encode.ml_heuristics import _bc_file_sig as _ol_sig_fn
         _model = resolve_vmaf_model() or "version=vmaf_v0.6.1"
         _tgt_bytes = max(1, int(round(args.target_size))) * 1024 * 1024
         _encs = ([args.encoder] if getattr(args, "encoder", None)
@@ -11766,7 +11766,7 @@ def cli_main():
     _confirmed_reuse: dict = {}
     _dedup_canonical_outputs: dict = {}
     if getattr(args, "dedup_scan", False):
-        from ml_heuristics import build_batch_dedup_index as _ol_dedup_index
+        from encode.ml_heuristics import build_batch_dedup_index as _ol_dedup_index
         groups = _ol_dedup_index(files)
         if groups:
             _interactive = sys.stdin.isatty() and sys.stdout.isatty()
@@ -11844,7 +11844,7 @@ def cli_main():
             # does need one (watcher-rule per-file overrides).
             if _canon and os.path.isfile(_canon):
                 try:
-                    from ml_heuristics import _bc_content_hash as _dedup_hash
+                    from encode.ml_heuristics import _bc_content_hash as _dedup_hash
                     # TOCTOU guard: re-verify content now, not just at scan time.
                     if _dedup_hash(src) == _dedup_hash(_canon_src):
                         _dup_out = _bc_build_output_path(src, out_dir, adv,

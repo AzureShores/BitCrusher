@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 
-import ffmpeg_exec
-from ffmpeg_exec import si, NO_WIN, _sp_check_output
+import encode.ffmpeg_exec as ffmpeg_exec
+from encode.ffmpeg_exec import si, NO_WIN, _sp_check_output
 
 _ENCODER_CANON = {
     "x264": "x264", "libx264": "x264", "h264": "x264", "avc": "x264",

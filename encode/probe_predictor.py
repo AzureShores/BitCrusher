@@ -8,7 +8,7 @@ import tempfile
 from typing import Any, Callable, Dict, List, Optional, Tuple
 # Optional codec-aware probe core (pure Python fit + diagnostics).
 try:
-    from codec_probe import probe_rate_quality
+    from encode.codec_probe import probe_rate_quality
 except Exception:
     probe_rate_quality = None  # type: ignore
 

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import outcome_ledger as ol
+import learning.outcome_ledger as ol
 
 
 # A grainy-old-film-ish feature point reused across the synthetic records.

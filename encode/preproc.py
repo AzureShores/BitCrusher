@@ -6,10 +6,10 @@ import shutil
 import subprocess
 import tempfile
 
-import ffmpeg_exec
-from ffmpeg_exec import si, NO_WIN, _ffmpeg_has_filter
-from encoder_caps import best_av1_encoder
-from codec_race import _probe_ref_clip, _probe_codec_args, _probe_vmaf_fullrate
+import encode.ffmpeg_exec as ffmpeg_exec
+from encode.ffmpeg_exec import si, NO_WIN, _ffmpeg_has_filter
+from encode.encoder_caps import best_av1_encoder
+from encode.codec_race import _probe_ref_clip, _probe_codec_args, _probe_vmaf_fullrate
 
 # =====================================================================
 # Artifact/texture-aware preprocessing (VMAF-validated)

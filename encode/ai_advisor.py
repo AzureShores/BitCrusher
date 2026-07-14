@@ -16,9 +16,9 @@ except Exception:
 
 import importlib
 
-from ml_heuristics import extract_media_features  # uses ffprobe/ffmpeg and PIL/numpy under the hood
+from encode.ml_heuristics import extract_media_features  # uses ffprobe/ffmpeg and PIL/numpy under the hood
 # ---------- Content scoring & scene planning (new) ----------
-from ml_heuristics import analyze_scenes  # scene cuts + per-scene difficulty + zones
+from encode.ml_heuristics import analyze_scenes  # scene cuts + per-scene difficulty + zones
 
 class DifficultyScore:
     """
@@ -308,7 +308,7 @@ def choose_bitrates_advised(duration_s: float,
     - Three-point micro-probe for R-Q solving (smart_rate)
     - Scene-wise bit quotas with x26x 'zones' string (ENV: BC_ZONE_PARAMS)
     """
-    from smart_rate import choose_bitrates as _sr_choose, estimate_mux_overhead
+    from encode.smart_rate import choose_bitrates as _sr_choose, estimate_mux_overhead
 
     input_path = _kw.get("input_path")
     skip_probe = bool(_kw.get("skip_probe"))

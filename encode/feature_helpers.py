@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 import subprocess
 
-import ffmpeg_exec
-from ffmpeg_exec import si, NO_WIN, _sp_run, _sp_check_output
+import encode.ffmpeg_exec as ffmpeg_exec
+from encode.ffmpeg_exec import si, NO_WIN, _sp_run, _sp_check_output
 
 # =====================================================================
 # Batch-1 feature helpers: clipboard (CF_HDROP), multi-audio-track, lyrics

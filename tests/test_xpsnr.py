@@ -7,7 +7,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import BitCrusherV9 as bc
-import quality_metrics as qm
+import encode.quality_metrics as qm
 
 
 def test_xpsnr_quality_label_bands():

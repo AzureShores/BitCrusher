@@ -6,7 +6,7 @@ import random
 
 import requests
 
-from text_utils import _normalize_text, format_bytes
+from support.text_utils import _normalize_text, format_bytes
 
 
 class DiscordWebhookClient:

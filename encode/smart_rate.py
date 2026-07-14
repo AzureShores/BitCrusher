@@ -735,7 +735,7 @@ def _cache_key(input_path: str, target_mb: int, encoder: str) -> str:
     # cheap content signature ml_heuristics already computes (path + size +
     # mtime + first 2MB) so distinct files never collide.
     try:
-        from ml_heuristics import _bc_file_sig
+        from encode.ml_heuristics import _bc_file_sig
         _sig = _bc_file_sig(input_path)
     except Exception:
         _sig = Path(input_path).name

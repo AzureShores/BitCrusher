@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from media_math import determine_tune_profile
+from encode.media_math import determine_tune_profile
 
 # --- unified output-naming helpers (prefix/suffix always applied, all media) ---
 

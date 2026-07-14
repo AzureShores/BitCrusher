@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-from ffmpeg_exec import si, NO_WIN, _sp_run
+from encode.ffmpeg_exec import si, NO_WIN, _sp_run
 
 # =====================================================================
 # Single-instance IPC + Explorer "Send to BitCrusher" integration

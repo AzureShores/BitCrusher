@@ -239,9 +239,9 @@ def set_handbrake_path(path: str | None) -> None:
 # `from X import name` here would deadlock the cycle. A bare module import is
 # safe because the names below are only dereferenced inside function bodies,
 # long after all modules involved have finished initializing.
-import media_probe
-import feature_helpers
-import encoder_caps
+import encode.media_probe as media_probe
+import encode.feature_helpers as feature_helpers
+import encode.encoder_caps as encoder_caps
 
 
 def _ffmpeg_emergency_encode(

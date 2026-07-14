@@ -4,8 +4,8 @@ import os
 import shutil
 import subprocess
 
-import ffmpeg_exec
-from ffmpeg_exec import _sp_run
+import encode.ffmpeg_exec as ffmpeg_exec
+from encode.ffmpeg_exec import _sp_run
 
 
 def _privacy_args(preset: str | None):

@@ -9,12 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-from smart_rate import get_dynamic_overshoot
+from encode.smart_rate import get_dynamic_overshoot
 try:
     from bitcrusher.overhead import get_overhead_factor
 except Exception:
-    # Fallback for non-packaged layouts (root-level overhead.py).
-    from overhead import get_overhead_factor
+    # Fallback for non-packaged layouts (encode/overhead.py).
+    from encode.overhead import get_overhead_factor
 
 
 # Error codes taxonomy

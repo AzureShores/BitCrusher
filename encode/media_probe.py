@@ -5,9 +5,9 @@ import os
 import threading
 from fractions import Fraction
 
-import ffmpeg_exec
-from ffmpeg_exec import si, NO_WIN, _sp_check_output, _ffmpeg_has_filter
-from media_math import get_media_type
+import encode.ffmpeg_exec as ffmpeg_exec
+from encode.ffmpeg_exec import si, NO_WIN, _sp_check_output, _ffmpeg_has_filter
+from encode.media_math import get_media_type
 
 # =====================================================================
 # Cached ffprobe, HDR detection, per-encoder rate-control arg building,

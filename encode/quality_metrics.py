@@ -9,8 +9,8 @@ import subprocess
 import tempfile
 from fractions import Fraction
 
-import ffmpeg_exec
-from ffmpeg_exec import si, NO_WIN, _sp_check_output, _ffmpeg_has_filter, probe_video_stream_dims
+import encode.ffmpeg_exec as ffmpeg_exec
+from encode.ffmpeg_exec import si, NO_WIN, _sp_check_output, _ffmpeg_has_filter, probe_video_stream_dims
 
 LOG = logging.getLogger("BitCrusher")
 

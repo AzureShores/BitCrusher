@@ -5,8 +5,8 @@ import os
 import subprocess
 import sys
 
-from text_utils import _mojibake_score, _normalize_text
-from ui_settings import _ui_json_path
+from support.text_utils import _mojibake_score, _normalize_text
+from ui.ui_settings import _ui_json_path
 
 def _i18n_dir():
     try:

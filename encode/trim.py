@@ -7,12 +7,12 @@ import tempfile
 
 import numpy as np
 
-import ffmpeg_exec
-from ffmpeg_exec import si, NO_WIN, _sp_run, _sp_check_output
-from media_math import get_media_type
-from media_probe import get_video_metadata
-from audio_encode import _probe_audio_meta
-from feature_helpers import _count_audio_streams
+import encode.ffmpeg_exec as ffmpeg_exec
+from encode.ffmpeg_exec import si, NO_WIN, _sp_run, _sp_check_output
+from encode.media_math import get_media_type
+from encode.media_probe import get_video_metadata
+from encode.audio_encode import _probe_audio_meta
+from encode.feature_helpers import _count_audio_streams
 
 # ---- Trim-aware compression core -------------------------------------------
 # Cutting duration is a 2-10x lever (half the clip = double the bitrate under

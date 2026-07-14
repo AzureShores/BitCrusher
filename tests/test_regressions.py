@@ -7,11 +7,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import ai_advisor as adv
-import ml_heuristics as mh
-import probe_predictor as pp
-import smart_rate as sr
-from size_controller import SizeController
+import encode.ai_advisor as adv
+import encode.ml_heuristics as mh
+import encode.probe_predictor as pp
+import encode.smart_rate as sr
+from encode.size_controller import SizeController
 
 
 def test_probe_predictor_uses_codec_probe_without_legacy_loop(monkeypatch):
@@ -75,7 +75,7 @@ def test_ai_advisor_exports_nonzero_difficulty(monkeypatch):
     src.write_bytes(b"x")
     os.environ["BC_CURRENT_INPUT"] = str(src)
 
-    import smart_rate
+    import encode.smart_rate as smart_rate
 
     monkeypatch.setattr(smart_rate, "choose_bitrates", lambda *a, **k: (600_000, 128_000, 1.02))
     monkeypatch.setattr(smart_rate, "estimate_mux_overhead", lambda **k: 0)
@@ -180,7 +180,7 @@ def test_audio_encode_preserves_tags_and_cover(monkeypatch, tmp_path):
     container can hold a picture stream (mp3/m4a) but not opus/ogg; strict
     privacy still strips everything."""
     import BitCrusherV9 as bc
-    import audio_encode as ae
+    import encode.audio_encode as ae
 
     captured = {}
 
@@ -238,7 +238,7 @@ def test_audio_flac_lossless_and_opus_cover_command(monkeypatch, tmp_path):
     """FLAC output must not carry a lossy -b:a; opus cover art rides via a second
     ffmetadata input with -map_metadata 1 (base64 picture is too big for argv)."""
     import BitCrusherV9 as bc
-    import audio_encode as ae
+    import encode.audio_encode as ae
 
     captured = {}
 
@@ -319,7 +319,7 @@ def test_audio_track_map_keepfirst_vs_mix():
 
 def test_audio_track_plan_modes(monkeypatch):
     import BitCrusherV9 as bc
-    import feature_helpers as fh
+    import encode.feature_helpers as fh
 
     # _audio_track_plan now lives in feature_helpers.py (extracted from the
     # monolith), so its internal _count_audio_streams call must be patched
@@ -353,7 +353,7 @@ def test_read_sibling_lrc(tmp_path):
 def test_embed_lyrics_builds_metadata_command(monkeypatch, tmp_path):
     """_embed_lyrics_into remuxes with -c copy and a lyrics metadata tag."""
     import BitCrusherV9 as bc
-    import feature_helpers as fh
+    import encode.feature_helpers as fh
 
     out = tmp_path / "o.mp3"
     out.write_bytes(b"x")
@@ -482,7 +482,7 @@ def test_vmaf_model_resolution(monkeypatch):
     'default' → build default; 'neg' → the NEG model; 'v1' → v1 if a candidate
     loads, else v0.6.1; a model that won't load is never injected."""
     import BitCrusherV9 as bc
-    import quality_metrics as qm
+    import encode.quality_metrics as qm
 
     # Pretend the build only accepts v0.6.1 + neg (no v1).
     # resolve_vmaf_model now lives in quality_metrics.py (extracted from the
@@ -610,7 +610,7 @@ def test_decide_preprocessing_keep_and_reject(monkeypatch):
     """The probe A/B is the shipping gate: the best variant is kept only when it
     clears the margin; otherwise no filter ships."""
     import BitCrusherV9 as bc
-    import preproc
+    import encode.preproc as preproc
 
     # decide_preprocessing/_preproc_candidates/_preproc_probe_variants now live
     # in preproc.py (extracted from the monolith), so their internal
@@ -644,7 +644,7 @@ def test_decide_preprocessing_keep_and_reject(monkeypatch):
 def test_encode_paths_carry_preproc_vf(monkeypatch, tmp_path):
     """A kept prefilter chain must reach the actual ffmpeg -vf argument."""
     import BitCrusherV9 as bc
-    import ffmpeg_exec
+    import encode.ffmpeg_exec as ffmpeg_exec
 
     captured = {}
 
@@ -697,7 +697,7 @@ def test_make_trim_intermediate_commands(monkeypatch, tmp_path):
     """Copy mode snaps the start to a keyframe and stream-copies; fade mode is a
     frame-exact near-lossless re-encode with av fades at both ends."""
     import BitCrusherV9 as bc
-    import trim
+    import encode.trim as trim
 
     captured = {}
 
@@ -848,7 +848,7 @@ def test_themelab_derive_palette_contrast_safe():
     """The Theme Lab generator must return a complete valid palette whose text
     colours actually clear WCAG AA against their real backgrounds, for both a
     dark and a light base."""
-    import ui_aesthetics as ua
+    import ui.ui_aesthetics as ua
 
     for accent, bg in (("#7C5CFF", "#14161A"),      # dark base
                        ("#4C5BD4", "#F4F6F9"),      # light base
@@ -866,7 +866,7 @@ def test_themelab_derive_palette_contrast_safe():
 
 
 def test_themelab_helpers():
-    import ui_aesthetics as ua
+    import ui.ui_aesthetics as ua
 
     assert ua._hex_norm("abc") == "#aabbcc"
     assert ua._hex_norm("#AABBCC") == "#AABBCC"[:7]
@@ -883,7 +883,7 @@ def test_themelab_wheel_builds_fast():
     """The colour wheel must be vectorised — the old pixel-by-pixel build froze
     the UI for seconds on first open."""
     import time
-    import ui_aesthetics as ua
+    import ui.ui_aesthetics as ua
 
     t0 = time.time()
     img = ua._build_wheel_image(220)
@@ -918,7 +918,7 @@ def _mk_ledger_rec(dev, entropy, encoder="x264", vmaf_model="vmaf_v1.0.16_3d0h",
 
 
 def test_ledger_deviation_and_roundtrip(tmp_path):
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     # deviation math: exact overshoot ratio of the naive model
     assert abs(ol.attempt_deviation(1_000_000, 1_410_000, 10.0, 128_000) - 1.0) < 0.01
@@ -939,7 +939,7 @@ def test_ledger_shadow_predictor(tmp_path):
     """k-NN deviation prediction: similar content pulls the prediction toward
     its measured deviation; no data stays at the neutral 1.0; shrinkage keeps a
     single sample from dominating."""
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     d = str(tmp_path)
     feats_hi = {"entropy_p95": 7.3, "spatial_complexity": 5.0, "graininess": 0.1,
@@ -970,7 +970,7 @@ def test_ledger_records_effective_encoder():
     """The poisoned-cache scar: when the codec race switches the encoder, the
     outcome must be attributed to the encoder that ACTUALLY ran (encoder_eff),
     never to the request (encoder_req)."""
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     # Requested x264, race switched to AV1 -> the effective op must say av1.
     op = ol.build_op(target_bytes=5_000_000, encoder_req="x264", encoder_eff="av1",
@@ -997,7 +997,7 @@ def test_ledger_build_record_attempts_with_reject_reason():
     tracking) while staying backward compatible with plain [v_bps, bytes]
     pairs, and record_deviation (which only ever reads index 0/1) must keep
     working unchanged against the richer shape."""
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     op = ol.build_op(target_bytes=5_000_000, encoder_req="x264", encoder_eff="x264",
                      width=1920, height=1080, fps=30.0, v_bps=1_000_000,
@@ -1025,7 +1025,7 @@ def test_ledger_build_record_attempts_with_reject_reason():
 def test_ledger_build_op_manual_override_fields():
     """build_op's manual-override fields default safely and round-trip the
     user-override delta (requested vs advised vs whether it was applied)."""
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     default_op = ol.build_op(target_bytes=1, encoder_req="x264", encoder_eff="x264",
                              width=1, height=1, fps=30.0, v_bps=1, audio_bps=1,
@@ -1138,7 +1138,7 @@ def test_smart_rate_learn_from_result_confidence_grows_with_observations(tmp_pat
     well-observed bucket (many prior observations) reacting to the same
     fresh ratio."""
     import pytest
-    import smart_rate as sr
+    import encode.smart_rate as sr
 
     d = str(tmp_path)
 
@@ -1169,7 +1169,7 @@ def test_video_warm_start_narrows_k_bounds_from_ledger_prior(monkeypatch, tmp_pa
     be constructed with a narrower bytes-per-bit search window than the cold
     [0.55, 1.25] default -- the warm-start lever that lets the retry loop
     bracket a good bitrate faster instead of starting from scratch every time."""
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
     import BitCrusherV9 as bc
 
     settings_dir = tmp_path / "user_settings"
@@ -1238,7 +1238,7 @@ def test_smart_rate_klass_bucket_falls_back_when_thin(tmp_path):
     n-gated trust pattern outcome_ledger's codec-prior already uses,
     generalized to smart_rate's overshoot buckets."""
     import pytest
-    import smart_rate as sr
+    import encode.smart_rate as sr
 
     d = str(tmp_path)
 
@@ -1287,7 +1287,7 @@ def test_dashboard_build_trend_model():
     first-half-vs-second-half trend, so 'is this predictor getting better'
     is answerable from the ledger."""
     import pytest
-    import dashboard as dash
+    import learning.dashboard as dash
 
     records = []
     # Ledger-dev predictor: error shrinks from 0.5 to 0.1 across 4 records.
@@ -1318,7 +1318,7 @@ def test_ledger_lookup_by_signature_exact_and_near_match(tmp_path):
     prior encode of the SAME input signature within tolerance_pct of the
     requested target, prefer the most recent match, and return None for a
     signature/target/encoder that was never seen."""
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     d = str(tmp_path)
     sig = "abc123-same-file"
@@ -1354,7 +1354,7 @@ def test_ledger_detect_anomalies_requires_all_predictors_to_miss(tmp_path):
     """detect_anomalies must flag a record only when EVERY predictor that had
     an opinion missed badly -- a record where even one predictor was close
     is not an anomaly, just normal predictor noise."""
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     d = str(tmp_path)
 
@@ -1392,7 +1392,7 @@ def test_ledger_audit_vmaf_scale_counts(tmp_path):
     """audit_vmaf_scale must report a population count per VMAF scale tag and
     always include the standing safety note (predict_deviation has no scale
     gate, but is safe only because it never touches VMAF values)."""
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     d = str(tmp_path)
     for i, model in enumerate(["vmaf_v0.6.1", "vmaf_v0.6.1", "vmaf_v1"]):
@@ -1415,7 +1415,7 @@ def test_ledger_audit_vmaf_scale_counts(tmp_path):
 def test_ledger_build_op_provenance_and_overhead_fields():
     """build_op's two_pass/encoder_version/hwaccel/overhead fields round-trip
     and default to None/False safely when omitted."""
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     default_op = ol.build_op(target_bytes=1, encoder_req="x264", encoder_eff="x264",
                              width=1, height=1, fps=30.0, v_bps=1, audio_bps=1,
@@ -1447,7 +1447,7 @@ def test_ledger_neighbor_op_flags(tmp_path):
     identical content but opposite film-grain settings and opposite size
     deviations must each pull the same-flag query toward its own cluster,
     instead of blending (the grain-synth vs plain cross-contamination bug)."""
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     d = str(tmp_path)
     feats = {"entropy_p95": 6.0, "spatial_complexity": 5.0, "graininess": 0.1,
@@ -1470,7 +1470,7 @@ def test_ledger_neighbor_op_flags(tmp_path):
 def test_ledger_seed_adjust_guardrails():
     """Stage 2a live seeding: acts only with enough neighbors, clamps the
     correction, respects the feasibility cap, and skips sub-1% nudges."""
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     # Too few neighbors -> no action.
     assert ol.seed_adjust(1_000_000, 1.15, 2) == (1_000_000, False)
@@ -1490,7 +1490,7 @@ def test_ledger_seed_adjust_guardrails():
 
 
 def test_ledger_shadow_report(tmp_path):
-    import outcome_ledger as ol
+    import learning.outcome_ledger as ol
 
     d = str(tmp_path)
     assert ol.shadow_report(d) == {"n": 0}
@@ -1607,7 +1607,7 @@ def _stub_video_backend(bc, monkeypatch, *, duration=5.0, width=640, height=360)
     # AND indirectly via get_video_metadata, which also now lives in
     # media_probe.py and resolves _probe_media_cached through that module's
     # own globals — so both references must be patched to the same stub.
-    import media_probe
+    import encode.media_probe as media_probe
     monkeypatch.setattr(bc, "_probe_media_cached", lambda _p: probe)
     monkeypatch.setattr(media_probe, "_probe_media_cached", lambda _p: probe)
     monkeypatch.setattr(bc, "_jsonl_log", lambda *_a, **_k: None)
@@ -1940,7 +1940,7 @@ def test_ai_advisor_quality_floor_bump_is_shadow_only(monkeypatch):
     src.write_bytes(b"x")
     os.environ["BC_CURRENT_INPUT"] = str(src)
 
-    import smart_rate
+    import encode.smart_rate as smart_rate
 
     monkeypatch.setattr(smart_rate, "choose_bitrates", lambda *a, **k: (600_000, 128_000, 1.02))
     monkeypatch.setattr(smart_rate, "estimate_mux_overhead", lambda **k: 0)
@@ -1995,7 +1995,7 @@ def test_plan_zone_export_survives_legacy_zones_field():
     reassigned zone_plan wholesale after the export was built, silently
     discarding the injected x264-params zones string despite the planner
     logging a success message."""
-    import planner as pl
+    import encode.planner as pl
 
     scenes = [
         {"start": 0.0, "end": 3.0, "difficulty": 0.8},
@@ -2022,7 +2022,7 @@ def test_smart_rate_cache_key_distinguishes_same_named_files(tmp_path):
     """Two different files that happen to share a filename (common across
     folders/re-exports) must not collide in the ABR cache and silently reuse
     a stale v_bps/width/fps record for unrelated content."""
-    import smart_rate as sr
+    import encode.smart_rate as sr
 
     d1 = tmp_path / "a"; d1.mkdir()
     d2 = tmp_path / "b"; d2.mkdir()
