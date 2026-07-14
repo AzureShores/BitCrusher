@@ -25,7 +25,6 @@ past encodes to make better first-attempt decisions over time.
 - Trim-aware compression, folder watcher with per-file rules and a custom
   save folder, pipeline mode (watch → compress → webhook, zero-touch),
   Explorer "Send to", Discord webhook.
-- YouTube/URL input via yt-dlp — paste a link, get a sized-to-fit file.
 - Duplicate-file scan, save/load profiles, dashboard with a VMAF sparkline
   + codec-race scoreboard, side-by-side visual quality compare.
 - System tray minimize, multi-language UI, custom themes.
