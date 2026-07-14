@@ -29,7 +29,15 @@ import psutil
 import requests
 from PIL import Image, ImageTk
 from plyer import notification
-from win10toast import ToastNotifier
+try:
+    from win10toast import ToastNotifier
+except Exception:
+    # win10toast pulls in pkg_resources, which newer Python (3.14+) no longer
+    # ships by default -- toast popups are a nice-to-have, not worth crashing
+    # the whole app over.
+    class ToastNotifier:
+        def show_toast(self, *a, **kw):
+            pass
 from datetime import datetime
 import argparse
 
@@ -561,8 +569,6 @@ import threading
 from PIL import Image
 import pystray
 from tkinterdnd2 import DND_FILES, TkinterDnD
-from win10toast import ToastNotifier
-from win10toast import ToastNotifier
 
 try:
     from win10toast import ToastNotifier as _TN
@@ -6008,7 +6014,6 @@ class CompressorGUI:
         import tkinter as tk
         from pathlib import Path
         import os, sys, platform, threading, logging
-        from win10toast import ToastNotifier
 
         self.logger = setup_logging()
         if root is None:
