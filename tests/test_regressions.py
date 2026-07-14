@@ -180,6 +180,7 @@ def test_audio_encode_preserves_tags_and_cover(monkeypatch, tmp_path):
     container can hold a picture stream (mp3/m4a) but not opus/ogg; strict
     privacy still strips everything."""
     import BitCrusherV9 as bc
+    import audio_encode as ae
 
     captured = {}
 
@@ -193,7 +194,8 @@ def test_audio_encode_preserves_tags_and_cover(monkeypatch, tmp_path):
             stderr = ""
         return _R()
 
-    monkeypatch.setattr(bc, "_sp_run", fake_run)
+    # _encode_audio_once now lives in audio_encode.py; patch its own _sp_run.
+    monkeypatch.setattr(ae, "_sp_run", fake_run)
     src = tmp_path / "in.flac"
     src.write_bytes(b"x")
 
@@ -236,6 +238,7 @@ def test_audio_flac_lossless_and_opus_cover_command(monkeypatch, tmp_path):
     """FLAC output must not carry a lossy -b:a; opus cover art rides via a second
     ffmetadata input with -map_metadata 1 (base64 picture is too big for argv)."""
     import BitCrusherV9 as bc
+    import audio_encode as ae
 
     captured = {}
 
@@ -249,7 +252,8 @@ def test_audio_flac_lossless_and_opus_cover_command(monkeypatch, tmp_path):
             stderr = ""
         return _R()
 
-    monkeypatch.setattr(bc, "_sp_run", fake_run)
+    # _encode_audio_once now lives in audio_encode.py; patch its own _sp_run.
+    monkeypatch.setattr(ae, "_sp_run", fake_run)
     src = tmp_path / "in.wav"
     src.write_bytes(b"x")
 
@@ -315,8 +319,12 @@ def test_audio_track_map_keepfirst_vs_mix():
 
 def test_audio_track_plan_modes(monkeypatch):
     import BitCrusherV9 as bc
+    import feature_helpers as fh
 
-    monkeypatch.setattr(bc, "_count_audio_streams", lambda _p: 2)
+    # _audio_track_plan now lives in feature_helpers.py (extracted from the
+    # monolith), so its internal _count_audio_streams call must be patched
+    # there, not on the bc re-export.
+    monkeypatch.setattr(fh, "_count_audio_streams", lambda _p: 2)
     p_keep = bc._audio_track_plan("x.mp4", {"audio_track_mode": "keepfirst"})
     assert p_keep["multi"] and p_keep["mode"] == "keepfirst" and p_keep["notice"]
     p_mix = bc._audio_track_plan("x.mp4", {"audio_track_mode": "mix"})
@@ -325,7 +333,7 @@ def test_audio_track_plan_modes(monkeypatch):
     assert bc._audio_track_plan("x.mp4", {"audio_track_mode": "bogus"})["mode"] == "keepfirst"
 
     # single-track sources are untouched (no notice, not "multi").
-    monkeypatch.setattr(bc, "_count_audio_streams", lambda _p: 1)
+    monkeypatch.setattr(fh, "_count_audio_streams", lambda _p: 1)
     p_single = bc._audio_track_plan("x.mp4", {"audio_track_mode": "mix"})
     assert not p_single["multi"] and p_single["notice"] is None
 
@@ -345,6 +353,7 @@ def test_read_sibling_lrc(tmp_path):
 def test_embed_lyrics_builds_metadata_command(monkeypatch, tmp_path):
     """_embed_lyrics_into remuxes with -c copy and a lyrics metadata tag."""
     import BitCrusherV9 as bc
+    import feature_helpers as fh
 
     out = tmp_path / "o.mp3"
     out.write_bytes(b"x")
@@ -360,7 +369,8 @@ def test_embed_lyrics_builds_metadata_command(monkeypatch, tmp_path):
             stderr = ""
         return _R()
 
-    monkeypatch.setattr(bc, "_sp_run", fake_run)
+    # _embed_lyrics_into now lives in feature_helpers.py; patch its own _sp_run.
+    monkeypatch.setattr(fh, "_sp_run", fake_run)
     ok = bc._embed_lyrics_into(str(out), "[00:00.00]hi", status_cb=None)
     assert ok
     c = captured["cmd"]
@@ -600,28 +610,33 @@ def test_decide_preprocessing_keep_and_reject(monkeypatch):
     """The probe A/B is the shipping gate: the best variant is kept only when it
     clears the margin; otherwise no filter ships."""
     import BitCrusherV9 as bc
+    import preproc
 
-    monkeypatch.setattr(bc, "_ffmpeg_has_filter", lambda _n: True)
+    # decide_preprocessing/_preproc_candidates/_preproc_probe_variants now live
+    # in preproc.py (extracted from the monolith), so their internal
+    # _ffmpeg_has_filter/_preproc_probe_variants calls must be patched there,
+    # not on the bc re-export.
+    monkeypatch.setattr(preproc, "_ffmpeg_has_filter", lambda _n: True)
     feats = {"graininess": 0.5, "entropy_p95": 7.5}
     kw = dict(encoder="x264", video_bps=800_000, scale_width=1280, width=1280,
               height=720, fps=30.0, duration_s=20.0, advanced_options={})
 
     # Best variant clears the margin → its chain ships.
-    monkeypatch.setattr(bc, "_preproc_probe_variants",
+    monkeypatch.setattr(preproc, "_preproc_probe_variants",
                         lambda *_a, **_k: {"baseline": 80.0, "denoise_med": 80.2,
                                            "denoise_light": 81.5})
     chain, info = bc.decide_preprocessing("f.mp4", feats, **kw)
     assert info["kept"] == "denoise_light" and "hqdn3d" in chain
 
     # Under the margin → nothing ships.
-    monkeypatch.setattr(bc, "_preproc_probe_variants",
+    monkeypatch.setattr(preproc, "_preproc_probe_variants",
                         lambda *_a, **_k: {"baseline": 80.0, "denoise_med": 80.2,
                                            "denoise_light": 80.3})
     chain, info = bc.decide_preprocessing("f.mp4", feats, **kw)
     assert chain is None and info["kept"] is None
 
     # Probe unavailable → nothing ships.
-    monkeypatch.setattr(bc, "_preproc_probe_variants", lambda *_a, **_k: None)
+    monkeypatch.setattr(preproc, "_preproc_probe_variants", lambda *_a, **_k: None)
     chain, info = bc.decide_preprocessing("f.mp4", feats, **kw)
     assert chain is None
 
@@ -681,6 +696,7 @@ def test_make_trim_intermediate_commands(monkeypatch, tmp_path):
     """Copy mode snaps the start to a keyframe and stream-copies; fade mode is a
     frame-exact near-lossless re-encode with av fades at both ends."""
     import BitCrusherV9 as bc
+    import trim
 
     captured = {}
 
@@ -694,8 +710,11 @@ def test_make_trim_intermediate_commands(monkeypatch, tmp_path):
             stderr = ""
         return _R()
 
-    monkeypatch.setattr(bc, "_sp_run", fake_run)
-    monkeypatch.setattr(bc, "_prev_keyframe_time", lambda _p, _t: 4.0)
+    # make_trim_intermediate now lives in trim.py (extracted from the monolith),
+    # so its internal _sp_run/_prev_keyframe_time calls must be patched there,
+    # not on the bc re-export.
+    monkeypatch.setattr(trim, "_sp_run", fake_run)
+    monkeypatch.setattr(trim, "_prev_keyframe_time", lambda _p, _t: 4.0)
     src = tmp_path / "in.mp4"
     src.write_bytes(b"x")
 
@@ -1582,7 +1601,14 @@ def _stub_video_backend(bc, monkeypatch, *, duration=5.0, width=640, height=360)
             {"codec_type": "audio", "channels": 2, "sample_rate": "48000"},
         ],
     }
+    # _probe_media_cached now lives in media_probe.py (extracted from the
+    # monolith). compress_video calls it directly (patching bc.* covers that)
+    # AND indirectly via get_video_metadata, which also now lives in
+    # media_probe.py and resolves _probe_media_cached through that module's
+    # own globals — so both references must be patched to the same stub.
+    import media_probe
     monkeypatch.setattr(bc, "_probe_media_cached", lambda _p: probe)
+    monkeypatch.setattr(media_probe, "_probe_media_cached", lambda _p: probe)
     monkeypatch.setattr(bc, "_jsonl_log", lambda *_a, **_k: None)
     monkeypatch.setattr(bc, "learn_from_result", lambda *_a, **_k: None)
     monkeypatch.setattr(bc, "guardrail_adjust", lambda *_a, **_k: None)
