@@ -28,26 +28,28 @@ past encodes to make better first-attempt decisions over time.
 
 ## Benchmark
 
-One real CLI run, not cherry-picked — reproduce with:
-`python BitCrusherV9.py <file> -t 10 --quality max`
+Real CLI runs, not cherry-picked — reproduce with
+`python BitCrusherV9.py <file> -t <MB> --quality max` (video) or
+`... -t <MB> --audio-format opus` (audio). All on CPU only, no hardware
+acceleration.
 
-| | Source | Output |
-|---|---|---|
-| Resolution | 3840x2160 (4K) | 3840x2160 (4K) |
-| Codec | H.264 | AV1 |
-| Duration | 14.01s | 14.01s |
-| Size | 39.40 MB | 9.85 MB (25.0% of source) |
-| Bitrate | 23.6 Mbps | ~5.9 Mbps |
+| Source | Target | Result | Quality |
+|---|---|---|---|
+| 4K video, 14.01s @ 29.97fps, H.264, 39.40 MB (23.6 Mbps), high-motion/low-complexity stock clip | 10 MB | AV1 3840x2160, 9.85 MB (25.0% of source), two-pass, 357s | VMAF 86.9 mean / **85.5 worst-scene** @ 0:04, XPSNR 42.3 dB |
+| same 4K source | 5 MB | AV1 **downscaled to 1920x1080**, 4.95 MB (12.6% of source), two-pass, 137s | VMAF 74.4 mean / **71.5 worst-scene** @ 0:04, XPSNR 39.1 dB |
+| Commercial FLAC track, 4:33, 44.1kHz stereo, 30.40 MB (933 kbps), embedded cover art | 8 MB | Opus ~234 kbps, 7.85 MB (25.8% of source), 2s, cover art preserved | "transparent (perceptually lossless)" |
 
-- **Content**: high-motion, low-complexity 4K stock clip, 29.97fps.
-- **Target**: 10 MB (Discord's free-tier cap) — landed 9.85 MB, under the ceiling.
-- **Codec race** (quality mode: Max, CPU-only): measured av1=87.1 vs
-  x265=82.2 vs x264=71.3 (VMAF-per-bit on probe segments), picked AV1
-  automatically over the requested x264.
-- **Quality**: VMAF (v0.6.1 model) 86.9 mean, 85.5 worst-scene
-  (2-second rolling window, the floor the pipeline actually optimizes for)
-  at 0:04. XPSNR 42.3 dB as a perceptual cross-check.
-- **Encode time**: 357s (~6 min), two-pass, CPU-only, no hardware acceleration.
+Both video rows are the same source at two targets, showing the size
+controller trading resolution for bitrate as the cap tightens rather than
+just cranking CRF: at 10 MB it keeps full 4K; at 5 MB it drops to 1080p to
+protect quality-per-pixel instead of holding 4K at a starved bitrate.
+Worst-scene VMAF (2-second rolling window) is bolded because that's the
+floor the pipeline actually optimizes for, not the mean — a good average
+can hide one bad scene.
+
+On the codec race: both video rows measured av1 beating the requested
+x264 on VMAF-per-bit (e.g. the 10 MB run: av1=87.1 vs x265=82.2 vs
+x264=71.3 on probe segments) and switched automatically.
 
 ## Requirements
 
