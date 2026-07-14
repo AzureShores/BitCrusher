@@ -5,6 +5,11 @@ it aims for but never overshoots. Built for upload limits like Discord's
 10/25/50MB caps. Runs as a desktop GUI or a CLI, and learns from its own
 past encodes to make better first-attempt decisions over time.
 
+> **Requires Python 3.10+ on your PATH.** Get it from
+> [python.org/downloads](https://www.python.org/downloads/) — check
+> "Add python.exe to PATH" during install. `BitCrusher.bat` will tell you
+> if it's missing.
+
 ## Features
 
 - Video, audio, image, and PDF compression in one queue, routed automatically.
@@ -16,7 +21,7 @@ past encodes to make better first-attempt decisions over time.
 
 ## Requirements
 
-- Windows, Python 3.10+
+- Windows, [Python 3.10+](https://www.python.org/downloads/)
 - ffmpeg, ffprobe, and HandBrakeCLI — either on `PATH`, or dropped into a
   `tools/` folder next to `BitCrusherV9.py`. Configure custom paths in the
   app (Settings > Configure Paths) or with the `BC_FFMPEG`/`BC_FFPROBE`
