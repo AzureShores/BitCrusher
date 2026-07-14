@@ -5438,7 +5438,7 @@ class CompressorGUI:
                                                 status_cb=lambda m, l="INFO": self.update_status(m, level=l))
                 except Exception:
                     cands = []
-                self.root.after(0, lambda: _show(cands))
+                self._ui(_show, cands)
 
             def _show(cands):
                 if not cands:
@@ -5802,7 +5802,7 @@ class CompressorGUI:
                 f"{ratio:.2f}",
                 f"{took:.1f}"
             ))
-        self.root.after(0, insert_row)
+        self._ui(insert_row)
 
     def start_youtube_download(self):
         
@@ -5985,6 +5985,14 @@ class CompressorGUI:
             except Exception:
                 root = tk.Tk()
         self.root = root
+
+        import queue as _queue_mod
+        self._ui_queue = _queue_mod.Queue()
+        self._ui_queue_empty_exc = _queue_mod.Empty
+        try:
+            self.root.after(50, self._drain_ui_queue)
+        except Exception:
+            pass
 
         try:
             import tkinter as tk
@@ -6435,10 +6443,7 @@ class CompressorGUI:
             self.save_settings()
         except Exception:
             pass
-        try:
-            self.root.after(0, self._shutdown_and_exit)
-        except Exception:
-            self._shutdown_and_exit()
+        self._ui(self._shutdown_and_exit)
 
     def on_close(self):
 
@@ -6481,10 +6486,10 @@ class CompressorGUI:
         drw.ellipse((4, 4, 28, 28), fill=(0, 122, 204, 255))
 
         def _restore(_icon=None, _item=None):
-            self.root.after(0, self.restore_from_tray)
+            self._ui(self.restore_from_tray)
 
         def _exit(_icon=None, _item=None):
-            self.root.after(0, self._shutdown_and_exit)
+            self._ui(self._shutdown_and_exit)
 
         menu = pystray.Menu(
             pystray.MenuItem("Restore", _restore, default=True),
@@ -6574,10 +6579,7 @@ class CompressorGUI:
         except Exception:
             pass
 
-        try:
-            self.root.after(0, self._shutdown_and_exit)
-        except Exception:
-            self._shutdown_and_exit()
+        self._ui(self._shutdown_and_exit)
 
 
     def log_info(self, msg):
@@ -6625,6 +6627,29 @@ class CompressorGUI:
                         pass
 
 
+    def _drain_ui_queue(self):
+        """Runs on the main thread via its own after()-timer chain. Worker
+        threads hand off Tk-touching callables here instead of calling
+        self.root.after() directly -- newer Tk builds (Python 3.13+) raise
+        RuntimeError: "main thread is not in main loop" when .after() itself
+        is called from a non-main thread, not just when widgets are touched
+        directly."""
+        try:
+            while True:
+                fn = self._ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception:
+                    pass
+        except self._ui_queue_empty_exc:
+            pass
+        except Exception:
+            pass
+        try:
+            self.root.after(50, self._drain_ui_queue)
+        except Exception:
+            pass
+
     def _startup_update_check(self):
         """Deferred from __init__ via root.after — runs after the window is up,
         never blocks GUI startup. First launch: ask consent once and persist
@@ -6658,7 +6683,7 @@ class CompressorGUI:
                 info = fetch_latest_release()
             except Exception:
                 info = None
-            self.root.after(0, lambda: self._on_update_check_done(info, silent=silent))
+            self._ui(self._on_update_check_done, info, silent=silent)
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_update_check_done(self, info: dict | None, silent: bool):
@@ -6789,7 +6814,7 @@ class CompressorGUI:
         # the Treeview, so re-dispatch to the main thread.
         try:
             if threading.current_thread() is not threading.main_thread():
-                self.root.after(0, lambda p=filepath: self._enqueue_from_watcher(p))
+                self._ui(self._enqueue_from_watcher, filepath)
                 return
         except Exception:
             pass
@@ -6888,7 +6913,7 @@ class CompressorGUI:
                 lines = [ln.strip() for ln in data.splitlines() if ln.strip()]
                 if lines and lines[0] == "BCENQUEUE":
                     for p in lines[1:]:
-                        self.root.after(0, lambda pp=p: self._ipc_enqueue(pp))
+                        self._ui(self._ipc_enqueue, p)
 
         threading.Thread(target=_serve, name="bc_ipc", daemon=True).start()
 
@@ -9397,9 +9422,22 @@ class CompressorGUI:
             pass
 
     def _ui(self, fn, *args, **kwargs):
-        """Schedule a callable on the Tk main thread (safe from worker threads)."""
+        """Schedule a callable on the Tk main thread (safe from worker threads).
+        Hands off through _ui_queue, drained by _drain_ui_queue's own
+        after()-timer on the main thread -- NOT via self.root.after() called
+        directly from here, because newer Tk builds (Python 3.13+) raise
+        RuntimeError: "main thread is not in main loop" when .after() itself
+        is invoked from a non-main thread, not just when widgets are touched
+        directly."""
+        cb = lambda: fn(*args, **kwargs)
+        if threading.current_thread() is threading.main_thread():
+            try:
+                cb()
+            except Exception:
+                pass
+            return
         try:
-            self.root.after(0, lambda: fn(*args, **kwargs))
+            self._ui_queue.put(cb)
         except Exception:
             pass
 
@@ -9432,7 +9470,7 @@ class CompressorGUI:
                 evt.set()
 
         try:
-            self.root.after(0, _run)
+            self._ui_queue.put(_run)
             evt.wait(timeout=timeout_s)
         except Exception:
             return default
@@ -9968,10 +10006,12 @@ class CompressorGUI:
 
     def update_status(self, msg, level="INFO"):
         # Tk widgets may only be touched from the main thread; worker threads
-        # re-dispatch through the event loop.
+        # re-dispatch through _ui's queue (not self.root.after() directly --
+        # newer Tk builds reject .after() itself from a non-main thread with
+        # RuntimeError: "main thread is not in main loop").
         try:
             if threading.current_thread() is not threading.main_thread():
-                self.root.after(0, lambda m=msg, l=level: self.update_status(m, l))
+                self._ui(self.update_status, msg, level)
                 return
         except Exception:
             pass
@@ -10445,7 +10485,7 @@ class CompressorGUI:
                 self.progress["value"] = 0
             except Exception:
                 pass
-        self.root.after(0, _prep)
+        self._ui(_prep)
 
         adv_base = dict(getattr(self, "_thread_adv_options", None)
                         or getattr(self, "advanced_options", None) or {})
@@ -10622,7 +10662,7 @@ class CompressorGUI:
         if workers <= 1:
             for idx, path in enumerate(files, start=1):
                 results.append(_run_one(idx, path))
-                self.root.after(0, self._bump_progress, len(results))
+                self._ui(self._bump_progress, len(results))
         else:
             self.update_status(f"[~] Concurrent mode: encoding up to {workers} files at once.", level="INFO")
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10638,7 +10678,7 @@ class CompressorGUI:
                                         "out_bytes": 0, "vmaf": None, "encoder": None,
                                         "secs": 0.0, "error": str(e)})
                     done_n += 1
-                    self.root.after(0, self._bump_progress, done_n)
+                    self._ui(self._bump_progress, done_n)
 
         self.batch_results = results
         self._active_workers = 1
@@ -10680,7 +10720,7 @@ class CompressorGUI:
                 except Exception:
                     pass
 
-        self.root.after(0, _finish)
+        self._ui(_finish)
         self.compression_running = False
 
 
