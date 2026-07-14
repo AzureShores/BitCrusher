@@ -459,6 +459,7 @@ from text_utils import _EMOJI_RE, _mojibake_score, _normalize_text, format_bytes
 from webhook import DiscordWebhookClient, _format_webhook_summary, _post_webhook_hardened
 from ffmpeg_exec import (si, NO_WIN, _render_cmd, _tail, _orig_check_output,
                          _check_output_logged, _sp_check_output, _ffmpeg_has_filter,
+                         _orig_run, _run_logged, _sp_run,
                          set_ffmpeg_path as _set_ffmpeg_exec_path,
                          set_ffprobe_path as _set_ffprobe_exec_path)
 from quality_metrics import (vmaf_quality_label, set_vmaf_model_pref, resolve_vmaf_model,
@@ -646,107 +647,6 @@ def _patch_tk_report_callback_exception():
         LOG.debug("Tkinter not available or already patched", exc_info=True)
 
 _patch_tk_report_callback_exception()
-
-_orig_run = subprocess.run
-
-def _run_logged(cmd, *args, **kwargs):
-    t0 = time.time()
-    text_mode = kwargs.get("text", False)
-    capture = (kwargs.get("stdout") is subprocess.PIPE
-               or kwargs.get("stderr") is subprocess.PIPE
-               or kwargs.get("capture_output") is True
-               or text_mode)
-
-    try:
-
-        _parts = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
-        _lp = [str(x).lower() for x in _parts]
-
-        _is_ffmpeg = any(("ffmpeg" in p) for p in _lp)
-        _asks_for_frame = any((flag in _lp) for flag in ("-frames:v", "-vframes"))
-        _has_vf = "-vf" in _lp
-        # -------- scene-zones injection (x264) ----------
-        try:
-            _xparams = os.environ.get("BC_X264_PARAMS", "")
-            _qpfile  = os.environ.get("BC_QPFILE", "")
-
-            # HandBrakeCLI path (x264)
-            if any(("handbrakecli" in p) for p in _lp) and any(("x264" in p) for p in _lp):
-                if _xparams and "-x264-params" not in _lp and "--encoder-options" not in _lp:
-                    _parts.extend(["-x264-params", _xparams])
-                if _qpfile and os.path.exists(_qpfile) and "--qpfile" not in _lp:
-                    _parts.extend(["--qpfile", _qpfile])
-                cmd = _parts
-
-            # ffmpeg path (libx264)
-            elif _is_ffmpeg and ("libx264" in _lp or ("-c:v" in _lp and "libx264" in _lp)):
-                if _xparams and "-x264-params" not in _lp:
-                    _parts.extend(["-x264-params", _xparams])
-                if _qpfile and os.path.exists(_qpfile) and "-qpfile" not in _lp:
-                    _parts.extend(["-qpfile", _qpfile])
-                cmd = _parts
-        except Exception:
-            pass
-        # -----------------------------------------------
-        _in_idx = next((i for i, v in enumerate(_lp) if v == "-i"), -1)
-        _in_path = str(_parts[_in_idx + 1]) if (_in_idx != -1 and _in_idx + 1 < len(_parts)) else ""
-
-        _audio_exts = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".opus", ".ogg"}
-        _is_audio_only = os.path.splitext(_in_path)[1].lower() in _audio_exts
-
-        if _is_ffmpeg and (_asks_for_frame or _has_vf) and _is_audio_only:
-
-            LOG.info("Skipping video-frame extraction on audio-only input: %s", _render_cmd(cmd))
-            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
-    except Exception:
-        pass
-
-    try:
-        res = _orig_run(cmd, *args, **kwargs)
-
-    except Exception as e:
-        LOG.error("subprocess.run raised exception for: %s\n%s", _render_cmd(cmd), repr(e))
-        raise
-    dt = time.time() - t0
-    try:
-        LOG.debug("CMD: %s", _render_cmd(cmd))
-        LOG.debug("RET: %s in %.2fs", res.returncode, dt)
-        if capture:
-            if hasattr(res, "stdout") and res.stdout:
-                LOG.debug("STDOUT (tail):\n%s", _tail(res.stdout if isinstance(res.stdout, str)
-                                                     else res.stdout.decode("utf-8", "ignore"), 50))
-            if hasattr(res, "stderr") and res.stderr:
-                LOG.debug("STDERR (tail):\n%s", _tail(res.stderr if isinstance(res.stderr, str)
-                                                     else res.stderr.decode("utf-8", "ignore"), 120))
-        if res.returncode != 0:
-            try:
-                _parts = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
-                _lp = [str(x).lower() for x in _parts]
-                if any("ffmpeg" in p for p in _lp) and any(flag in _lp for flag in ("-frames:v", "-vframes")):
-                    LOG.warning("Command nonzero (rc=%s): %s", res.returncode, _render_cmd(cmd))
-                else:
-                    try:
-                        _parts = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
-                        _lp = [str(x).lower() for x in _parts]
-                        if any("ffmpeg" in p for p in _lp) and any(flag in _lp for flag in ("-frames:v", "-vframes")):
-                            LOG.warning("Command nonzero (rc=%s): %s", res.returncode, _render_cmd(cmd))
-                        else:
-                            LOG.error("Command failed (rc=%s): %s", res.returncode, _render_cmd(cmd))
-                    except Exception:
-                        LOG.error("Command failed (rc=%s): %s", res.returncode, _render_cmd(cmd))
-            except Exception:
-                            try:
-                                _parts = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
-                                _lp = [str(x).lower() for x in _parts]
-                                if any("ffmpeg" in p for p in _lp) and any(flag in _lp for flag in ("-frames:v", "-vframes")):
-                                    LOG.warning("Command nonzero (rc=%s): %s", res.returncode, _render_cmd(cmd))
-                                else:
-                                    LOG.error("Command failed (rc=%s): %s", res.returncode, _render_cmd(cmd))
-                            except Exception:
-                                LOG.error("Command failed (rc=%s): %s", res.returncode, _render_cmd(cmd))
-    except Exception:
-        pass
-    return res
 
 def _ffmpeg_emergency_encode(
     input_path: str,
@@ -1649,8 +1549,6 @@ def _handbrake_encode(
 
 
 
-def _sp_run(cmd, *args, **kwargs):
-    return _run_logged(cmd, *args, **kwargs)
 
 
 def bridge_gui_logger(widget):
