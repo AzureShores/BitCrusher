@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Runtime state / output
+user_settings/
+logs/
+output/
+tmp/
+
+# Vendored binary tools
+tools/*.exe
