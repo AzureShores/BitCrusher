@@ -10,6 +10,8 @@ past encodes to make better first-attempt decisions over time.
 > "Add python.exe to PATH" during install. `BitCrusher.bat` will tell you
 > if it's missing.
 
+![BitCrusher GUI](assets/screenshot.png)
+
 ## Features
 
 - Video, audio, image, and PDF compression in one queue, routed automatically.
