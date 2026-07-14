@@ -93,3 +93,38 @@ def _ffmpeg_has_filter(name: str) -> bool:
             pass
         setattr(_ffmpeg_has_filter, "_cache", cache)
     return bool(cache.get(name))
+
+
+FFPROBE = None
+
+
+def set_ffprobe_path(path: str | None) -> None:
+    """Sync the ffprobe binary path resolved by BitCrusherV9.py's load_paths(),
+    same rationale as set_ffmpeg_path."""
+    global FFPROBE
+    FFPROBE = path
+
+
+def probe_video_stream_dims(path: str) -> dict:
+    """Minimal standalone ffprobe of a file's first video stream (width, height,
+    avg_frame_rate) for quality_metrics.py's reference-dimension needs.
+
+    Deliberately does NOT share BitCrusherV9.py's _probe_media_cached LRU cache:
+    that cache is monkeypatched by name (tests bind fakes to BitCrusherV9's own
+    module namespace), and _probe_video_stream calling it internally from a
+    different module would silently resolve the real function instead of a
+    test's fake, defeating that isolation invisibly. This runs once per VMAF/
+    XPSNR measurement (not hot-path), so a redundant ffprobe call is cheap.
+    """
+    import json
+    try:
+        out = _sp_check_output(
+            [FFPROBE, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height,avg_frame_rate",
+             "-of", "json", path],
+            text=True, startupinfo=si, creationflags=NO_WIN)
+        data = json.loads(out or "{}") or {}
+        streams = data.get("streams") or []
+        return streams[0] if streams else {}
+    except Exception:
+        return {}

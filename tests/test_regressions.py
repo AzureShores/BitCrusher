@@ -472,14 +472,18 @@ def test_vmaf_model_resolution(monkeypatch):
     'default' → build default; 'neg' → the NEG model; 'v1' → v1 if a candidate
     loads, else v0.6.1; a model that won't load is never injected."""
     import BitCrusherV9 as bc
+    import quality_metrics as qm
 
     # Pretend the build only accepts v0.6.1 + neg (no v1).
+    # resolve_vmaf_model now lives in quality_metrics.py (extracted from the
+    # monolith), so its internal _vmaf_model_loads/_first_v1_model_file calls
+    # must be patched there, not on the bc re-export.
     def only_v0(model_arg, _ff):
         if not model_arg:
             return True
         return model_arg in ("version=vmaf_v0.6.1neg", "version=vmaf_4k_v0.6.1")
-    monkeypatch.setattr(bc, "_vmaf_model_loads", only_v0)
-    monkeypatch.setattr(bc, "_first_v1_model_file", lambda: None)
+    monkeypatch.setattr(qm, "_vmaf_model_loads", only_v0)
+    monkeypatch.setattr(qm, "_first_v1_model_file", lambda: None)
 
     bc.set_vmaf_model_pref("default"); assert bc.resolve_vmaf_model("ff") == ""
     bc.set_vmaf_model_pref("neg"); assert bc.resolve_vmaf_model("ff") == "version=vmaf_v0.6.1neg"
@@ -493,12 +497,12 @@ def test_vmaf_model_resolution(monkeypatch):
     # Now pretend a v1 embedded model exists → auto/v1 pick it up.
     def with_v1(model_arg, _ff):
         return (not model_arg) or model_arg == "version=vmaf_v1"
-    monkeypatch.setattr(bc, "_vmaf_model_loads", with_v1)
+    monkeypatch.setattr(qm, "_vmaf_model_loads", with_v1)
     bc.set_vmaf_model_pref("auto"); assert bc.resolve_vmaf_model("ff") == "version=vmaf_v1"
     bc.set_vmaf_model_pref("v1"); assert bc.resolve_vmaf_model("ff") == "version=vmaf_v1"
 
     # And the '<opt>:' fragment for the filter string.
-    monkeypatch.setattr(bc, "_vmaf_model_loads", only_v0)
+    monkeypatch.setattr(qm, "_vmaf_model_loads", only_v0)
     bc.set_vmaf_model_pref("neg")
     assert bc._vmaf_model_opt("ff") == "model=version=vmaf_v0.6.1neg:"
     bc.set_vmaf_model_pref("default")

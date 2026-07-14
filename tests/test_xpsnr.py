@@ -7,6 +7,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import BitCrusherV9 as bc
+import quality_metrics as qm
 
 
 def test_xpsnr_quality_label_bands():
@@ -20,6 +21,8 @@ def test_xpsnr_quality_label_bands():
 
 def test_xpsnr_absent_binary_is_graceful(monkeypatch):
     # When the xpsnr filter isn't available, compute_xpsnr must no-op (None),
-    # never raise — the cross-check is optional.
-    monkeypatch.setattr(bc, "_ffmpeg_has_filter", lambda name: False)
+    # never raise — the cross-check is optional. compute_xpsnr now lives in
+    # quality_metrics.py (extracted from the monolith), so the filter check it
+    # calls must be patched there, not on the bc re-export.
+    monkeypatch.setattr(qm, "_ffmpeg_has_filter", lambda name: False)
     assert bc.compute_xpsnr("ref.mp4", "dist.mp4", duration_s=5.0) is None
