@@ -16,6 +16,7 @@ logs/
 tmp/
 test_pipeline/out/
 test_pipeline/*.log
+test_pipeline/results_*.json
 
 # Vendored binary tools
 tools/*.exe
@@ -23,3 +24,5 @@ tools/*.exe
 # Local tooling / state
 .claude/
 user_settings/
+_bmad/
+_bmad-output/

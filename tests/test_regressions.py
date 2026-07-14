@@ -2195,3 +2195,131 @@ def test_dedup_reuse_copy_handles_same_basename_duplicates(tmp_path):
     assert os.path.isfile(canonical_out)
     assert os.path.isfile(duplicate_out)
     assert open(duplicate_out, "rb").read() == open(canonical_out, "rb").read()
+
+
+# --- PDF path (encode/pdf_encode.py) -----------------------------------
+# Ghostscript itself is never invoked here (pdf._sp_run is faked) so these
+# run on any machine regardless of whether gs/gswin64c is installed.
+
+def test_compress_pdf_kept_original_when_near_target(monkeypatch, tmp_path):
+    """Source already within tolerance of the target: compress_pdf must copy
+    it through untouched and never shell out to Ghostscript at all."""
+    import encode.pdf_encode as pdf
+
+    monkeypatch.setattr(pdf, "_which", lambda *_a, **_k: "gs")
+
+    def _must_not_run(cmd, **_kw):
+        raise AssertionError(f"Ghostscript should not run for a near-target PDF: {cmd}")
+    monkeypatch.setattr(pdf, "_sp_run", _must_not_run)
+    monkeypatch.setattr(pdf, "_jsonl_log", lambda *_a, **_k: None)
+
+    src = tmp_path / "in.pdf"
+    src.write_bytes(b"%PDF-1.4\n" + b"x" * 50_000)
+    out_dir = tmp_path / "out"
+
+    msgs = []
+    stats = pdf.compress_pdf(
+        str(src), str(out_dir), lambda m, level="INFO": msgs.append((level, m)),
+        target_size_mb=1, webhook_url="", advanced_options={}, cancel_callback=lambda: False)
+
+    assert stats["note"] == "Kept original (already near target)."
+    assert os.path.isfile(stats["output_path"])
+    assert stats["compressed_size"] == os.path.getsize(src)
+
+
+def test_compress_pdf_text_vector_kept_original_when_no_shrink_needed(monkeypatch, tmp_path):
+    """A text/vector-only PDF (no /Subtype /Image or /XObject markers) that
+    doesn't need meaningful shrinking must be kept as-is, not rasterized."""
+    import encode.pdf_encode as pdf
+
+    monkeypatch.setattr(pdf, "_which", lambda *_a, **_k: "gs")
+    # Zero out the size margin so the target math below is exact, not fuzzed
+    # by the (target * 0.5%, clamped 16-128KB) safety shave.
+    monkeypatch.setattr(pdf, "apply_target_size_margin", lambda b: b)
+
+    def _must_not_run(cmd, **_kw):
+        raise AssertionError(f"Ghostscript should not run: {cmd}")
+    monkeypatch.setattr(pdf, "_sp_run", _must_not_run)
+    monkeypatch.setattr(pdf, "_jsonl_log", lambda *_a, **_k: None)
+
+    src = tmp_path / "in.pdf"
+    src.write_bytes(b"%PDF-1.4\n%% pure text/vector content, no images\n" + b"BT ET " * 20_000)
+    out_dir = tmp_path / "out"
+    src_size = os.path.getsize(src)
+
+    msgs = []
+    stats = pdf.compress_pdf(
+        str(src), str(out_dir), lambda m, level="INFO": msgs.append((level, m)),
+        # 95% of source, tol=0: fails the "near target" shortcut (src > target)
+        # but also fails need_shrink (target >= 90% of source).
+        target_size_mb=(src_size * 0.95) / (1024 * 1024),
+        webhook_url="", advanced_options={"pdf_tolerance": 0.0}, cancel_callback=lambda: False)
+
+    assert "vector/text-only" in stats["note"]
+    assert os.path.isfile(stats["output_path"])
+
+
+def test_compress_pdf_shrinks_via_gs_dpi_trials(monkeypatch, tmp_path):
+    """A raster (image-containing) PDF over target must go through the
+    DPI probe/trial loop and land on a Ghostscript-produced file at or
+    under the target size."""
+    import encode.pdf_encode as pdf
+
+    monkeypatch.setattr(pdf, "_which", lambda *_a, **_k: "gs")
+    monkeypatch.setattr(pdf, "_jsonl_log", lambda *_a, **_k: None)
+
+    FAKE_OUT_SIZE = 100_000
+
+    def fake_run(cmd, **_kw):
+        out_path = None
+        for c in cmd:
+            s = str(c)
+            if s.startswith("-sOutputFile="):
+                out_path = s[len("-sOutputFile="):]
+                break
+        assert out_path, f"no -sOutputFile= in Ghostscript cmd: {cmd}"
+        with open(out_path, "wb") as f:
+            f.write(b"x" * FAKE_OUT_SIZE)
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return _R()
+
+    monkeypatch.setattr(pdf, "_sp_run", fake_run)
+
+    src = tmp_path / "in.pdf"
+    # /Subtype /Image marker => looks_text_vector is False => DPI trial path.
+    src.write_bytes(b"%PDF-1.4\n/Subtype /Image\n" + b"x" * 500_000)
+    out_dir = tmp_path / "out"
+
+    msgs = []
+    stats = pdf.compress_pdf(
+        str(src), str(out_dir), lambda m, level="INFO": msgs.append((level, m)),
+        target_size_mb=0.2, webhook_url="", advanced_options={}, cancel_callback=lambda: False)
+
+    assert stats
+    assert stats["compressed_size"] == FAKE_OUT_SIZE
+    assert os.path.isfile(stats["output_path"])
+    assert "note" not in stats  # real compression, not a passthrough branch
+
+
+def test_compress_pdf_missing_ghostscript_errors_cleanly(monkeypatch, tmp_path):
+    """No Ghostscript on PATH: compress_pdf must report an error and return
+    {} rather than raising or silently producing a bad output."""
+    import encode.pdf_encode as pdf
+
+    monkeypatch.setattr(pdf, "_which", lambda *_a, **_k: None)
+
+    src = tmp_path / "in.pdf"
+    src.write_bytes(b"%PDF-1.4\n" + b"x" * 1000)
+    out_dir = tmp_path / "out"
+
+    msgs = []
+    stats = pdf.compress_pdf(
+        str(src), str(out_dir), lambda m, level="INFO": msgs.append((level, m)),
+        target_size_mb=1, webhook_url="", advanced_options={}, cancel_callback=lambda: False)
+
+    assert stats == {}
+    assert any(level == "ERROR" and "Ghostscript" in m for level, m in msgs)
