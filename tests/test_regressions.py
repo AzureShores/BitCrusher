@@ -2323,3 +2323,39 @@ def test_compress_pdf_missing_ghostscript_errors_cleanly(monkeypatch, tmp_path):
 
     assert stats == {}
     assert any(level == "ERROR" and "Ghostscript" in m for level, m in msgs)
+
+
+# --- Flat/screen-content resolution guard (encode/media_math.py) -------
+# Regression: a real-encode-validated fix (commit 2dd530b) landed on an
+# unmerged worktree branch and never made it into determine_resolution
+# here, so the screen-rec downscale bug was silently back. Locking the
+# exact face-off scenario down so it can't happen again undetected.
+
+def test_determine_resolution_holds_native_for_flat_screen_content():
+    """2166w screen rec (cx=0.97, x264, ~600kbps@30fps) must hold native
+    resolution, not downscale to 1600 -- that regression cost a face-off
+    against a naive native-res 2-pass encoder (VMAF 94 vs 88.6, smaller
+    file). The old un-gated 2.2x cap boost was NOT enough at this budget;
+    only the gated 3.0x flat-content boost (cx < 1.2) reaches native."""
+    import encode.media_math as mm
+
+    w = mm.determine_resolution(2166, 1240, 600_000, fps_hint=30.0,
+                                encoder="x264", complexity=0.97)
+    assert w == 2166, f"flat-content screen rec downscaled to {w}, expected native 2166"
+
+
+def test_determine_resolution_natural_video_unaffected_by_flat_guard():
+    """The flat-content boost is gated at complexity < 1.2 specifically so
+    it can't also inflate mid/high-complexity natural video (which would
+    risk regressing the original 4K downscale-threshold reference). A
+    cx=2.5 clip must still hit the un-gated 2.2/cx curve, unchanged."""
+    import encode.media_math as mm
+
+    # Same budget/geometry as the flat-content case, but natural complexity.
+    w = mm.determine_resolution(2166, 1240, 600_000, fps_hint=30.0,
+                                encoder="x264", complexity=2.5)
+    # 2.2/2.5 = 0.88, floored to 1.0 -> boost is a no-op at this cx, so this
+    # clip downscales same as complexity=None (no signal) would.
+    w_no_signal = mm.determine_resolution(2166, 1240, 600_000, fps_hint=30.0,
+                                          encoder="x264", complexity=None)
+    assert w == w_no_signal

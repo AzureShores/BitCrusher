@@ -139,8 +139,21 @@ def determine_resolution(width: int, height: int, target_bitrate: int, fps_hint:
         _cx = float(complexity) if complexity is not None else 0.0
     except Exception:
         _cx = 0.0
+    # Cap 2.2 (numerator/denom-floored-at-1.0) topped out at 2.2x, which still left
+    # a 2166-wide screen rec (cx~0.97, ~600 kbps) at 1600w and it LOST a face-off
+    # to a native-res 2-pass (VMAF 94 vs 88.6 at a SMALLER size). Genuinely-flat
+    # content (cx < 1.2: screen/UI/flat cartoon) gets a stronger fixed boost so it
+    # reaches the native-res bpppf rung at realistic budgets. Gated at cx < 1.2 on
+    # PURPOSE: raising the shared numerator would also boost mid-complexity natural
+    # video (cx 2.2-3.0) and risk downscaling regressions on the 4K reference the
+    # original fix protected. cx >= 1.2 keeps the exact old 2.2/cx curve. Still
+    # floored by the bpppf ladder below, so a truly starved budget downscales anyway.
+    _FLAT_KEEPRES_BOOST = 3.0
     if _cx > 0.0:
-        bpppf *= max(1.0, min(2.2, 2.2 / max(1.0, _cx)))
+        if _cx < 1.2:
+            bpppf *= _FLAT_KEEPRES_BOOST
+        else:
+            bpppf *= max(1.0, min(2.2, 2.2 / _cx))
 
     # Encoders differ hugely in how few bits/pixel they can survive on: x264
     # falls apart well before x265, and AV1 keeps working below both. Scale the
