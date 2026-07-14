@@ -26,6 +26,29 @@ past encodes to make better first-attempt decisions over time.
   learning ledger, recent job logs, and settings — safe to paste into a bug
   report (strips your home path and any saved webhook URL).
 
+## Benchmark
+
+One real CLI run, not cherry-picked — reproduce with:
+`python BitCrusherV9.py <file> -t 10 --quality max`
+
+| | Source | Output |
+|---|---|---|
+| Resolution | 3840x2160 (4K) | 3840x2160 (4K) |
+| Codec | H.264 | AV1 |
+| Duration | 14.01s | 14.01s |
+| Size | 39.40 MB | 9.85 MB (25.0% of source) |
+| Bitrate | 23.6 Mbps | ~5.9 Mbps |
+
+- **Content**: high-motion, low-complexity 4K stock clip, 29.97fps.
+- **Target**: 10 MB (Discord's free-tier cap) — landed 9.85 MB, under the ceiling.
+- **Codec race** (quality mode: Max, CPU-only): measured av1=87.1 vs
+  x265=82.2 vs x264=71.3 (VMAF-per-bit on probe segments), picked AV1
+  automatically over the requested x264.
+- **Quality**: VMAF (v0.6.1 model) 86.9 mean, 85.5 worst-scene
+  (2-second rolling window, the floor the pipeline actually optimizes for)
+  at 0:04. XPSNR 42.3 dB as a perceptual cross-check.
+- **Encode time**: 357s (~6 min), two-pass, CPU-only, no hardware acceleration.
+
 ## Requirements
 
 - Windows, [Python 3.10+](https://www.python.org/downloads/)
