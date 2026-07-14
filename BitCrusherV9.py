@@ -9165,11 +9165,19 @@ class CompressorGUI:
             return
         msg = "Missing tools detected:\n" + "\n".join(missing) + "\n\nInstall now?"
         if messagebox.askyesno("Dependencies Missing", msg):
-            for name in missing:
-                self.install_tool(name)
-            messagebox.showinfo("Install Complete",
-                                "Tools installed. Please restart the app.")
-            self.root.quit()
+            def _done():
+                messagebox.showinfo("Install Complete",
+                                    "Tools installed. Please restart the app.")
+                self.root.quit()
+            def _worker():
+                # Downloading ~150-250MB on the main thread froze the whole
+                # window ("Not Responding") for the length of the download.
+                # install_tool()'s status_cb already goes through the
+                # thread-safe update_status(), so this is safe off-thread.
+                for name in missing:
+                    self.install_tool(name)
+                self._ui(_done)
+            threading.Thread(target=_worker, daemon=True).start()
 
 
     def cancel_queue(self):
