@@ -825,3 +825,381 @@ def _handbrake_encode(
             ok = False
 
     return ok
+
+
+def compress_with_handbrake(
+    input_path: str,
+    output_path: str,
+    audio_bitrate: int | None = None,
+    encoder: str | None = "x264",
+    crf: int | None = None,
+    bitrate: int | None = None,
+    width: int | None = None,
+    fps: float | None = None,
+    tune: str | None = None,
+    two_pass: bool = False,
+    hwaccel: str | None = None,
+    audio_copy: bool = False,
+    early_abort_guard: tuple[int, int] | None = None,
+    turbo: bool | None = None,
+    advanced_options: dict | None = None,
+) -> bool:
+
+
+    import os, shutil, subprocess, glob
+
+    # Resolve ffmpeg the same way the rest of the app does (explicit override >
+    # the configured FFMPEG, which prefers tools/ > PATH). Mixing binaries here
+    # broke encoder detection: probes saw one build's encoders while encodes ran
+    # another build without them.
+    _ff_pref = str((advanced_options or {}).get("ffmpeg_path") or "").strip()
+    ffmpeg = ((shutil.which(_ff_pref) if _ff_pref else None)
+              or (FFMPEG if os.path.isfile(FFMPEG) else shutil.which(FFMPEG))
+              or shutil.which("ffmpeg"))
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found on PATH")
+
+    raw_enc = (encoder or (advanced_options or {}).get("encoder") or "x264")
+
+    def _norm(enc_str: str) -> str:
+        s_raw = (enc_str or "").strip().lower()
+        import re
+        s = re.sub(r"\s*\(.*?\)\s*", "", s_raw)  # drop parentheses
+        def has(*keys: str) -> bool:
+            return any(k in s_raw for k in keys) or any(k in s for k in keys)
+
+        if "nvenc" in s_raw:
+            if has("av1"):  return "av1_nvenc"
+            if has("265","hevc","h.265"): return "hevc_nvenc"
+            return "h264_nvenc"
+        if "qsv" in s_raw:
+            if has("av1"):  return "av1_qsv"
+            if has("265","hevc","h.265"): return "hevc_qsv"
+            return "h264_qsv"
+        if "amf" in s_raw:
+            if has("av1"):  return "av1_amf"
+            if has("265","hevc","h.265"): return "hevc_amf"
+            return "h264_amf"
+        if "vaapi" in s_raw:
+            if has("av1"):  return "av1_vaapi"
+            if has("265","hevc","h.265"): return "hevc_vaapi"
+            return "h264_vaapi"
+
+        if has("vvc","vvenc","x266","266","h.266"): return "vvc"
+        if has("av1","svt-av1","aom-av1","libaom"): return "av1"
+        if has("vp9","libvpx"): return "vp9"
+        if has("x265","hevc","h265","h.265"): return "x265"
+        if has("x264","avc","h264","h.264"): return "x264"
+        return "x264"
+
+    enc = _norm(raw_enc)
+
+    vcodec_map = {
+
+        "x264": "libx264", "libx264": "libx264",
+        "x265": "libx265", "libx265": "libx265", "hevc": "libx265",
+        "av1": "libsvtav1", "svt-av1": "libsvtav1", "libsvtav1": "libsvtav1",
+        "aom-av1": "libaom-av1", "libaom-av1": "libaom-av1",
+        "vp9": "libvpx-vp9", "libvpx-vp9": "libvpx-vp9",
+        "vvc": "libvvenc", "x266": "libvvenc", "vvenc": "libvvenc", "libvvenc": "libvvenc",
+
+        "h264_nvenc": "h264_nvenc", "hevc_nvenc": "hevc_nvenc", "av1_nvenc": "av1_nvenc",
+
+        "h264_qsv": "h264_qsv", "hevc_qsv": "hevc_qsv", "av1_qsv": "av1_qsv",
+
+        "h264_amf": "h264_amf", "hevc_amf": "hevc_amf", "av1_amf": "av1_amf",
+
+        "h264_vaapi": "h264_vaapi", "hevc_vaapi": "hevc_vaapi", "av1_vaapi": "av1_vaapi",
+    }
+    desired_vcodec = vcodec_map.get(enc, "libx264")
+
+    _ffmpeg_enc_cache = getattr(compress_with_handbrake, "_enc_cache", None)
+    if _ffmpeg_enc_cache is None:
+        try:
+            out = _sp_check_output([FFMPEG, "-hide_banner", "-encoders"], text=True, startupinfo=si, creationflags=NO_WIN)
+            have = set()
+            for line in (out or "").splitlines():
+
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].startswith("V"):
+                    have.add(parts[1].strip())
+            _ffmpeg_enc_cache = have
+        except Exception:
+            _ffmpeg_enc_cache = set()
+        setattr(compress_with_handbrake, "_enc_cache", _ffmpeg_enc_cache)
+
+    def _has_enc(name: str) -> bool:
+        return name in _ffmpeg_enc_cache if _ffmpeg_enc_cache else False
+
+    fallbacks_by_family = {
+        "vvc":       ["libvvenc", "libx265", "libx264"],
+        "x265":      ["libx265", "libx264"],
+        "av1":       ["libsvtav1", "libaom-av1", "libx265", "libx264"],
+        "vp9":       ["libvpx-vp9", "libx265", "libx264"],
+        "x264":      ["libx264"],
+        "h264_nvenc":["h264_nvenc", "libx264"],
+        "hevc_nvenc":["hevc_nvenc", "libx265", "libx264"],
+        "av1_nvenc": ["av1_nvenc", "libsvtav1", "libaom-av1", "libx265", "libx264"],
+        "h264_qsv":  ["h264_qsv", "libx264"],
+        "hevc_qsv":  ["hevc_qsv", "libx265", "libx264"],
+        "av1_qsv":   ["av1_qsv", "libsvtav1", "libaom-av1", "libx265", "libx264"],
+        "h264_amf":  ["h264_amf", "libx264"],
+        "hevc_amf":  ["hevc_amf", "libx265", "libx264"],
+        "av1_amf":   ["av1_amf", "libsvtav1", "libaom-av1", "libx265", "libx264"],
+        "h264_vaapi":["h264_vaapi", "libx264"],
+        "hevc_vaapi":["hevc_vaapi", "libx265", "libx264"],
+        "av1_vaapi": ["av1_vaapi", "libsvtav1", "libaom-av1", "libx265", "libx264"],
+    }
+    family = enc
+    candidates = fallbacks_by_family.get(family, [desired_vcodec, "libx264"])
+
+    vcodec = None
+    for cand in candidates:
+        if _has_enc(cand):
+            vcodec = cand
+            break
+
+    vcodec = vcodec or desired_vcodec
+
+    if two_pass and (vcodec == "libvvenc" or any(tag in vcodec for tag in ("_nvenc","_qsv","_amf","_vaapi"))):
+        two_pass = False
+
+    try:
+        status_cb = (advanced_options or {}).get("status_cb") or globals().get("status_callback")
+        if callable(status_cb):
+            status_cb(f"Using encoder={raw_enc} -> normalized={enc} -> ffmpeg -c:v {vcodec}", level="INFO")
+    except Exception:
+        pass
+
+
+    if callable(globals().get("status_callback", None)):
+        try: status_callback(f"Using encoder={enc} -> ffmpeg -c:v {vcodec}", level="INFO")
+        except Exception: pass
+
+    _preset_default = "slow" if vcodec == "libx265" else "medium"
+    preset = str((advanced_options or {}).get("preset", _preset_default))
+
+    use_bitrate_mode = bitrate is not None
+    v_bitrate = None
+    if use_bitrate_mode:
+        v_bitrate = int(max(24_000, int(bitrate)))
+
+    out_ext = os.path.splitext(output_path)[1].lower()
+    mp4_like = out_ext in (".mp4", ".m4v", ".mov", "")
+
+    # Multi-audio-track mapping (keep-first / mix). amix can't stream-copy, so a
+    # "mix" plan forces an audio re-encode regardless of the audio_copy request.
+    _atplan = (advanced_options or {}).get("_audio_track_plan") or {}
+    _acopy_ref = {"audio_copy": bool(audio_copy)}
+    audio_map_args = feature_helpers._audio_map_ffmpeg_args(_atplan, _acopy_ref) if _atplan.get("multi") else []
+    audio_copy = _acopy_ref["audio_copy"]
+
+    a_args: list[str] = []
+    if audio_copy:
+        a_args = ["-c:a", "copy"]
+    else:
+
+        a_br = int(audio_bitrate) if audio_bitrate else 128_000
+
+        _ladder = [64000, 96000, 128000, 160000, 192000, 224000, 256000, 320000]
+        a_br = min(_ladder, key=lambda x: abs(x - a_br))
+        # Opus beats AAC at every bitrate; use it whenever the container allows.
+        if out_ext in (".mkv", ".webm") and _has_enc("libopus"):
+            a_args = ["-c:a", "libopus", "-b:a", f"{a_br//1000}k"]
+        else:
+            a_args = ["-c:a", "aac", "-b:a", f"{a_br//1000}k"]
+
+    vf_parts: list[str] = []
+    # HDR -> SDR tone-map first (in linear light) when the target codec is 8-bit,
+    # so the result isn't washed out. Skipped for 10-bit-capable codecs.
+    if media_probe._probe_is_hdr_path(input_path):
+        _tm = media_probe._hdr_tonemap_vf(vcodec)
+        if _tm:
+            vf_parts.append(_tm)
+            try:
+                status_cb = (advanced_options or {}).get("status_cb") or globals().get("status_callback")
+                if callable(status_cb):
+                    status_cb("[HDR] HDR source + 8-bit codec -> tone-mapping BT.2020->BT.709.", level="INFO")
+            except Exception:
+                pass
+    if width:
+        vf_parts.append(f"scale={int(width)}:-2")
+    # Validated artifact-aware prefilters (set by decide_preprocessing).
+    _pre_vf = str((advanced_options or {}).get("preproc_vf") or "").strip()
+    if _pre_vf:
+        vf_parts.append(_pre_vf)
+    vf_arg: list[str] = ["-vf", ",".join(vf_parts)] if vf_parts else []
+
+    r_arg: list[str] = []
+    if fps:
+
+        r_arg = ["-r", str(int(round(float(fps))))]
+
+    _v_args, v_ratectrl = media_probe._codec_video_args(
+        vcodec,
+        preset=preset,
+        tune=tune,
+        crf=crf,
+        v_bitrate=(v_bitrate if use_bitrate_mode else None),
+        fps=fps,
+        advanced_options=advanced_options,
+    )
+    v_common: list[str] = ["-c:v", vcodec] + _v_args
+
+    def _run(cmd: list[str]) -> None:
+        _cb = (advanced_options or {}).get("progress_cb")
+        _jid = (advanced_options or {}).get("job_id")
+
+        # Early-abort runner. If early_abort_guard is set, add progress-aware monitoring.
+        if early_abort_guard:
+            target_bytes, under_abs = int(early_abort_guard[0]), int(early_abort_guard[1])
+            dur_s = float((advanced_options or {}).get("duration_s") or 0.0)
+            # If the command lacks -progress, add it here (last flags win).
+            if "-progress" not in cmd:
+                cmd = list(cmd) + ["-progress", "pipe:1"]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            try:
+                out_time = 0.0
+                total_size = 0
+                _last_cb = 0.0
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        if proc.poll() is not None:
+                            break
+                        continue
+                    l = line.strip()
+                    if l.startswith("out_time_ms="):
+                        try:
+                            out_time = int(l.split("=",1)[1]) / 1_000_000.0
+                        except Exception:
+                            pass
+                        if callable(_cb) and dur_s > 0 and out_time > 0:
+                            _now = time.monotonic()
+                            if _now - _last_cb >= 1.0:
+                                _last_cb = _now
+                                try:
+                                    _cb(_jid, {"stage": "encoding",
+                                               "pct": min(100.0, out_time / dur_s * 100.0),
+                                               "detail": "Encode"})
+                                except Exception:
+                                    pass
+                    elif l.startswith("total_size="):
+                        try:
+                            total_size = int(l.split("=",1)[1])
+                        except Exception:
+                            pass
+                    elif l == "progress=end":
+                        break
+
+                    # Guard only if we know duration
+                    if dur_s and out_time > max(2.0, 0.06*dur_s):
+                        # Fraction of stream processed so far
+                        frac = min(0.99, out_time / dur_s)
+                        # Acceptable running window:
+                        # upper bound tracks (target) and lower bound is (target - under_abs)
+                        upper = (target_bytes) * frac
+                        lower = max(0, (target_bytes - under_abs)) * frac
+                        # Overshoot guard with small slack; undershoot guard with larger slack to avoid false positives
+                        if total_size > upper * 1.08:
+                            proc.terminate()
+                            proc.wait(timeout=2)
+                            raise subprocess.CalledProcessError(returncode=255, cmd=cmd, output="early_abort:overshoot")
+                        if total_size < lower * 0.90 and frac >= 0.25:
+                            # Do NOT abort on undershoot. Let the encode finish so the size controller
+                            # gets a real observation to learn from.
+                            pass
+                # Finalize
+                rc = proc.wait()
+                if rc != 0:
+                    raise subprocess.CalledProcessError(returncode=rc, cmd=cmd, output="ffmpeg failed")
+                return
+            finally:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        else:
+            _dur = float((advanced_options or {}).get("duration_s") or 0.0)
+            if callable(_cb) and _dur > 0:
+                rc = _ffmpeg_run_with_progress(cmd, _dur, "Encode",
+                                               progress_cb=_cb, job_id=_jid, stage="encoding")
+                if rc != 0:
+                    raise subprocess.CalledProcessError(returncode=rc, cmd=cmd, output="ffmpeg failed")
+            else:
+                _sp_run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    try:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+    except Exception:
+        pass
+
+    _adv_ph = advanced_options or {}
+    _progress_cb = _adv_ph.get("progress_cb")
+    _job_id = _adv_ph.get("job_id")
+
+    # Prefer the dedicated helper for software true two-pass encoders.
+    if two_pass and use_bitrate_mode and vcodec in ("libx264", "libx265", "libvpx-vp9", "libsvtav1"):
+        try:
+            return bool(_ffmpeg_two_pass_encode(
+                input_path=input_path,
+                output_path=output_path,
+                encoder=vcodec,
+                bitrate=int(v_bitrate or 0),
+                width=width,
+                fps=fps,
+                tune=tune,
+                audio_bitrate=audio_bitrate,
+                audio_copy=audio_copy,
+                preset=preset,
+                turbo=bool(turbo),
+                duration_s=float(_adv_ph.get("duration_s") or 0.0),
+                progress_cb=_progress_cb,
+                job_id=_job_id,
+                advanced_options=advanced_options,
+            ))
+        except Exception:
+            return False
+
+    mux_args = ["-movflags", "+faststart"] if mp4_like else []
+    try:
+        cmd = ([ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
+               + encoder_caps._hw_decode_args(advanced_options)
+               + ["-i", input_path, "-map_metadata", "-1", "-map_chapters", "-1", "-sn", "-dn"])
+        cmd += v_common + vf_arg + r_arg + v_ratectrl + audio_map_args + a_args + mux_args + [output_path]
+        try:
+            _run(cmd)
+        except Exception:
+            # First suspect: GPU decode (exotic source/driver). Retry software.
+            if "-hwaccel" in cmd:
+                encoder_caps._mark_hw_decode_broken()
+                logging.getLogger("BitCrusher").warning(
+                    "HW decode failed; retrying with software decode.")
+                cmd = encoder_caps._strip_hw_args(cmd)
+                try:
+                    _run(cmd)
+                except Exception:
+                    pass
+                else:
+                    cmd = None  # success marker
+            if cmd is not None:
+                # 10-bit can fail on 8-bit-only encoder builds; retry once in 8-bit.
+                retried = False
+                for _pf in ("yuv420p10le", "p010le"):
+                    if _pf in cmd:
+                        cmd8 = list(cmd)
+                        i = cmd8.index(_pf)
+                        del cmd8[i - 1:i + 1]
+                        _run(cmd8)
+                        retried = True
+                        break
+                if not retried:
+                    raise
+    except Exception:
+        return False
+
+    try:
+        return os.path.exists(output_path) and os.path.getsize(output_path) > 0
+    except Exception:
+        return False

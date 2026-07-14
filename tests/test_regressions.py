@@ -644,6 +644,7 @@ def test_decide_preprocessing_keep_and_reject(monkeypatch):
 def test_encode_paths_carry_preproc_vf(monkeypatch, tmp_path):
     """A kept prefilter chain must reach the actual ffmpeg -vf argument."""
     import BitCrusherV9 as bc
+    import ffmpeg_exec
 
     captured = {}
 
@@ -662,7 +663,7 @@ def test_encode_paths_carry_preproc_vf(monkeypatch, tmp_path):
             stdout = ""
         return _R()
 
-    monkeypatch.setattr(bc, "_sp_run", fake_run)
+    monkeypatch.setattr(ffmpeg_exec, "_sp_run", fake_run)
     # Pre-seed the encoder cache so no real ffmpeg probe runs.
     bc.compress_with_handbrake._enc_cache = {"libx264"}
     src = tmp_path / "in.mp4"
