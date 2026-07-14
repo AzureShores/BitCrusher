@@ -11,6 +11,7 @@ from media_math import get_media_type
 from media_probe import _probe_video_stream
 from encoder_caps import best_av1_encoder
 from remux import _privacy_args
+from text_utils import format_bytes
 
 LOG = logging.getLogger("BitCrusher")
 
@@ -345,3 +346,35 @@ def _best_audio_codec(container: str, audio_fmt_pref: str) -> str:
     if (container or "mp4").lower() in ("mkv", "webm"):
         return "opus"
     return "aac"
+
+
+def binary_search_audio_bitrate(input_path: str, temp_output: str, audio_encoder: str,
+                                low: int, high: int, target_size_bytes: int,
+                                status_callback, cancel_callback) -> int:
+    best_bitrate = None
+    while low <= high:
+        mid = (low + high) // 2
+        if cancel_callback():
+            status_callback("Audio compression cancelled during binary search.", level="WARNING")
+            return None
+        status_callback(f"Testing bitrate: {mid}bps...")
+        if os.path.exists(temp_output):
+            os.remove(temp_output)
+        cmd = [ffmpeg_exec.FFMPEG, "-y", "-i", input_path, "-vn", "-c:a", audio_encoder, "-b:a", str(mid), temp_output]
+        result = _sp_run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, startupinfo=si, creationflags=NO_WIN)
+        if result.returncode != 0:
+            status_callback(f"ffmpeg error at bitrate {mid}: {result.stderr.strip()}", level="ERROR")
+            return None
+        if not os.path.exists(temp_output):
+            status_callback("No output produced for bitrate " + str(mid), level="ERROR")
+            return None
+        size = os.path.getsize(temp_output)
+        status_callback(f"Bitrate {mid} produced {format_bytes(size)}")
+        if size > target_size_bytes:
+            high = mid - 1
+        else:
+            best_bitrate = mid
+            if size >= target_size_bytes * 0.9:
+                return mid
+            low = mid + 1
+    return best_bitrate

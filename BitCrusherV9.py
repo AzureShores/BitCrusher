@@ -114,14 +114,7 @@ def _install_crash_handler():
 
 
 
-def _ui_json_path():
-    try:
-        base = os.path.dirname(os.path.abspath(__file__))
-    except Exception:
-        base = os.getcwd()
-    p = os.path.join(base, "user_settings")
-    os.makedirs(p, exist_ok=True)
-    return os.path.join(p, "ui.json")
+from ui_settings import _ui_json_path, _save_theme_choice, _load_theme_choice
 
 import os, sys, json, subprocess
 
@@ -411,41 +404,10 @@ def _load_lang_packs():
                 translated += 1
         LANG_COVERAGE[code] = int(round((translated * 100.0) / total_keys))
 
-def _save_theme_choice(name: str) -> None:
-    
-    path = _ui_json_path()
-    try:
-        data = {}
-        if os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f) or {}
-        if not isinstance(data, dict):
-            data = {}
-        data["theme"] = str(name)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, path)
-    except Exception:
-
-        pass
-
-def _load_theme_choice(default_name: str = "Dark") -> str:
-    
-    path = _ui_json_path()
-    try:
-        if os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f) or {}
-            v = data.get("theme")
-            if isinstance(v, str) and v:
-                return v
-    except Exception:
-        pass
-    return str(default_name or "Dark")
 
 import os, sys, time, platform, traceback, logging, threading, subprocess
 from logging.handlers import RotatingFileHandler
+from lifetime_stats import aggregate_lifetime_stats
 from smart_rate import learn_from_result, guardrail_adjust, load_stats, save_stats, update_overshoot
 from ai_advisor import (choose_bitrates_advised as choose_bitrates,
                         cache_store_advised as cache_store,
@@ -472,7 +434,7 @@ from quality_metrics import (vmaf_quality_label, set_vmaf_model_pref, resolve_vm
                              vmaf_floor_score, set_vmaf_objective_pref, resolve_vmaf_objective)
 from trim import (_parse_timespec, _parse_trim_range, _prev_keyframe_time,
                   make_trim_intermediate, _fmt_ts, _rank_energy_windows,
-                  _audio_energy_tracks)
+                  _audio_energy_tracks, suggest_trim_ranges)
 from spotlight import (_SPOTLIGHT_BOOST, _X264_BASE_PARAMS, _X265_BASE_PARAMS,
                        _spotlight_zone_params)
 from feature_helpers import (set_clipboard_files, _count_audio_streams,
@@ -494,7 +456,8 @@ from encoder_caps import (_ENCODER_CANON, _merge_params_string, _canonical_encod
                           _hw_decode_args, _strip_hw_args, best_av1_encoder)
 from audio_encode import (_probe_audio_meta, _should_copy_audio, _adaptive_two_pass,
                           _supports_true_two_pass, _build_opus_cover_meta,
-                          _encode_audio_once, _best_audio_codec, _prepare_cover_file)
+                          _encode_audio_once, _best_audio_codec, _prepare_cover_file,
+                          binary_search_audio_bitrate)
 from media_probe import (_MEDIA_PROBE_CACHE, _MEDIA_PROBE_LOCK, _probe_media_cached,
                          _probe_video_stream, get_video_metadata, extract_video_duration,
                          calculate_bitrate, _is_hdr_source, _hdr_pixel_fmt,
@@ -840,89 +803,6 @@ def _jsonl_log(event: str, data: dict | None = None):
     except Exception:
         pass
 
-
-def aggregate_lifetime_stats(log_dir: str | None = None) -> dict:
-    """
-    Read every logs/run_*.jsonl and roll up the 'encode_end' history into
-    lifetime totals for the in-app Stats tab. Pure/offline — just parses the
-    JSONL the pipeline already writes. Returns a dict with:
-      count, total_original, total_compressed, bytes_saved, overall_ratio,
-      total_time, by_type{video/audio/image:{count,original,compressed}},
-      vmaf{count,avg,buckets{...}}, encoders{name:count}, files_first/last ts.
-    """
-    import glob as _glob
-    base = log_dir or globals().get("_LOG_DIR") or "logs"
-    agg = {
-        "count": 0, "total_original": 0, "total_compressed": 0,
-        "bytes_saved": 0, "overall_ratio": 0.0, "total_time": 0.0,
-        "by_type": {}, "vmaf": {"count": 0, "avg": 0.0, "buckets": {}},
-        "encoders": {}, "first_ts": None, "last_ts": None,
-    }
-    # VMAF buckets from worst to best (label -> [lo, hi)).
-    _vbuckets = [("<80", -1e9, 80.0), ("80–90", 80.0, 90.0), ("90–95", 90.0, 95.0),
-                 ("95–98", 95.0, 98.0), ("98+", 98.0, 1e9)]
-    for _lbl, _, _ in _vbuckets:
-        agg["vmaf"]["buckets"][_lbl] = 0
-    _vmaf_sum = 0.0
-    try:
-        files = sorted(_glob.glob(os.path.join(base, "run_*.jsonl")))
-    except Exception:
-        files = []
-    for fp in files:
-        try:
-            with open(fp, "r", encoding="utf-8") as fh:
-                for ln in fh:
-                    ln = ln.strip()
-                    if not ln:
-                        continue
-                    try:
-                        d = json.loads(ln)
-                    except Exception:
-                        continue
-                    if d.get("event") != "encode_end":
-                        continue
-                    try:
-                        o = int(d.get("original_size") or 0)
-                        c = int(d.get("compressed_size") or 0)
-                    except Exception:
-                        continue
-                    if o <= 0 or c <= 0:
-                        continue
-                    agg["count"] += 1
-                    agg["total_original"] += o
-                    agg["total_compressed"] += c
-                    try:
-                        agg["total_time"] += float(d.get("time_taken") or 0.0)
-                    except Exception:
-                        pass
-                    ts = d.get("ts")
-                    if ts:
-                        if agg["first_ts"] is None or ts < agg["first_ts"]:
-                            agg["first_ts"] = ts
-                        if agg["last_ts"] is None or ts > agg["last_ts"]:
-                            agg["last_ts"] = ts
-                    t = str(d.get("type") or "other").lower()
-                    bt = agg["by_type"].setdefault(t, {"count": 0, "original": 0, "compressed": 0})
-                    bt["count"] += 1; bt["original"] += o; bt["compressed"] += c
-                    enc = str(d.get("encoder") or "").strip().lower()
-                    if enc:
-                        agg["encoders"][enc] = agg["encoders"].get(enc, 0) + 1
-                    v = d.get("vmaf")
-                    if isinstance(v, (int, float)) and v > 0:
-                        agg["vmaf"]["count"] += 1
-                        _vmaf_sum += float(v)
-                        for lbl, lo, hi in _vbuckets:
-                            if lo <= float(v) < hi:
-                                agg["vmaf"]["buckets"][lbl] += 1
-                                break
-        except Exception:
-            continue
-    agg["bytes_saved"] = agg["total_original"] - agg["total_compressed"]
-    if agg["total_original"] > 0:
-        agg["overall_ratio"] = agg["total_compressed"] / agg["total_original"]
-    if agg["vmaf"]["count"] > 0:
-        agg["vmaf"]["avg"] = _vmaf_sum / agg["vmaf"]["count"]
-    return agg
 
 def _fix_bad_logging_formatters():
     
@@ -1391,17 +1271,7 @@ load_user_themes_at_startup()
 
 APP_BG=CARD_BG=FG=FG_SUB=ACCENT=ACCENT_2=ERROR=WARN=TITLE=None
 
-def _hsl_shift(hex_color: str, h_delta=0.0, s_mul=1.0, l_mul=1.0) -> str:
-    hex_color = hex_color.lstrip('#')
-    r = int(hex_color[0:2], 16) / 255.0
-    g = int(hex_color[2:4], 16) / 255.0
-    b = int(hex_color[4:6], 16) / 255.0
-    h,l,s = colorsys.rgb_to_hls(r,g,b)
-    h = (h + h_delta) % 1.0
-    s = max(0.0, min(1.0, s * s_mul))
-    l = max(0.0, min(1.0, l * l_mul))
-    r,g,b = colorsys.hls_to_rgb(h,l,s)
-    return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+from color_utils import _hsl_shift, _is_light_color, _contrast_fg
 
 def _use_palette(name: str):
     
@@ -1412,21 +1282,6 @@ def _use_palette(name: str):
     ACCENT, ACCENT_2= p["ACCENT"], p["ACCENT_2"]
     ERROR, WARN     = p["ERROR"], p["WARN"]
     TITLE           = p["TITLE"]
-
-def _is_light_color(hex_color: str) -> bool:
-    """True if the colour is perceptually light (so dark text should sit on it)."""
-    try:
-        h = hex_color.lstrip("#")
-        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-        return (0.2126 * r + 0.7152 * g + 0.0722 * b) > 150
-    except Exception:
-        return False
-
-
-def _contrast_fg(bg: str) -> str:
-    """Pick black or white text for maximum contrast against the given background."""
-    return "#101215" if _is_light_color(bg) else "#FFFFFF"
-
 
 def apply_theme(style: ttk.Style, theme_name: str="Dark"):
 
@@ -1941,38 +1796,6 @@ def _ff_args_unique(args: list[str] | None) -> list[str]:
             i += 1
     return out
 
-
-
-def binary_search_audio_bitrate(input_path: str, temp_output: str, audio_encoder: str,
-                                low: int, high: int, target_size_bytes: int,
-                                status_callback, cancel_callback) -> int:
-    best_bitrate = None
-    while low <= high:
-        mid = (low + high) // 2
-        if cancel_callback():
-            status_callback("Audio compression cancelled during binary search.", level="WARNING")
-            return None
-        status_callback(f"Testing bitrate: {mid}bps...")
-        if os.path.exists(temp_output):
-            os.remove(temp_output)
-        cmd = [FFMPEG, "-y", "-i", input_path, "-vn", "-c:a", audio_encoder, "-b:a", str(mid), temp_output]
-        result = _sp_run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, startupinfo=si, creationflags=NO_WIN)
-        if result.returncode != 0:
-            status_callback(f"ffmpeg error at bitrate {mid}: {result.stderr.strip()}", level="ERROR")
-            return None
-        if not os.path.exists(temp_output):
-            status_callback("No output produced for bitrate " + str(mid), level="ERROR")
-            return None
-        size = os.path.getsize(temp_output)
-        status_callback(f"Bitrate {mid} produced {format_bytes(size)}")
-        if size > target_size_bytes:
-            high = mid - 1
-        else:
-            best_bitrate = mid
-            if size >= target_size_bytes * 0.9:
-                return mid
-            low = mid + 1
-    return best_bitrate
 
 
 def compress_audio_files(self):
@@ -4913,47 +4736,6 @@ def settings_window():
 # quality loss) that the whole pipeline then consumes unchanged — features,
 # codec race, preprocessing, VMAF and packing all operate on the trimmed
 # content automatically. The source file is never modified.
-
-def suggest_trim_ranges(input_path: str, *, clip_seconds: float = 20.0,
-                        top_n: int = 3, status_cb=None) -> list[dict]:
-    """
-    Suggest up to top_n candidate trim ranges from audio energy. Adds a human
-    "why" to each. Returns [] when there is nothing meaningful to point at
-    (silent/uniform audio) — the caller should say so, never guess.
-    """
-    try:
-        mt = get_media_type(input_path)
-        if mt == "video":
-            dur = float(get_video_metadata(input_path)[0] or 0.0)
-        elif mt == "audio":
-            dur = float((_probe_audio_meta(input_path) or {}).get("duration") or 0.0)
-        else:
-            return []
-    except Exception:
-        dur = 0.0
-    if dur <= clip_seconds * 1.2:
-        return []       # nothing to cut away
-    n_a = _count_audio_streams(input_path)
-    if n_a <= 0:
-        if callable(status_cb):
-            status_cb("[Suggest] No audio track to analyze - set the trim manually.", "INFO")
-        return []
-    win_s = 0.5
-    tracks = _audio_energy_tracks(input_path, min(n_a, 3), win_s=win_s)
-    cands = _rank_energy_windows(tracks, win_s, float(clip_seconds),
-                                 top_n=top_n, total_s=dur)
-    for c in cands:
-        c["why"] = ("mic/track-2 spike" if c.get("track", 0) >= 1 else "audio energy peak")
-        c["range"] = f"{_fmt_ts(c['start'])}-{_fmt_ts(c['end'])}"
-    if callable(status_cb):
-        if cands:
-            status_cb("[Suggest] Candidate moments: "
-                      + "; ".join(f"{c['range']} ({c['why']}, score {c['score']})"
-                                  for c in cands), "INFO")
-        else:
-            status_cb("[Suggest] No clear audio peaks found - set the trim manually.", "INFO")
-    return cands
-
 
 def auto_compress(input_path: str, save_path: str, status_callback,
                   target_size_mb: int, webhook_url: str,

@@ -9,6 +9,10 @@ import numpy as np
 
 import ffmpeg_exec
 from ffmpeg_exec import si, NO_WIN, _sp_run, _sp_check_output
+from media_math import get_media_type
+from media_probe import get_video_metadata
+from audio_encode import _probe_audio_meta
+from feature_helpers import _count_audio_streams
 
 # ---- Trim-aware compression core -------------------------------------------
 # Cutting duration is a 2-10x lever (half the clip = double the bitrate under
@@ -268,3 +272,44 @@ def _audio_energy_tracks(input_path: str, n_tracks: int, win_s: float = 0.5) -> 
         except Exception:
             out.append([])
     return [t for t in out if t] or []
+
+
+def suggest_trim_ranges(input_path: str, *, clip_seconds: float = 20.0,
+                        top_n: int = 3, status_cb=None) -> list[dict]:
+    """
+    Suggest up to top_n candidate trim ranges from audio energy. Adds a human
+    "why" to each. Returns [] when there is nothing meaningful to point at
+    (silent/uniform audio) — the caller should say so, never guess.
+    """
+    try:
+        mt = get_media_type(input_path)
+        if mt == "video":
+            dur = float(get_video_metadata(input_path)[0] or 0.0)
+        elif mt == "audio":
+            dur = float((_probe_audio_meta(input_path) or {}).get("duration") or 0.0)
+        else:
+            return []
+    except Exception:
+        dur = 0.0
+    if dur <= clip_seconds * 1.2:
+        return []       # nothing to cut away
+    n_a = _count_audio_streams(input_path)
+    if n_a <= 0:
+        if callable(status_cb):
+            status_cb("[Suggest] No audio track to analyze - set the trim manually.", "INFO")
+        return []
+    win_s = 0.5
+    tracks = _audio_energy_tracks(input_path, min(n_a, 3), win_s=win_s)
+    cands = _rank_energy_windows(tracks, win_s, float(clip_seconds),
+                                 top_n=top_n, total_s=dur)
+    for c in cands:
+        c["why"] = ("mic/track-2 spike" if c.get("track", 0) >= 1 else "audio energy peak")
+        c["range"] = f"{_fmt_ts(c['start'])}-{_fmt_ts(c['end'])}"
+    if callable(status_cb):
+        if cands:
+            status_cb("[Suggest] Candidate moments: "
+                      + "; ".join(f"{c['range']} ({c['why']}, score {c['score']})"
+                                  for c in cands), "INFO")
+        else:
+            status_cb("[Suggest] No clear audio peaks found - set the trim manually.", "INFO")
+    return cands
