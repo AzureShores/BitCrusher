@@ -16,8 +16,19 @@ past encodes to make better first-attempt decisions over time.
 
 - Video, audio, image, and PDF compression in one queue, routed automatically.
 - Measured codec race: your requested encoder vs AV1, picked by actual VMAF.
-- Two-pass rate control, per-scene bitrate zones, artifact-aware prefiltering.
-- Trim-aware compression, folder watcher, Explorer "Send to", Discord webhook.
+- Two-pass rate control, per-scene bitrate zones, artifact-aware prefiltering
+  (deband/deblock/denoise — kept only when it measurably beats the plain
+  encode, never applied blind).
+- Quality floor (min VMAF) and Spotlight mode (boost quality in just one
+  time range, e.g. the play everyone's clipping, while the rest compresses
+  normally).
+- Trim-aware compression, folder watcher with per-file rules and a custom
+  save folder, pipeline mode (watch → compress → webhook, zero-touch),
+  Explorer "Send to", Discord webhook.
+- YouTube/URL input via yt-dlp — paste a link, get a sized-to-fit file.
+- Duplicate-file scan, save/load profiles, dashboard with a VMAF sparkline
+  + codec-race scoreboard, side-by-side visual quality compare.
+- System tray minimize, multi-language UI, custom themes.
 - A learning system that seeds future encodes from measured past outcomes.
 - Fully offline core — no data leaves your machine during a compression job.
 - Opt-in update check against GitHub Releases (asked once on first launch,
@@ -42,7 +53,7 @@ acceleration.
 | Phone-shot vertical clip, 1:07 @ 30fps, 720x1280, H.264, 33.83 MB (4.2 Mbps) | 10 MB | AV1 720x1280, 9.85 MB (29.1% of source), two-pass, 445s | VMAF 99.6 mean / **95.6 worst-scene** @ 1:03, XPSNR 40.1 dB |
 | Concert video, 4:18 @ 30fps, 1280x720, H.264, 80.43 MB (2.6 Mbps), low-light/high-motion crowd footage | 10 MB | AV1 1280x720, 9.86 MB (**12.3% of source, ~8x**), two-pass, 517s | VMAF 90.2 mean / **82.9 worst-scene** @ 1:38, XPSNR 40.5 dB |
 
-**Why these numbers are good, at a glance:**
+**Number breakdown:**
 
 - **Bolded worst-scene, not mean.** That's the actual floor the pipeline
   optimizes for — a good average can hide one ugly scene, worst-scene
