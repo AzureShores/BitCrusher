@@ -5120,7 +5120,6 @@ class CompressorGUI:
         # the window lost focus mid-cycle).
         self.title_label = ttk.Label(header, text="BitCrusher", style="Title.TLabel")
         self.title_label.pack(side="left")
-        ttk.Label(header, text="  exact-size video compression", style="Sub.TLabel").pack(side="left", pady=(8, 0))
 
         # Right side of the header: quality mode + quick actions.
         if not hasattr(self, "adv_quality_mode"):
