@@ -88,6 +88,8 @@ python BitCrusherV9.py clip.mp4 -t 8    # CLI — any argument switches to CLI m
 
 - [User Guide](docs/USER_GUIDE.md) — GUI walkthrough.
 - [CLI_COMMANDS.md](CLI_COMMANDS.md) — full flag reference.
+- [TRANSLATING.md](TRANSLATING.md) — help translate the UI. No Python needed;
+  a translation is one JSON file in `i18n/`, and partial ones are welcome.
 
 ## License
 

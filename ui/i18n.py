@@ -9,6 +9,7 @@ from support.text_utils import _mojibake_score, _normalize_text
 from ui.ui_settings import _ui_json_path
 
 def _i18n_dir():
+    """User-local language packs. Override bundled packs; not tracked in git."""
     try:
         base = os.path.dirname(os.path.abspath(__file__))
     except Exception:
@@ -16,6 +17,15 @@ def _i18n_dir():
     d = os.path.join(base, "user_settings", "i18n")
     os.makedirs(d, exist_ok=True)
     return d
+
+def _bundled_i18n_dir():
+    """Language packs shipped with the repo (i18n/ next to BitCrusherV9.py).
+    Community translations live here so they can be edited and sent as a PR."""
+    try:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    except Exception:
+        base = os.getcwd()
+    return os.path.join(base, "i18n")
 
 def _open_folder(path: str):
     try:
@@ -230,12 +240,15 @@ def _save_language_choice(code: str) -> None:
     except Exception:
         pass
 
-def _export_lang_templates(codes=None):
-
+def _export_lang_templates(codes=None, outdir=None):
+    """Write one JSON template per language, seeded with any existing
+    translation and English for the rest. Pass outdir=_bundled_i18n_dir() to
+    refresh the repo's community-translation packs."""
     if not codes:
         codes = [c for c,_ in LANG_CODES if c != "en"]
     base = LANG_BUILTIN["en"]
-    outdir = _i18n_dir()
+    outdir = outdir or _i18n_dir()
+    os.makedirs(outdir, exist_ok=True)
     for code in codes:
         try:
             path = os.path.join(outdir, f"{code}.json")
@@ -251,8 +264,10 @@ def _export_lang_templates(codes=None):
                 "__name__": str(existing.get("__name__", LANG_CODE_NAME.get(code, code))),
                 "__note__": "Translate values, keep keys unchanged.",
             }
+            # Seed order: existing file > built-in translation > English.
+            builtin = LANG_BUILTIN.get(code, {})
             for k, v in base.items():
-                cur = existing.get(k, v)
+                cur = existing.get(k, builtin.get(k, v))
                 templ[k] = _normalize_text(cur) if isinstance(cur, str) else v
 
             with open(path, "w", encoding="utf-8") as f:
@@ -285,27 +300,32 @@ def _load_lang_packs():
 
     file_packs = {}
     file_meta = {}
+    file_origin = {}
     discovered_codes = []
-    d = _i18n_dir()
-    try:
-        for fn in os.listdir(d):
-            if not fn.lower().endswith(".json"):
-                continue
-            code = os.path.splitext(fn)[0]
-            with open(os.path.join(d, fn), "r", encoding="utf-8") as f:
-                raw = json.load(f) or {}
-            if not isinstance(raw, dict):
-                continue
+    # Bundled packs first, then user packs on top (user overrides bundled).
+    for d, origin in ((_bundled_i18n_dir(), "bundled"), (_i18n_dir(), "file")):
+        try:
+            for fn in os.listdir(d):
+                if not fn.lower().endswith(".json"):
+                    continue
+                code = os.path.splitext(fn)[0]
+                with open(os.path.join(d, fn), "r", encoding="utf-8") as f:
+                    raw = json.load(f) or {}
+                if not isinstance(raw, dict):
+                    continue
 
-            file_meta[code] = {
-                "name": raw.get("__name__", ""),
-            }
-            pack = {k: v for k, v in raw.items() if not str(k).startswith("__")}
-            file_packs[code] = pack
-            if code not in discovered_codes:
-                discovered_codes.append(code)
-    except Exception:
-        pass
+                name = raw.get("__name__", "")
+                if name or code not in file_meta:
+                    file_meta[code] = {"name": name}
+                pack = {k: v for k, v in raw.items() if not str(k).startswith("__")}
+                merged = dict(file_packs.get(code, {}))
+                merged.update(pack)
+                file_packs[code] = merged
+                file_origin[code] = origin
+                if code not in discovered_codes:
+                    discovered_codes.append(code)
+        except Exception:
+            pass
 
     all_codes = [c for c, _ in LANG_CODES]
     for code in discovered_codes:
@@ -333,7 +353,7 @@ def _load_lang_packs():
         merged = dict(LANG.get(code, base_en))
         merged.update(_sanitize_pack(pack, merged))
         LANG[code] = merged
-        LANG_SOURCE[code] = "file"
+        LANG_SOURCE[code] = file_origin.get(code, "file")
 
     # Display names and coverage stats.
     total_keys = max(1, len(base_en))
