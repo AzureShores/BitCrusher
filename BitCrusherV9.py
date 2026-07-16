@@ -29,7 +29,15 @@ import psutil
 import requests
 from PIL import Image, ImageTk
 from plyer import notification
-from win10toast import ToastNotifier
+try:
+    from win10toast import ToastNotifier
+except Exception:
+    # win10toast pulls in pkg_resources, which newer Python (3.14+) no longer
+    # ships by default -- toast popups are a nice-to-have, not worth crashing
+    # the whole app over.
+    class ToastNotifier:
+        def show_toast(self, *a, **kw):
+            pass
 from datetime import datetime
 import argparse
 
@@ -286,7 +294,11 @@ except Exception:
     pass
 
 
-def _log_env_banner():
+def _log_env_banner(handbrake_cli=None, ffmpeg=None, ffprobe=None):
+    """Called after load_paths() resolves the real tool locations (tools/
+    folder, env vars, or PATH) -- probing bare tool names here instead used
+    to log a spurious ERROR for every install, including ones where the
+    tools are correctly sitting in tools/ and just not on PATH."""
     try:
         LOG.info("======== BitCrusher start ========")
         LOG.info("Python: %s", sys.version.replace("\n", " "))
@@ -301,14 +313,16 @@ def _log_env_banner():
                 return out[0] if out else ""
             except Exception:
                 return ""
-        for tool in ("HandBrakeCLI", "ffmpeg", "ffprobe"):
-            v = _first_line([tool, "-h"]) or _first_line([tool, "-version"])
+        for name, exe in (("HandBrakeCLI", handbrake_cli or "HandBrakeCLI"),
+                          ("ffmpeg", ffmpeg or "ffmpeg"),
+                          ("ffprobe", ffprobe or "ffprobe")):
+            v = _first_line([exe, "-h"]) or _first_line([exe, "-version"])
             if v:
-                LOG.info("%s: %s", tool, v)
+                LOG.info("%s: %s", name, v)
+            else:
+                LOG.warning("%s not found (looked for: %s)", name, exe)
     except Exception:
         LOG.exception("Failed to log environment banner")
-
-_log_env_banner()
 
 def _format_exc(exc_type, exc, tb):
     return "".join(traceback.format_exception(exc_type, exc, tb))
@@ -561,8 +575,6 @@ import threading
 from PIL import Image
 import pystray
 from tkinterdnd2 import DND_FILES, TkinterDnD
-from win10toast import ToastNotifier
-from win10toast import ToastNotifier
 
 try:
     from win10toast import ToastNotifier as _TN
@@ -696,6 +708,7 @@ HANDBRAKE_CLI, FFPROBE, FFMPEG = load_paths()
 log_tool_paths(HANDBRAKE_CLI, FFMPEG, FFPROBE)
 _set_ffmpeg_exec_path(FFMPEG)
 _set_ffprobe_exec_path(FFPROBE)
+_log_env_banner(HANDBRAKE_CLI, FFMPEG, FFPROBE)
 _set_handbrake_exec_path(HANDBRAKE_CLI)
 
 def resource_path(rel_path: str) -> str:
@@ -739,6 +752,8 @@ PRESETS = {
     "Best quality (50 MB)": 50,
 }
 
+
+APP_VERSION = "1.1.0"
 
 ADVANCED_DEFAULTS = {
     "auto_retry": True,
@@ -4855,52 +4870,6 @@ class DinoRunner:
 
 class CompressorGUI:
 
-    HB_URL = "https://github.com/HandBrake/HandBrake/releases/download/1.7.0/HandBrakeCLI-1.7.0-win64.zip"
-    # Full-featured build (BtbN GPL): includes SVT-AV1 (fast AV1), libvmaf and
-    # the wide filter set — required for the AV1 auto-pick on long content.
-    # (gyan.dev's "full" build is only distributed as .7z, which the installer
-    # cannot extract; BtbN ships an equivalent build as a plain .zip.)
-    FF_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-
-    def install_tool(self, name, url):
-        
-        tools_dir = os.path.join(SCRIPT_DIR, "tools")
-        os.makedirs(tools_dir, exist_ok=True)
-        dest_zip = os.path.join(tools_dir, f"{name}.zip")
-        self.update_status(f"Downloading {name}...", level="INFO")
-        try:
-            r = requests.get(url)
-            with open(dest_zip, "wb") as f:
-                f.write(r.content)
-            with zipfile.ZipFile(dest_zip, "r") as zip_ref:
-                zip_ref.extractall(tools_dir)
-            self.update_status(f"{name} installed.", level="INFO")
-        except Exception as e:
-            self.update_status(f"Failed to install {name}: {e}", level="ERROR")
-
-    def check_dependencies(self):
-        import shutil
-
-        hb = DEFAULT_HANDBRAKE  if os.path.exists(DEFAULT_HANDBRAKE) else shutil.which("HandBrakeCLI") or shutil.which("HandBrakeCLI.exe")
-        ff = DEFAULT_FFMPEG     if os.path.exists(DEFAULT_FFMPEG)    else shutil.which("ffmpeg")        or shutil.which("ffmpeg.exe")
-        fp = DEFAULT_FFPROBE    if os.path.exists(DEFAULT_FFPROBE)   else shutil.which("ffprobe")       or shutil.which("ffprobe.exe")
-
-        hb = hb or "HandBrakeCLI.exe"
-        ff = ff or "ffmpeg.exe"
-        fp = fp or "ffprobe.exe"
-
-        self.handbrake_path = hb
-        self.ffmpeg_path    = ff
-        self.ffprobe_path   = fp
-
-        
-
-        if not shutil.which(HANDBRAKE_CLI) or not os.path.isfile(HANDBRAKE_CLI):
-            self.install_tool("HandBrakeCLI", self.HB_URL)
-        if not shutil.which(FFMPEG) or not os.path.isfile(FFMPEG):
-            self.install_tool("ffmpeg", self.FF_URL)
-            
-
     def setup_directories(self):
         import os
         for folder in ["user_settings", "heuristics"]:
@@ -5120,7 +5089,6 @@ class CompressorGUI:
         # the window lost focus mid-cycle).
         self.title_label = ttk.Label(header, text="BitCrusher", style="Title.TLabel")
         self.title_label.pack(side="left")
-        ttk.Label(header, text="  exact-size video compression", style="Sub.TLabel").pack(side="left", pady=(8, 0))
 
         # Right side of the header: quality mode + quick actions.
         if not hasattr(self, "adv_quality_mode"):
@@ -5470,7 +5438,7 @@ class CompressorGUI:
                                                 status_cb=lambda m, l="INFO": self.update_status(m, level=l))
                 except Exception:
                     cands = []
-                self.root.after(0, lambda: _show(cands))
+                self._ui(_show, cands)
 
             def _show(cands):
                 if not cands:
@@ -5834,7 +5802,7 @@ class CompressorGUI:
                 f"{ratio:.2f}",
                 f"{took:.1f}"
             ))
-        self.root.after(0, insert_row)
+        self._ui(insert_row)
 
     def start_youtube_download(self):
         
@@ -6007,7 +5975,6 @@ class CompressorGUI:
         import tkinter as tk
         from pathlib import Path
         import os, sys, platform, threading, logging
-        from win10toast import ToastNotifier
 
         self.logger = setup_logging()
         if root is None:
@@ -6018,6 +5985,14 @@ class CompressorGUI:
             except Exception:
                 root = tk.Tk()
         self.root = root
+
+        import queue as _queue_mod
+        self._ui_queue = _queue_mod.Queue()
+        self._ui_queue_empty_exc = _queue_mod.Empty
+        try:
+            self.root.after(50, self._drain_ui_queue)
+        except Exception:
+            pass
 
         try:
             import tkinter as tk
@@ -6263,6 +6238,11 @@ class CompressorGUI:
             try: self.size_unit_var.set(data["size_unit"])
             except Exception: pass
 
+        try:
+            self.root.after(800, self._startup_update_check)
+        except Exception:
+            pass
+
         import tkinter as tk  # ensure tk is in scope here
 
         self.webhook_var = tk.StringVar(value=self.settings.get("webhook_url", ""))
@@ -6463,10 +6443,7 @@ class CompressorGUI:
             self.save_settings()
         except Exception:
             pass
-        try:
-            self.root.after(0, self._shutdown_and_exit)
-        except Exception:
-            self._shutdown_and_exit()
+        self._ui(self._shutdown_and_exit)
 
     def on_close(self):
 
@@ -6509,10 +6486,10 @@ class CompressorGUI:
         drw.ellipse((4, 4, 28, 28), fill=(0, 122, 204, 255))
 
         def _restore(_icon=None, _item=None):
-            self.root.after(0, self.restore_from_tray)
+            self._ui(self.restore_from_tray)
 
         def _exit(_icon=None, _item=None):
-            self.root.after(0, self._shutdown_and_exit)
+            self._ui(self._shutdown_and_exit)
 
         menu = pystray.Menu(
             pystray.MenuItem("Restore", _restore, default=True),
@@ -6602,10 +6579,7 @@ class CompressorGUI:
         except Exception:
             pass
 
-        try:
-            self.root.after(0, self._shutdown_and_exit)
-        except Exception:
-            self._shutdown_and_exit()
+        self._ui(self._shutdown_and_exit)
 
 
     def log_info(self, msg):
@@ -6652,6 +6626,99 @@ class CompressorGUI:
                     except Exception:
                         pass
 
+
+    def _drain_ui_queue(self):
+        """Runs on the main thread via its own after()-timer chain. Worker
+        threads hand off Tk-touching callables here instead of calling
+        self.root.after() directly -- newer Tk builds (Python 3.13+) raise
+        RuntimeError: "main thread is not in main loop" when .after() itself
+        is called from a non-main thread, not just when widgets are touched
+        directly."""
+        try:
+            while True:
+                fn = self._ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception:
+                    pass
+        except self._ui_queue_empty_exc:
+            pass
+        except Exception:
+            pass
+        try:
+            self.root.after(50, self._drain_ui_queue)
+        except Exception:
+            pass
+
+    def _startup_update_check(self):
+        """Deferred from __init__ via root.after — runs after the window is up,
+        never blocks GUI startup. First launch: ask consent once and persist
+        the answer. Every launch after that: silently respects it."""
+        consent = (self.settings or {}).get("update_check_consent", None)
+        if consent is None:
+            try:
+                turn_on = messagebox.askyesno(
+                    "Check for updates?",
+                    "BitCrusher can check GitHub for new releases on startup.\n\n"
+                    "Turn on the auto-updater?")
+            except Exception:
+                return
+            consent = bool(turn_on)
+            self.settings["update_check_consent"] = consent
+            try:
+                self.save_settings()
+            except Exception:
+                pass
+        if consent:
+            self.check_for_updates(silent=True)
+
+    def check_for_updates(self, silent: bool = False):
+        """Kick off a background update check. silent=True (startup path):
+        only surfaces a header label when an update IS found, no dialogs on
+        failure. silent=False (manual "Check for Updates..." menu item): also
+        shows an up-to-date/error dialog so the click feels acknowledged."""
+        def _worker():
+            try:
+                from support.update_check import fetch_latest_release, is_newer
+                info = fetch_latest_release()
+            except Exception:
+                info = None
+            self._ui(self._on_update_check_done, info, silent=silent)
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_update_check_done(self, info: dict | None, silent: bool):
+        try:
+            self.settings["last_update_check_ts"] = time.time()
+        except Exception:
+            pass
+        from support.update_check import is_newer
+        if info and is_newer(info.get("tag", ""), APP_VERSION):
+            self._show_update_available(info)
+            if not silent:
+                messagebox.showinfo("Update available",
+                                    f"A newer version is available: {info['tag']}\n"
+                                    f"(you're on v{APP_VERSION})")
+            return
+        if not silent:
+            if info is None:
+                messagebox.showwarning("Check for updates",
+                                       "Could not reach GitHub. Check your connection and try again.")
+            else:
+                messagebox.showinfo("Check for updates", f"You're up to date (v{APP_VERSION}).")
+
+    def _show_update_available(self, info: dict):
+        try:
+            if getattr(self, "_update_label_shown", False) or not hasattr(self, "title_label"):
+                return
+            header = self.title_label.master
+            lbl = ttk.Label(header, text=f"  Update available: {info.get('tag','')}",
+                            style="Sub.TLabel", cursor="hand2")
+            lbl.pack(side="left", pady=(8, 0))
+            url = info.get("url") or "https://github.com/AzureShores/BitCrusher/releases"
+            lbl.bind("<Button-1>", lambda e: webbrowser.open(url))
+            self._update_label_shown = True
+        except Exception:
+            pass
 
     def open_advanced(self):
         try:
@@ -6747,7 +6814,7 @@ class CompressorGUI:
         # the Treeview, so re-dispatch to the main thread.
         try:
             if threading.current_thread() is not threading.main_thread():
-                self.root.after(0, lambda p=filepath: self._enqueue_from_watcher(p))
+                self._ui(self._enqueue_from_watcher, filepath)
                 return
         except Exception:
             pass
@@ -6846,7 +6913,7 @@ class CompressorGUI:
                 lines = [ln.strip() for ln in data.splitlines() if ln.strip()]
                 if lines and lines[0] == "BCENQUEUE":
                     for p in lines[1:]:
-                        self.root.after(0, lambda pp=p: self._ipc_enqueue(pp))
+                        self._ui(self._ipc_enqueue, p)
 
         threading.Thread(target=_serve, name="bc_ipc", daemon=True).start()
 
@@ -7442,6 +7509,7 @@ class CompressorGUI:
         settings_menu.add_command(label=self._t("menu.save_profile","Save Profile"), command=self.save_profile)
         settings_menu.add_command(label=self._t("menu.load_profile","Load Profile"), command=self.load_profile)
         settings_menu.add_command(label="Advanced Options...", command=self.open_advanced)
+        settings_menu.add_command(label="Check for Updates...", command=lambda: self.check_for_updates(silent=False))
         settings_menu.add_separator()
         settings_menu.add_command(label="Add 'Send to BitCrusher' (right-click menu)",
                                   command=self.register_send_to_menu)
@@ -8051,6 +8119,8 @@ class CompressorGUI:
             "webhook_url": "",
             "use_webhook": 0,
             "advanced": dict(ADVANCED_DEFAULTS),
+            "update_check_consent": None,
+            "last_update_check_ts": 0,
         }
         data = dict(defaults)
 
@@ -8079,7 +8149,8 @@ class CompressorGUI:
 
                 if isinstance(disk, dict):
                     for k in ("theme", "output_dir", "watch_folder", "enable_watch",
-                              "preset", "target_size", "webhook_url", "use_webhook"):
+                              "preset", "target_size", "webhook_url", "use_webhook",
+                              "update_check_consent", "last_update_check_ts"):
                         if k in disk:
                             data[k] = disk[k]
                     adv = dict(ADVANCED_DEFAULTS)
@@ -8296,6 +8367,8 @@ class CompressorGUI:
                 "pipeline_mode": (bool(self.pipeline_var.get()) if hasattr(self, "pipeline_var")
                                   else bool((getattr(self, "settings", {}) or {}).get("pipeline_mode", False))),
                 "watch_rules":  dict((getattr(self, "settings", {}) or {}).get("watch_rules", {}) or {}),
+                "update_check_consent": (getattr(self, "settings", {}) or {}).get("update_check_consent", None),
+                "last_update_check_ts": (getattr(self, "settings", {}) or {}).get("last_update_check_ts", 0),
             }
 
 
@@ -9081,22 +9154,36 @@ class CompressorGUI:
 
 
     def check_dependencies(self):
-        
-        tools = {
-            "HandBrakeCLI": HANDBRAKE_CLI,
-            "ffprobe":      FFPROBE,
-            "ffmpeg":       FFMPEG
-        }
-        missing = [name for name, exe in tools.items() if not shutil.which(exe)]
-        if not missing:
+        # ffmpeg/ffprobe required; HandBrakeCLI is a fallback -- install it in
+        # the background, never block startup or force a restart over it.
+        required = {"ffprobe": FFPROBE, "ffmpeg": FFMPEG}
+        required_missing = [name for name, exe in required.items() if not shutil.which(exe)]
+        optional_missing = ["HandBrakeCLI"] if not shutil.which(HANDBRAKE_CLI) else []
+
+        # Fallback tool: best-effort, silent, non-blocking. Log warning, no popup.
+        if optional_missing:
+            def _opt_worker():
+                for name in optional_missing:
+                    self.install_tool(name)
+            threading.Thread(target=_opt_worker, daemon=True).start()
+
+        if not required_missing:
             return
-        msg = "Missing tools detected:\n" + "\n".join(missing) + "\n\nInstall now?"
+        msg = "Missing tools detected:\n" + "\n".join(required_missing) + "\n\nInstall now?"
         if messagebox.askyesno("Dependencies Missing", msg):
-            for name in missing:
-                self.install_tool(name)
-            messagebox.showinfo("Install Complete",
-                                "Tools installed. Please restart the app.")
-            self.root.quit()
+            def _done():
+                messagebox.showinfo("Install Complete",
+                                    "Tools installed. Please restart the app.")
+                self.root.quit()
+            def _worker():
+                # Downloading ~150-250MB on the main thread froze the whole
+                # window ("Not Responding") for the length of the download.
+                # install_tool()'s status_cb already goes through the
+                # thread-safe update_status(), so this is safe off-thread.
+                for name in required_missing:
+                    self.install_tool(name)
+                self._ui(_done)
+            threading.Thread(target=_worker, daemon=True).start()
 
 
     def cancel_queue(self):
@@ -9110,81 +9197,15 @@ class CompressorGUI:
 
 
     def install_tool(self, name: str):
-        
-        import hashlib
-        from zipfile import ZipFile, is_zipfile
-
-        tool_urls = {
-            "HandBrakeCLI": {
-                "url": "https://github.com/HandBrake/HandBrake/releases/download/1.7.3/HandBrakeCLI-1.7.3-win-x86_64.zip",
-                "exe": "HandBrakeCLI.exe"
-            },
-            "ffmpeg": {
-                "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-                "exe": "ffmpeg.exe"
-            },
-            "ffprobe": {
-                "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-                "exe": "ffprobe.exe"
-            }
-        }
-
-        info = tool_urls.get(name)
-        if not info:
-            self.update_status(f"Unknown tool: {name}", level="ERROR")
-            return
-
-
+        """Delegates to support.tool_installer (safe zip-slip-checked extract,
+        retries, sha256-capable) instead of duplicating that logic here."""
+        from support.tool_installer import install_tool as _install_tool, ToolInstallError
         tools_dir = Path(SCRIPT_DIR) / "tools"
-        tools_dir.mkdir(exist_ok=True)
-
-        exe_path = tools_dir / info["exe"]
-        zip_path = tools_dir / f"{name}.zip"
-        url = info["url"]
-
-        if exe_path.exists():
-            self.update_status(f"{name} already installed at: {exe_path}")
-            return
-
-        self.update_status(f"Downloading {name}...")
-
-        for attempt in range(3):
-            try:
-                r = requests.get(url, stream=True, timeout=30)
-                r.raise_for_status()
-                with open(zip_path, "wb") as f:
-                    for chunk in r.iter_content(1024 * 1024):
-                        f.write(chunk)
-                break
-            except Exception as e:
-                if attempt == 2:
-                    self.update_status(f"Failed to download {name}: {e}", level="ERROR")
-                    return
-                time.sleep(2)
-
-        if not is_zipfile(zip_path):
-            self.update_status(f"Corrupted or invalid ZIP: {zip_path}", level="ERROR")
-            zip_path.unlink(missing_ok=True)
-            return
-
-        self.update_status(f"Extracting {name}...")
         try:
-            with ZipFile(zip_path, "r") as zip_ref:
-                members = [m for m in zip_ref.namelist() if m.endswith(info["exe"])]
-                if not members:
-                    self.update_status(f"{info['exe']} not found in ZIP", level="ERROR")
-                    return
-                for member in members:
-                    zip_ref.extract(member, tools_dir)
-
-                    extracted = tools_dir / member
-                    flattened = tools_dir / info["exe"]
-                    extracted.rename(flattened)
-            zip_path.unlink(missing_ok=True)
-            self.update_status(f"{name} installed to {exe_path}")
-        except Exception as e:
-            self.update_status(f"Extraction failed: {e}", level="ERROR")
-            zip_path.unlink(missing_ok=True)
+            _install_tool(name=name, tools_dir=tools_dir,
+                         status_cb=lambda msg, level: self.update_status(msg, level=level))
+        except ToolInstallError as e:
+            self.update_status(f"Failed to install {name}: {e}", level="ERROR")
 
 
 
@@ -9415,9 +9436,22 @@ class CompressorGUI:
             pass
 
     def _ui(self, fn, *args, **kwargs):
-        """Schedule a callable on the Tk main thread (safe from worker threads)."""
+        """Schedule a callable on the Tk main thread (safe from worker threads).
+        Hands off through _ui_queue, drained by _drain_ui_queue's own
+        after()-timer on the main thread -- NOT via self.root.after() called
+        directly from here, because newer Tk builds (Python 3.13+) raise
+        RuntimeError: "main thread is not in main loop" when .after() itself
+        is invoked from a non-main thread, not just when widgets are touched
+        directly."""
+        cb = lambda: fn(*args, **kwargs)
+        if threading.current_thread() is threading.main_thread():
+            try:
+                cb()
+            except Exception:
+                pass
+            return
         try:
-            self.root.after(0, lambda: fn(*args, **kwargs))
+            self._ui_queue.put(cb)
         except Exception:
             pass
 
@@ -9450,7 +9484,7 @@ class CompressorGUI:
                 evt.set()
 
         try:
-            self.root.after(0, _run)
+            self._ui_queue.put(_run)
             evt.wait(timeout=timeout_s)
         except Exception:
             return default
@@ -9986,10 +10020,12 @@ class CompressorGUI:
 
     def update_status(self, msg, level="INFO"):
         # Tk widgets may only be touched from the main thread; worker threads
-        # re-dispatch through the event loop.
+        # re-dispatch through _ui's queue (not self.root.after() directly --
+        # newer Tk builds reject .after() itself from a non-main thread with
+        # RuntimeError: "main thread is not in main loop").
         try:
             if threading.current_thread() is not threading.main_thread():
-                self.root.after(0, lambda m=msg, l=level: self.update_status(m, l))
+                self._ui(self.update_status, msg, level)
                 return
         except Exception:
             pass
@@ -10101,6 +10137,29 @@ class CompressorGUI:
                 except Exception:
                     self.log_widget.insert("end", line)
         self.log_widget.config(state="disabled")
+
+    def export_sanitized_logs(self):
+        """Advanced Options button: export a redacted copy of the learning
+        ledger, recent job logs, and settings.json (webhook URL stripped) that
+        is safe to paste into a bug report. Read-only against user_settings/ --
+        this only ever writes the new zip, never the originals."""
+        try:
+            path = filedialog.asksaveasfilename(
+                title="Export Sanitized Logs",
+                defaultextension=".zip",
+                initialfile="bitcrusher_logs_sanitized.zip",
+                filetypes=[("Zip archive", "*.zip")])
+        except Exception:
+            path = None
+        if not path:
+            return
+        try:
+            from support.sanitize_export import export_sanitized_bundle
+            export_sanitized_bundle(USER_SETTINGS_DIR, path)
+            messagebox.showinfo("Export Sanitized Logs",
+                                f"Saved a redacted copy safe to share:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Export Sanitized Logs", f"Export failed: {e}")
 
     def open_advanced_options(self):
         import tkinter as tk
@@ -10385,6 +10444,8 @@ class CompressorGUI:
             except Exception:
                 pass
             adv.destroy()
+        ttk.Button(btnbar, text="Export Sanitized Logs...", style="Ghost.TButton",
+                  command=self.export_sanitized_logs).pack(side="left")
         ttk.Button(btnbar, text="OK", command=_close_and_save).pack(side="right", padx=(6, 0))
         ttk.Button(btnbar, text="Cancel", style="Ghost.TButton", command=adv.destroy).pack(side="right")
 
@@ -10438,7 +10499,7 @@ class CompressorGUI:
                 self.progress["value"] = 0
             except Exception:
                 pass
-        self.root.after(0, _prep)
+        self._ui(_prep)
 
         adv_base = dict(getattr(self, "_thread_adv_options", None)
                         or getattr(self, "advanced_options", None) or {})
@@ -10615,7 +10676,7 @@ class CompressorGUI:
         if workers <= 1:
             for idx, path in enumerate(files, start=1):
                 results.append(_run_one(idx, path))
-                self.root.after(0, self._bump_progress, len(results))
+                self._ui(self._bump_progress, len(results))
         else:
             self.update_status(f"[~] Concurrent mode: encoding up to {workers} files at once.", level="INFO")
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10631,7 +10692,7 @@ class CompressorGUI:
                                         "out_bytes": 0, "vmaf": None, "encoder": None,
                                         "secs": 0.0, "error": str(e)})
                     done_n += 1
-                    self.root.after(0, self._bump_progress, done_n)
+                    self._ui(self._bump_progress, done_n)
 
         self.batch_results = results
         self._active_workers = 1
@@ -10673,7 +10734,7 @@ class CompressorGUI:
                 except Exception:
                     pass
 
-        self.root.after(0, _finish)
+        self._ui(_finish)
         self.compression_running = False
 
 
@@ -11486,6 +11547,9 @@ def build_arg_parser():
     p.add_argument("--ledger-audit", action="store_true",
                    help="Print anomalous encodes (where every active predictor missed) "
                         "and a VMAF-scale population report, then exit. No input files required.")
+    p.add_argument("--check-updates", action="store_true",
+                   help="Check GitHub for a newer release, print the result, then exit. "
+                        "No input files required.")
     p.add_argument("--min-vmaf", type=int, default=0,
                    help="Spend spare budget until output reaches this VMAF (0 = off)")
     p.add_argument("--no-measure", action="store_true",
@@ -11617,6 +11681,18 @@ def cli_main():
         print(f"  note: {_scale['note']}")
         return 0
 
+    if getattr(args, "check_updates", False):
+        from support.update_check import fetch_latest_release, is_newer
+        info = fetch_latest_release()
+        if info is None:
+            print("[Update check] Could not reach GitHub (offline, rate-limited, or an error occurred).")
+        elif is_newer(info["tag"], APP_VERSION):
+            print(f"[Update check] A newer version is available: {info['tag']} (current: v{APP_VERSION})")
+            print(f"  {info['url']}")
+        else:
+            print(f"[Update check] You're up to date (v{APP_VERSION}).")
+        return 0
+
     # Send-To / single-instance hand-off: try to give the file(s) to a running
     # window; if none is listening, stash them and fall through to launch the GUI.
     if getattr(args, "enqueue", None):
@@ -11639,6 +11715,43 @@ def cli_main():
     if not files:
         print("No matching files found.")
         return 1
+
+    global HANDBRAKE_CLI, FFPROBE, FFMPEG
+    # ffmpeg/ffprobe required; HandBrakeCLI is a fallback -- install best-effort,
+    # never block (no static build off Windows).
+    _required_missing = [name for name, exe in (("ffmpeg", FFMPEG), ("ffprobe", FFPROBE))
+                         if not shutil.which(exe)]
+    _optional_missing = [name for name, exe in (("HandBrakeCLI", HANDBRAKE_CLI),)
+                         if not shutil.which(exe)]
+    if _required_missing or _optional_missing:
+        from support.tool_installer import install_tool as _install_tool, ToolInstallError
+        tools_dir = Path(SCRIPT_DIR) / "tools"
+        if _required_missing:
+            print("Missing required tool(s): " + ", ".join(_required_missing) + " -- downloading...")
+            for name in _required_missing:
+                try:
+                    _install_tool(name=name, tools_dir=tools_dir,
+                                 status_cb=lambda msg, level: print(f"[{level}] {msg}"))
+                except ToolInstallError as e:
+                    print(f"Failed to install {name}: {e}")
+                    print("Install it manually and put it on PATH, drop the binary into the "
+                         "'tools' folder next to BitCrusherV9.py, or set BC_FFMPEG/BC_FFPROBE.")
+                    return 1
+        for name in _optional_missing:
+            try:
+                _install_tool(name=name, tools_dir=tools_dir,
+                             status_cb=lambda msg, level: print(f"[{level}] {msg}"))
+            except ToolInstallError as e:
+                print(f"[WARNING] {name} not installed: {e}")
+                print(f"[WARNING] Continuing without {name}; ffmpeg handles the primary encode.")
+        HANDBRAKE_CLI, FFPROBE, FFMPEG = load_paths()
+        _set_ffmpeg_exec_path(FFMPEG)
+        _set_ffprobe_exec_path(FFPROBE)
+        _still_missing = [name for name, exe in (("ffmpeg", FFMPEG), ("ffprobe", FFPROBE))
+                          if not shutil.which(exe)]
+        if _still_missing:
+            print("Still missing after install attempt: " + ", ".join(_still_missing))
+            return 1
 
     # Analysis-only mode: print candidate trim ranges and exit (no compression).
     if getattr(args, "suggest_trim", None) is not None:

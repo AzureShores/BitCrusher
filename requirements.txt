@@ -22,7 +22,7 @@ requests>=2.28
 tkinterdnd2>=0.3        # drag-and-drop support
 pystray>=0.19           # system tray icon
 plyer>=2.1              # cross-platform desktop notifications
-win10toast>=0.9         # Windows toast notifications (Windows only)
+win10toast>=0.9 ; sys_platform == "win32"   # Windows toast notifications (Windows only)
 
 # File watching & media
 watchdog>=3.0           # folder watch / auto-queue
