@@ -4886,7 +4886,7 @@ class CompressorGUI:
         else:
 
             self.watch_var.set(False)
-            messagebox.showinfo("Watch Folder", "No folder selected.")
+            messagebox.showinfo(self._t("dlg.watch_folder", "Watch Folder"), self._t("msg.no_folder_selected", "No folder selected."))
 
     def open_save_folder(self):
         import os, sys, subprocess
@@ -4915,7 +4915,7 @@ class CompressorGUI:
         except Exception as e:
             _status(f"Failed to ensure save folder exists: {e}", level="ERROR")
             try:
-                messagebox.showerror("Open Save Folder", f"Could not create folder:\n{path}\n\n{e}")
+                messagebox.showerror(self._t("title.open_save_folder", "Open Save Folder"), f"Could not create folder:\n{path}\n\n{e}")
             except Exception:
                 pass
             return
@@ -4931,7 +4931,7 @@ class CompressorGUI:
         except Exception as e:
             _status(f"Failed to open save folder: {e}", level="ERROR")
             try:
-                messagebox.showerror("Open Save Folder", f"Could not open folder:\n{path}\n\n{e}")
+                messagebox.showerror(self._t("title.open_save_folder", "Open Save Folder"), f"Could not open folder:\n{path}\n\n{e}")
             except Exception:
                 pass
     def _t(self, key: str, default: str | None = None) -> str:
@@ -5093,15 +5093,15 @@ class CompressorGUI:
         # Right side of the header: quality mode + quick actions.
         if not hasattr(self, "adv_quality_mode"):
             self.adv_quality_mode = tk.StringVar(value="max")
-        ttk.Button(header, text="User Guide", style="Ghost.TButton",
+        ttk.Button(header, text=self._t("btn.user_guide", "User Guide"), style="Ghost.TButton",
                    command=getattr(self, "show_user_guide", lambda: None)).pack(side="right", padx=(8, 0))
-        ttk.Button(header, text="Advanced…", style="Ghost.TButton",
+        ttk.Button(header, text=self._t("btn.advanced", "Advanced…"), style="Ghost.TButton",
                    command=getattr(self, "open_advanced_options", lambda: None)).pack(side="right", padx=(8, 0))
         _qwrap = tk.Frame(header, bg=APP_BG)
         _qwrap.pack(side="right", padx=(0, 12))
-        ttk.Label(_qwrap, text="Quality:", style="Sub.TLabel").pack(side="left", padx=(0, 6))
+        ttk.Label(_qwrap, text=self._t("lbl.quality", "Quality:"), style="Sub.TLabel").pack(side="left", padx=(0, 6))
         for _qv, _qt in (("fast", "Fast"), ("balanced", "Balanced"), ("max", "Max")):
-            ttk.Radiobutton(_qwrap, text=_qt, value=_qv,
+            ttk.Radiobutton(_qwrap, text=self._t("qmode." + _qv, _qt), value=_qv,
                             variable=self.adv_quality_mode).pack(side="left", padx=(0, 6))
 
         self.root.grid_rowconfigure(1, weight=1)
@@ -5142,13 +5142,13 @@ class CompressorGUI:
             state="readonly"
         ).pack(side="left", padx=(6, 0))
 
-        ttk.Button(ctrl, text="Estimate", style="Ghost.TButton",
+        ttk.Button(ctrl, text=self._t("btn.estimate", "Estimate"), style="Ghost.TButton",
                    command=lambda: getattr(self, "_estimate_queue", lambda: None)()).pack(side="left", padx=(0, 16))
 
-        ttk.Label(ctrl, text="Save to:").pack(side="left")
+        ttk.Label(ctrl, text=self._t("lbl.save_to", "Save to:")).pack(side="left")
         self.save_entry = ttk.Entry(ctrl, textvariable=self.save_path, style="Dark.TEntry")
         self.save_entry.pack(side="left", padx=6, fill="x", expand=True)
-        ttk.Button(ctrl, text="Browse…", style="Ghost.TButton",
+        ttk.Button(ctrl, text=self._t("btn.browse", "Browse…"), style="Ghost.TButton",
                    command=self.select_output_dir).pack(side="left", padx=(4, 0))
 
         paned = ttk.Panedwindow(content, orient="horizontal")
@@ -5158,11 +5158,11 @@ class CompressorGUI:
         mid   = tk.Frame(paned, bg=APP_BG)
         right = tk.Frame(paned, bg=APP_BG)
 
-        tk.Label(right, text="Display", bg=APP_BG, fg=FG, anchor="w").pack(fill="x", padx=12, pady=(12, 0))
+        tk.Label(right, text=self._t("lbl.display", "Display"), bg=APP_BG, fg=FG, anchor="w").pack(fill="x", padx=12, pady=(12, 0))
 
         self.display_mode_var = tk.StringVar(value="Quality Metrics")
         mode_row = tk.Frame(right, bg=APP_BG); mode_row.pack(fill="x", padx=12, pady=(6, 8))
-        ttk.Label(mode_row, text="Mode:").pack(side="left")
+        ttk.Label(mode_row, text=self._t("lbl.mode", "Mode:")).pack(side="left")
         mode_cbx = ttk.Combobox(mode_row, textvariable=self.display_mode_var, state="readonly",
                                 values=["Quality Metrics","Advisor Insights","History","Visual Compare"], width=22)
         mode_cbx.pack(side="left", padx=(6,0))
@@ -5205,8 +5205,8 @@ class CompressorGUI:
 
         def _mk_compare():
             wrap = tk.Frame(self.preview_container, bg=CARD_BG); wrap.pack(fill="both", expand=True)
-            ttk.Label(wrap, text="Compare the last output with the source.").pack(anchor="w", padx=10, pady=(10,6))
-            btn = ttk.Button(wrap, text="Open Visual Compare", command=self._open_visual_compare_for_selection)
+            ttk.Label(wrap, text=self._t("msg.compare_hint", "Compare the last output with the source.")).pack(anchor="w", padx=10, pady=(10,6))
+            btn = ttk.Button(wrap, text=self._t("btn.open_visual_compare", "Open Visual Compare"), command=self._open_visual_compare_for_selection)
             btn.pack(anchor="w", padx=10, pady=(0,10))
 
         self._mk_metrics   = _mk_metrics
@@ -5263,17 +5263,17 @@ class CompressorGUI:
         self._queue_scroll.pack(side="right", fill="y")
         self.job_rows: dict = {}
         self.queue_menu = tk.Menu(self.root, tearoff=0)
-        self.queue_menu.add_command(label="Set encoder for this file...", command=lambda: self._queue_set("encoder"))
-        self.queue_menu.add_command(label="Set container/format for this file...", command=lambda: self._queue_set("container"))
-        self.queue_menu.add_command(label="Set prefix for this file...",  command=lambda: self._queue_set("output_prefix"))
-        self.queue_menu.add_command(label="Set suffix for this file...",  command=lambda: self._queue_set("output_suffix"))
-        self.queue_menu.add_command(label="Trim / clip range for this file...", command=lambda: self._queue_set_trim())
-        self.queue_menu.add_command(label="Suggest trim ranges (audio peaks)...", command=lambda: self._queue_suggest_trim())
-        self.queue_menu.add_command(label="Spotlight quality range for this file...", command=lambda: self._queue_set_spotlight())
+        self.queue_menu.add_command(label=self._t("qmenu.set_encoder", "Set encoder for this file..."), command=lambda: self._queue_set("encoder"))
+        self.queue_menu.add_command(label=self._t("qmenu.set_container", "Set container/format for this file..."), command=lambda: self._queue_set("container"))
+        self.queue_menu.add_command(label=self._t("qmenu.set_prefix", "Set prefix for this file..."),  command=lambda: self._queue_set("output_prefix"))
+        self.queue_menu.add_command(label=self._t("qmenu.set_suffix", "Set suffix for this file..."),  command=lambda: self._queue_set("output_suffix"))
+        self.queue_menu.add_command(label=self._t("qmenu.trim", "Trim / clip range for this file..."), command=lambda: self._queue_set_trim())
+        self.queue_menu.add_command(label=self._t("qmenu.suggest_trim", "Suggest trim ranges (audio peaks)..."), command=lambda: self._queue_suggest_trim())
+        self.queue_menu.add_command(label=self._t("qmenu.spotlight", "Spotlight quality range for this file..."), command=lambda: self._queue_set_spotlight())
         self.queue_menu.add_separator()
-        self.queue_menu.add_command(label="Reset per-file overrides", command=lambda: self._queue_reset_overrides())
-        self.queue_menu.add_command(label="Open Output Folder", command=self.open_save_folder)
-        self.queue_menu.add_command(label="Remove from Queue",  command=self.remove_selected)
+        self.queue_menu.add_command(label=self._t("qmenu.reset_overrides", "Reset per-file overrides"), command=lambda: self._queue_reset_overrides())
+        self.queue_menu.add_command(label=self._t("qmenu.open_output", "Open Output Folder"), command=self.open_save_folder)
+        self.queue_menu.add_command(label=self._t("qmenu.remove", "Remove from Queue"),  command=self.remove_selected)
         def _on_queue_context(event):
             try:
                 i = self.queue_box.nearest(event.y)
@@ -5368,7 +5368,7 @@ class CompressorGUI:
                 _a, _b = _parse_trim_range(val)
             except ValueError as e:
                 try:
-                    messagebox.showerror("Trim range", f"Invalid range: {e}", parent=self.root)
+                    messagebox.showerror(self._t("dlg.trim_range", "Trim range"), f"Invalid range: {e}", parent=self.root)
                 except Exception:
                     pass
                 return
@@ -5416,7 +5416,7 @@ class CompressorGUI:
                 _parse_trim_range(val)
             except ValueError as e:
                 try:
-                    messagebox.showerror("Spotlight range", f"Invalid range: {e}", parent=self.root)
+                    messagebox.showerror(self._t("dlg.spotlight_range", "Spotlight range"), f"Invalid range: {e}", parent=self.root)
                 except Exception:
                     pass
                 return
@@ -5454,7 +5454,7 @@ class CompressorGUI:
                         pass
                     return
                 win = tk.Toplevel(self.root)
-                win.title("Suggested trim ranges")
+                win.title(self._t("dlg.suggested_trim", "Suggested trim ranges"))
                 win.transient(self.root)
                 tk.Label(win, text=f"Candidate moments in {os.path.basename(path)}:",
                          anchor="w", justify="left").pack(fill="x", padx=12, pady=(10, 4))
@@ -5538,7 +5538,7 @@ class CompressorGUI:
             pass
 
         from tkinter.scrolledtext import ScrolledText
-        self._activity_label = tk.Label(mid, text="Activity", bg=APP_BG, fg=FG, anchor="w")
+        self._activity_label = tk.Label(mid, text=self._t("lbl.activity", "Activity"), bg=APP_BG, fg=FG, anchor="w")
         self._activity_label.pack(fill="x", padx=12, pady=(12, 0))
 
         # Overall queue progress lives at the bottom of the middle pane.
@@ -5567,7 +5567,7 @@ class CompressorGUI:
         # Plain-language view for everyone: friendly proportional font, roomy
         # line spacing, a left margin, and a blank line between files.
         _tab_feed = tk.Frame(_mid_nb, bg=CARD_BG)
-        _mid_nb.add(_tab_feed, text="  Progress  ")
+        _mid_nb.add(_tab_feed, text=f"  {self._t('tab.progress', 'Progress')}  ")
         self.stage_text = ScrolledText(_tab_feed, height=16, wrap="word",
                                        bg=_hsl_shift(CARD_BG, l_mul=0.98), fg=FG,
                                        insertbackground=FG, relief="flat", borderwidth=0,
@@ -5579,7 +5579,7 @@ class CompressorGUI:
         # Technical detail for power users: monospace so the time/level/message
         # columns line up, tight spacing, section dividers between jobs.
         _tab_log = tk.Frame(_mid_nb, bg=CARD_BG)
-        _mid_nb.add(_tab_log, text="  Details  ")
+        _mid_nb.add(_tab_log, text=f"  {self._t('tab.details', 'Details')}  ")
         self.log_text = ScrolledText(_tab_log, height=10, bg=_hsl_shift(CARD_BG, l_mul=0.96),
                                      fg=FG, insertbackground=FG, relief="flat", borderwidth=0,
                                      state="disabled", font=("Consolas", 9),
@@ -5592,9 +5592,9 @@ class CompressorGUI:
         # Lifetime stats: read-only roll-up of the run_*.jsonl encode history
         # (total bytes saved, VMAF distribution, encoder win-rates). Offline.
         _tab_stats = tk.Frame(_mid_nb, bg=CARD_BG)
-        _mid_nb.add(_tab_stats, text="  Stats  ")
+        _mid_nb.add(_tab_stats, text=f"  {self._t('tab.stats', 'Stats')}  ")
         _sbar = tk.Frame(_tab_stats, bg=CARD_BG); _sbar.pack(fill="x", padx=2, pady=(4, 0))
-        ttk.Button(_sbar, text="Refresh", style="Ghost.TButton",
+        ttk.Button(_sbar, text=self._t("btn.refresh", "Refresh"), style="Ghost.TButton",
                    command=lambda: self.refresh_lifetime_stats()).pack(side="right")
         self.stats_view = ScrolledText(_tab_stats, height=14, wrap="word",
                                        bg=_hsl_shift(CARD_BG, l_mul=0.98), fg=FG,
@@ -5642,7 +5642,7 @@ class CompressorGUI:
         ttk.Button(prow, text=self._t("btn.load","Load"), style="Ghost.TButton",
                    command=getattr(self, "load_profile", lambda: None)).pack(side="left", padx=6)
 
-        ttk.Button(right, text="Open Save Folder", style="Ghost.TButton",
+        ttk.Button(right, text=self._t("btn.open_save", "Open Save Folder"), style="Ghost.TButton",
                    command=getattr(self, "open_save_folder", lambda: None)).pack(fill="x", padx=12, pady=(0, 12))
 
         if getattr(self, "queue_box", None) is not None and self.queue_box.size() == 0:
@@ -5723,7 +5723,7 @@ class CompressorGUI:
             return
         choice = choice.strip().lower()
         if choice not in ("audio", "video", "audio+video"):
-            messagebox.showerror("Invalid Choice", "Enter exactly: audio, video, or audio+video.")
+            messagebox.showerror(self._t("dlg.invalid_choice", "Invalid Choice"), self._t("msg.enter_av", "Enter exactly: audio, video, or audio+video."))
             return
 
         temp_dir = tempfile.mkdtemp(prefix="yt_")
@@ -5750,7 +5750,7 @@ class CompressorGUI:
                 downloaded_path = ydl.prepare_filename(info)
         except Exception as e:
             self.log_error(f"YouTube download failed: {e}")
-            messagebox.showerror("Download Error", str(e))
+            messagebox.showerror(self._t("dlg.download_error", "Download Error"), str(e))
             return
 
         save_dir = self.save_path.get()
@@ -6622,7 +6622,7 @@ class CompressorGUI:
                         self.log_exception(f"Browse error: {e}")
                 finally:
                     try:
-                        messagebox.showerror("Browse error", str(e))
+                        messagebox.showerror(self._t("dlg.browse_error", "Browse error"), str(e))
                     except Exception:
                         pass
 
@@ -6695,16 +6695,16 @@ class CompressorGUI:
         if info and is_newer(info.get("tag", ""), APP_VERSION):
             self._show_update_available(info)
             if not silent:
-                messagebox.showinfo("Update available",
+                messagebox.showinfo(self._t("dlg.update_available", "Update available"),
                                     f"A newer version is available: {info['tag']}\n"
                                     f"(you're on v{APP_VERSION})")
             return
         if not silent:
             if info is None:
-                messagebox.showwarning("Check for updates",
-                                       "Could not reach GitHub. Check your connection and try again.")
+                messagebox.showwarning(self._t("dlg.check_updates", "Check for updates"),
+                                       self._t("msg.update_unreachable", "Could not reach GitHub. Check your connection and try again."))
             else:
-                messagebox.showinfo("Check for updates", f"You're up to date (v{APP_VERSION}).")
+                messagebox.showinfo(self._t("dlg.check_updates", "Check for updates"), f"You're up to date (v{APP_VERSION}).")
 
     def _show_update_available(self, info: dict):
         try:
@@ -6946,7 +6946,7 @@ class CompressorGUI:
         from tkinter import messagebox
         ok, msg = unregister_send_to()
         try:
-            messagebox.showinfo("Send To", msg)
+            messagebox.showinfo(self._t("dlg.send_to", "Send To"), msg)
         except Exception:
             self.update_status(msg, level="INFO")
 
@@ -7365,7 +7365,7 @@ class CompressorGUI:
             return
 
         top = tk.Toplevel(self.root)
-        top.title("Visual Compare — Fallback")
+        top.title(self._t("dlg.visual_compare_fallback", "Visual Compare — Fallback"))
         try:
             top.configure(bg="#2C2F33")
         except Exception:
@@ -7500,7 +7500,7 @@ class CompressorGUI:
 
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label=self._t("menu.clear_queue","Clear Queue"), command=self.clear_queue)
-        file_menu.add_command(label="Scan Queue for Duplicates...", command=self.scan_for_duplicates)
+        file_menu.add_command(label=self._t("menu.scan_dupes", "Scan Queue for Duplicates..."), command=self.scan_for_duplicates)
         file_menu.add_command(label=self._t("menu.exit","Exit"), command=self.on_exit)
         menubar.add_cascade(label=self._t("menu.file","File"), menu=file_menu)
 
@@ -7508,12 +7508,12 @@ class CompressorGUI:
         settings_menu.add_command(label=self._t("menu.configure_paths","Configure Paths"), command=self.open_settings_dialog)
         settings_menu.add_command(label=self._t("menu.save_profile","Save Profile"), command=self.save_profile)
         settings_menu.add_command(label=self._t("menu.load_profile","Load Profile"), command=self.load_profile)
-        settings_menu.add_command(label="Advanced Options...", command=self.open_advanced)
-        settings_menu.add_command(label="Check for Updates...", command=lambda: self.check_for_updates(silent=False))
+        settings_menu.add_command(label=self._t("menu.advanced_options", "Advanced Options..."), command=self.open_advanced)
+        settings_menu.add_command(label=self._t("menu.check_updates", "Check for Updates..."), command=lambda: self.check_for_updates(silent=False))
         settings_menu.add_separator()
-        settings_menu.add_command(label="Add 'Send to BitCrusher' (right-click menu)",
+        settings_menu.add_command(label=self._t("menu.add_sendto", "Add 'Send to BitCrusher' (right-click menu)"),
                                   command=self.register_send_to_menu)
-        settings_menu.add_command(label="Remove 'Send to BitCrusher'",
+        settings_menu.add_command(label=self._t("menu.remove_sendto", "Remove 'Send to BitCrusher'"),
                                   command=self.unregister_send_to_menu)
         menubar.add_cascade(label=self._t("menu.settings","Settings"), menu=settings_menu)
 
@@ -7573,7 +7573,7 @@ class CompressorGUI:
         _load_lang_packs()
 
         win = tk.Toplevel(self.root)
-        win.title("Language Manager")
+        win.title(self._t("dlg.language_manager", "Language Manager"))
         win.geometry("720x420")
         win.transient(self.root)
 
@@ -7621,7 +7621,7 @@ class CompressorGUI:
         def _use_selected():
             sel = tree.selection()
             if not sel:
-                messagebox.showinfo("Language Manager", "Select a language first.")
+                messagebox.showinfo(self._t("dlg.language_manager", "Language Manager"), self._t("msg.select_lang_first", "Select a language first."))
                 return
             vals = tree.item(sel[0], "values")
             if not vals:
@@ -7655,7 +7655,7 @@ class CompressorGUI:
 
         win = tk.Toplevel(self.root)
         self._dash_win = win
-        win.title("BitCrusher - Dashboard")
+        win.title(self._t("dlg.dashboard_full", "BitCrusher - Dashboard"))
         win.geometry("520x360")
         win.resizable(False, False)
 
@@ -7794,7 +7794,7 @@ class CompressorGUI:
         _load_lang_packs()
 
         win = tk.Toplevel(self.root)
-        win.title("Language Manager")
+        win.title(self._t("dlg.language_manager", "Language Manager"))
         win.geometry("720x420")
         win.transient(self.root)
 
@@ -7842,7 +7842,7 @@ class CompressorGUI:
         def _use_selected():
             sel = tree.selection()
             if not sel:
-                messagebox.showinfo("Language Manager", "Select a language first.")
+                messagebox.showinfo(self._t("dlg.language_manager", "Language Manager"), self._t("msg.select_lang_first", "Select a language first."))
                 return
             vals = tree.item(sel[0], "values")
             if not vals:
@@ -7876,7 +7876,7 @@ class CompressorGUI:
 
         win = tk.Toplevel(self.root)
         self._dash_win = win
-        win.title("BitCrusher - Dashboard")
+        win.title(self._t("dlg.dashboard_full", "BitCrusher - Dashboard"))
         win.geometry("520x360")
         win.resizable(False, False)
 
@@ -8623,13 +8623,13 @@ class CompressorGUI:
 
     def open_settings_dialog(self):
         win = tk.Toplevel(self.root)
-        win.title("Settings")
+        win.title(self._t("dlg.settings", "Settings"))
         win.geometry("450x300")
         win.transient(self.root)
         win.grab_set()
         pad = {"padx": 10, "pady": 5}
 
-        tk.Label(win, text="Default Save Folder:").grid(row=0, column=0, sticky="e", **pad)
+        tk.Label(win, text=self._t("set.save_folder", "Default Save Folder:")).grid(row=0, column=0, sticky="e", **pad)
         save_entry = tk.Entry(win, width=40)
         save_entry.insert(0, self.settings.get("output_dir", ""))
         save_entry.grid(row=0, column=1, **pad)
@@ -8638,13 +8638,13 @@ class CompressorGUI:
             if d:
                 save_entry.delete(0, tk.END)
                 save_entry.insert(0, d)
-        ttk.Button(win, text="Browse...", command=browse_save).grid(row=0, column=2, **pad)
+        ttk.Button(win, text=self._t("btn.browse", "Browse..."), command=browse_save).grid(row=0, column=2, **pad)
 
         auto_del_var = tk.BooleanVar(value=self.settings.get("auto_delete", False))
-        ttk.Checkbutton(win, text="Auto-delete originals", variable=auto_del_var)\
+        ttk.Checkbutton(win, text=self._t("set.auto_delete", "Auto-delete originals"), variable=auto_del_var)\
             .grid(row=1, column=1, sticky="w", **pad)
 
-        tk.Label(win, text="Watch Folder:").grid(row=2, column=0, sticky="e", **pad)
+        tk.Label(win, text=self._t("set.watch_folder", "Watch Folder:")).grid(row=2, column=0, sticky="e", **pad)
         watch_entry = tk.Entry(win, width=40)
         watch_entry.insert(0, self.settings.get("watch_folder", ""))
         watch_entry.grid(row=2, column=1, **pad)
@@ -8653,10 +8653,10 @@ class CompressorGUI:
             if d:
                 watch_entry.delete(0, tk.END)
                 watch_entry.insert(0, d)
-        ttk.Button(win, text="Browse...", command=browse_watch).grid(row=2, column=2, **pad)
+        ttk.Button(win, text=self._t("btn.browse", "Browse..."), command=browse_watch).grid(row=2, column=2, **pad)
 
         watch_on_var = tk.BooleanVar(value=self.settings.get("enable_watch", False))
-        ttk.Checkbutton(win, text="Enable Watch-Folder", variable=watch_on_var)\
+        ttk.Checkbutton(win, text=self._t("set.enable_watch", "Enable Watch-Folder"), variable=watch_on_var)\
             .grid(row=3, column=1, sticky="w", **pad)
 
     def on_save():
@@ -8688,7 +8688,7 @@ class CompressorGUI:
 
         btns = tk.Frame(win)
         btns.grid(row=4, column=0, columnspan=3, pady=20)
-        tk.Button(btns, text="Save", command=on_save).pack(side="left", padx=10)
+        tk.Button(btns, text=self._t("btn.save", "Save"), command=on_save).pack(side="left", padx=10)
         ttk.Button(btns, text=_("title.cancel"), command=win.destroy).pack(side="right", padx=10)
 
         win.wait_window()
@@ -9013,7 +9013,7 @@ class CompressorGUI:
 
     def process_queue(self):
         if not self.files:
-            messagebox.showwarning("Warning", "No files in queue.")
+            messagebox.showwarning(self._t("dlg.warning", "Warning"), self._t("msg.no_files_queue", "No files in queue."))
             return
 
         def compress_files():
@@ -9170,10 +9170,10 @@ class CompressorGUI:
         if not required_missing:
             return
         msg = "Missing tools detected:\n" + "\n".join(required_missing) + "\n\nInstall now?"
-        if messagebox.askyesno("Dependencies Missing", msg):
+        if messagebox.askyesno(self._t("dlg.deps_missing", "Dependencies Missing"), msg):
             def _done():
-                messagebox.showinfo("Install Complete",
-                                    "Tools installed. Please restart the app.")
+                messagebox.showinfo(self._t("dlg.install_complete", "Install Complete"),
+                                    self._t("msg.tools_installed", "Tools installed. Please restart the app."))
                 self.root.quit()
             def _worker():
                 # Downloading ~150-250MB on the main thread froze the whole
@@ -9190,9 +9190,9 @@ class CompressorGUI:
         if hasattr(self, 'processing_thread') and self.processing_thread.is_alive():
             self.stop_event.set()
             self.log("Cancel requested.")
-            messagebox.showinfo("Cancel", "Queue cancel requested.")
+            messagebox.showinfo(self._t("title.cancel", "Cancel"), self._t("msg.cancel_requested", "Queue cancel requested."))
         else:
-            messagebox.showinfo("Cancel", "No active compression to cancel.")
+            messagebox.showinfo(self._t("title.cancel", "Cancel"), self._t("msg.no_active_cancel", "No active compression to cancel."))
 
 
 
@@ -9260,7 +9260,7 @@ class CompressorGUI:
     def toggle_watch(self):
         if self.enable_watch.get():
             if not self.watch_folder.get():
-                messagebox.showwarning("Watch Folder","Please select a folder first.")
+                messagebox.showwarning(self._t("dlg.watch_folder", "Watch Folder"), self._t("msg.select_folder_first", "Please select a folder first."))
                 self.enable_watch.set(False)
             else:
                 self.start_folder_watcher()
@@ -9523,7 +9523,7 @@ class CompressorGUI:
         stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
 
         win = tk.Toplevel(self.root)
-        win.title("Pre-flight estimate (from the ledger)")
+        win.title(self._t("dlg.preflight", "Pre-flight estimate (from the ledger)"))
         win.transient(self.root)
         win.geometry("640x360")
         ttk.Label(win, text=f"Predicted outcome at {human_bytes(tgt)} — no encoding, "
@@ -9690,11 +9690,11 @@ class CompressorGUI:
         norm = list(dict.fromkeys(norm))  # a file queued twice is not a duplicate of itself
         files = [p for p in norm if os.path.isfile(p)]
         if not files:
-            messagebox.showinfo("Scan for Duplicates", "Queue is empty - add files first.")
+            messagebox.showinfo(self._t("dlg.scan_dupes", "Scan for Duplicates"), self._t("msg.queue_empty_add", "Queue is empty - add files first."))
             return
 
         busy = tk.Toplevel(self.root)
-        busy.title("Scanning for Duplicates")
+        busy.title(self._t("dlg.scanning_dupes", "Scanning for Duplicates"))
         busy.transient(self.root)
         busy.geometry("360x90")
         ttk.Label(busy, text=f"Hashing {len(files)} file(s)...").pack(expand=True, pady=20)
@@ -9719,14 +9719,14 @@ class CompressorGUI:
             pass
 
         if err is not None:
-            messagebox.showerror("Scan for Duplicates", f"Duplicate scan failed: {err}")
+            messagebox.showerror(self._t("dlg.scan_dupes", "Scan for Duplicates"), f"Duplicate scan failed: {err}")
             return
         if not groups:
-            messagebox.showinfo("Scan for Duplicates", "No byte-identical duplicates found in the queue.")
+            messagebox.showinfo(self._t("dlg.scan_dupes", "Scan for Duplicates"), self._t("msg.no_dupes", "No byte-identical duplicates found in the queue."))
             return
 
         win = tk.Toplevel(self.root)
-        win.title("Duplicate Files Found")
+        win.title(self._t("dlg.dupes_found", "Duplicate Files Found"))
         win.transient(self.root)
         win.grab_set()  # modal: queue edits mid-review would orphan row_info's path keys
         win.geometry("740x400")
@@ -9763,7 +9763,7 @@ class CompressorGUI:
         def _set_action(action):
             sel = tree.selection()
             if not sel:
-                messagebox.showinfo("Scan for Duplicates", "Select one or more rows first.")
+                messagebox.showinfo(self._t("dlg.scan_dupes", "Scan for Duplicates"), self._t("msg.select_rows_first", "Select one or more rows first."))
                 return
             for item in sel:
                 info = row_info.get(item)
@@ -9805,7 +9805,7 @@ class CompressorGUI:
             pass
 
         win = tk.Toplevel(self.root)
-        win.title("Batch Summary")
+        win.title(self._t("dlg.batch_summary", "Batch Summary"))
         win.transient(self.root)
         win.geometry("720x380")
 
@@ -10159,7 +10159,7 @@ class CompressorGUI:
             messagebox.showinfo("Export Sanitized Logs",
                                 f"Saved a redacted copy safe to share:\n{path}")
         except Exception as e:
-            messagebox.showerror("Export Sanitized Logs", f"Export failed: {e}")
+            messagebox.showerror(self._t("dlg.export_sanitized", "Export Sanitized Logs"), f"Export failed: {e}")
 
     def open_advanced_options(self):
         import tkinter as tk
@@ -10190,7 +10190,7 @@ class CompressorGUI:
             pass
 
         adv = tk.Toplevel(self.root)
-        adv.title("Advanced Options")
+        adv.title(self._t("dlg.advanced_options_win", "Advanced Options"))
         try:
             adv.configure(bg=APP_BG)
         except Exception:
@@ -10243,12 +10243,12 @@ class CompressorGUI:
         _canvas.bind_all("<MouseWheel>", _on_wheel)
         adv.bind("<Destroy>", lambda e: (_canvas.unbind_all("<MouseWheel>") if e.widget is adv else None), add="+")
 
-        video = ttk.LabelFrame(container, text="Video", padding=10)
-        audio = ttk.LabelFrame(container, text="Audio", padding=10)
-        output = ttk.LabelFrame(container, text="Output & Naming", padding=10)
-        images = ttk.LabelFrame(container, text="Images", padding=10)
-        misc   = ttk.LabelFrame(container, text="Misc", padding=10)
-        watchrules = ttk.LabelFrame(container, text="Watcher Rules (folder watcher / Send-To)", padding=10)
+        video = ttk.LabelFrame(container, text=self._t("adv.sec.video", "Video"), padding=10)
+        audio = ttk.LabelFrame(container, text=self._t("adv.sec.audio", "Audio"), padding=10)
+        output = ttk.LabelFrame(container, text=self._t("adv.sec.output", "Output & Naming"), padding=10)
+        images = ttk.LabelFrame(container, text=self._t("adv.sec.images", "Images"), padding=10)
+        misc   = ttk.LabelFrame(container, text=self._t("adv.sec.misc", "Misc"), padding=10)
+        watchrules = ttk.LabelFrame(container, text=self._t("adv.sec.watchrules", "Watcher Rules (folder watcher / Send-To)"), padding=10)
 
         video.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         audio.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
@@ -10257,7 +10257,7 @@ class CompressorGUI:
         misc.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         watchrules.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 12))
 
-        ttk.Label(video, text="Encoder").grid(row=0, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(video, text=self._t("adv.encoder", "Encoder")).grid(row=0, column=0, sticky="e", padx=6, pady=4)
 
         enc_values = [
             "x264", "x265",
@@ -10271,19 +10271,19 @@ class CompressorGUI:
         enc_combo = ttk.Combobox(video, textvariable=self.adv_encoder, values=enc_values, state="readonly", width=18)
         enc_combo.grid(row=0, column=1, sticky="ew", padx=6, pady=4)
 
-        ttk.Label(video, text="Manual CRF").grid(row=1, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(video, text=self._t("adv.manual_crf", "Manual CRF")).grid(row=1, column=0, sticky="e", padx=6, pady=4)
         ttk.Entry(video, textvariable=self.adv_manual_crf, width=10).grid(row=1, column=1, sticky="w", padx=6, pady=4)
 
-        ttk.Label(video, text="Manual Bitrate (bps)").grid(row=2, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(video, text=self._t("adv.manual_bitrate", "Manual Bitrate (bps)")).grid(row=2, column=0, sticky="e", padx=6, pady=4)
         ttk.Entry(video, textvariable=self.adv_manual_bitrate, width=14).grid(row=2, column=1, sticky="w", padx=6, pady=4)
 
-        ttk.Checkbutton(video, text="Enable Two-pass", variable=self.adv_two_pass).grid(row=3, column=0, sticky="w", padx=6, pady=4)
-        ttk.Checkbutton(video, text="Iterative Size Targeting", variable=self.adv_iterative).grid(row=3, column=1, sticky="w", padx=6, pady=4)
+        ttk.Checkbutton(video, text=self._t("adv.two_pass", "Enable Two-pass"), variable=self.adv_two_pass).grid(row=3, column=0, sticky="w", padx=6, pady=4)
+        ttk.Checkbutton(video, text=self._t("adv.iterative", "Iterative Size Targeting"), variable=self.adv_iterative).grid(row=3, column=1, sticky="w", padx=6, pady=4)
         if not hasattr(self, "adv_quality_mode"):
             self.adv_quality_mode = tk.StringVar(value="max")
         _qrow = ttk.Frame(video)
         _qrow.grid(row=5, column=0, columnspan=2, sticky="w", padx=6, pady=4)
-        ttk.Label(_qrow, text="Quality mode:").pack(side="left", padx=(0, 8))
+        ttk.Label(_qrow, text=self._t("adv.quality_mode", "Quality mode:")).pack(side="left", padx=(0, 8))
         for _qval, _qtxt in (("fast", "Fast"), ("balanced", "Balanced"), ("max", "Max Quality (slow)")):
             ttk.Radiobutton(_qrow, text=_qtxt, value=_qval, variable=self.adv_quality_mode).pack(side="left", padx=(0, 10))
         # Keep the legacy boolean in sync for old settings readers.
@@ -10297,84 +10297,84 @@ class CompressorGUI:
         except Exception:
             pass
 
-        ttk.Checkbutton(video, text="Auto-pick best codec (VMAF probe vs AV1)", variable=self.adv_auto_codec).grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=4)
+        ttk.Checkbutton(video, text=self._t("adv.auto_codec", "Auto-pick best codec (VMAF probe vs AV1)"), variable=self.adv_auto_codec).grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=4)
         if hasattr(self, "adv_scene_zones"):
-            ttk.Checkbutton(video, text="Scene-aware bitrate zones (x264/x265)", variable=self.adv_scene_zones).grid(row=9, column=0, columnspan=2, sticky="w", padx=6, pady=4)
+            ttk.Checkbutton(video, text=self._t("adv.scene_zones", "Scene-aware bitrate zones (x264/x265)"), variable=self.adv_scene_zones).grid(row=9, column=0, columnspan=2, sticky="w", padx=6, pady=4)
         if hasattr(self, "adv_hw_decode"):
-            ttk.Checkbutton(video, text="GPU-accelerated decode of source", variable=self.adv_hw_decode).grid(row=10, column=0, columnspan=2, sticky="w", padx=6, pady=4)
-        ttk.Checkbutton(video, text="Measure quality (VMAF) after encode", variable=self.adv_measure_quality).grid(row=6, column=0, columnspan=2, sticky="w", padx=6, pady=4)
-        ttk.Label(video, text="Min VMAF (0 = off)").grid(row=7, column=0, sticky="e", padx=6, pady=4)
+            ttk.Checkbutton(video, text=self._t("adv.hw_decode", "GPU-accelerated decode of source"), variable=self.adv_hw_decode).grid(row=10, column=0, columnspan=2, sticky="w", padx=6, pady=4)
+        ttk.Checkbutton(video, text=self._t("adv.measure", "Measure quality (VMAF) after encode"), variable=self.adv_measure_quality).grid(row=6, column=0, columnspan=2, sticky="w", padx=6, pady=4)
+        ttk.Label(video, text=self._t("adv.min_vmaf", "Min VMAF (0 = off)")).grid(row=7, column=0, sticky="e", padx=6, pady=4)
         _vmaf_row = ttk.Frame(video); _vmaf_row.grid(row=7, column=1, sticky="w", padx=6, pady=4)
         ttk.Spinbox(_vmaf_row, from_=0, to=100, textvariable=self.adv_min_vmaf, width=6, wrap=False).pack(side="left")
         ttk.Label(_vmaf_row, text="  (e.g. 92 = keep quality high, growing toward the size limit)",
                   style="Sub.TLabel").pack(side="left")
 
-        ttk.Label(video, text="Hardware").grid(row=4, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(video, text=self._t("adv.hardware", "Hardware")).grid(row=4, column=0, sticky="e", padx=6, pady=4)
         hw_values = ["CPU", "NVENC", "QSV", "AMF", "VAAPI"]
         ttk.Combobox(video, textvariable=self.adv_hwaccel, values=hw_values, state="readonly", width=10).grid(row=4, column=1, sticky="w", padx=6, pady=4)
 
         if not hasattr(self, "adv_discord_compat"):
             self.adv_discord_compat = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("discord_compat", False) else 0)
-        ttk.Checkbutton(video, text="Discord-compatible (force H.264 + AAC / MP4)",
+        ttk.Checkbutton(video, text=self._t("adv.discord_compat", "Discord-compatible (force H.264 + AAC / MP4)"),
                         variable=self.adv_discord_compat).grid(row=11, column=0, columnspan=2, sticky="w", padx=6, pady=4)
         if not hasattr(self, "adv_smart_preproc"):
             self.adv_smart_preproc = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("smart_preproc", True) else 0)
-        ttk.Checkbutton(video, text="Artifact-aware preprocessing (VMAF-validated deband/denoise)",
+        ttk.Checkbutton(video, text=self._t("adv.preproc", "Artifact-aware preprocessing (VMAF-validated deband/denoise)"),
                         variable=self.adv_smart_preproc).grid(row=12, column=0, columnspan=2, sticky="w", padx=6, pady=4)
         if not hasattr(self, "adv_learned_seed"):
             self.adv_learned_seed = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("learned_seed", True) else 0)
-        ttk.Checkbutton(video, text="Learned first-attempt bitrate seeding (outcome ledger)",
+        ttk.Checkbutton(video, text=self._t("adv.learned_seed", "Learned first-attempt bitrate seeding (outcome ledger)"),
                         variable=self.adv_learned_seed).grid(row=13, column=0, columnspan=2, sticky="w", padx=6, pady=4)
         if not hasattr(self, "adv_preflight"):
             self.adv_preflight = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("preflight_advice", True) else 0)
-        ttk.Checkbutton(video, text="Pre-flight quality/size advice (advisory only)",
+        ttk.Checkbutton(video, text=self._t("adv.preflight", "Pre-flight quality/size advice (advisory only)"),
                         variable=self.adv_preflight).grid(row=14, column=0, columnspan=2, sticky="w", padx=6, pady=4)
         if not hasattr(self, "adv_ceiling_downscale"):
             self.adv_ceiling_downscale = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("ceiling_downscale_retry", True) else 0)
-        ttk.Checkbutton(video, text="Downscale-and-retry if size cap can't be met at native resolution",
+        ttk.Checkbutton(video, text=self._t("adv.downscale_retry", "Downscale-and-retry if size cap can't be met at native resolution"),
                         variable=self.adv_ceiling_downscale).grid(row=15, column=0, columnspan=2, sticky="w", padx=6, pady=4)
 
-        ttk.Label(audio, text="Audio Format").grid(row=0, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(audio, text=self._t("adv.audio_format", "Audio Format")).grid(row=0, column=0, sticky="e", padx=6, pady=4)
         audio_values = ["aac", "opus", "mp3"]
         ttk.Combobox(audio, textvariable=self.adv_audio_format, values=audio_values, state="readonly", width=10).grid(row=0, column=1, sticky="w", padx=6, pady=4)
 
         if not hasattr(self, "adv_audio_track_mode"):
             self.adv_audio_track_mode = tk.StringVar(value=str(ADVANCED_DEFAULTS.get("audio_track_mode", "keepfirst")))
-        ttk.Label(audio, text="Multi-track audio").grid(row=1, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(audio, text=self._t("adv.multitrack", "Multi-track audio")).grid(row=1, column=0, sticky="e", padx=6, pady=4)
         _atrow = ttk.Frame(audio); _atrow.grid(row=1, column=1, sticky="w", padx=6, pady=4)
-        ttk.Radiobutton(_atrow, text="Keep first", value="keepfirst",
+        ttk.Radiobutton(_atrow, text=self._t("adv.keep_first", "Keep first"), value="keepfirst",
                         variable=self.adv_audio_track_mode).pack(side="left", padx=(0, 10))
-        ttk.Radiobutton(_atrow, text="Mix all (amix)", value="mix",
+        ttk.Radiobutton(_atrow, text=self._t("adv.mix_all", "Mix all (amix)"), value="mix",
                         variable=self.adv_audio_track_mode).pack(side="left")
         if not hasattr(self, "adv_embed_lyrics"):
             self.adv_embed_lyrics = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("embed_lyrics", True) else 0)
-        ttk.Checkbutton(audio, text="Embed sibling .lrc lyrics into tags",
+        ttk.Checkbutton(audio, text=self._t("adv.lyrics", "Embed sibling .lrc lyrics into tags"),
                         variable=self.adv_embed_lyrics).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=4)
 
-        ttk.Label(output, text="Output Prefix").grid(row=0, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(output, text=self._t("adv.out_prefix", "Output Prefix")).grid(row=0, column=0, sticky="e", padx=6, pady=4)
         ttk.Entry(output, textvariable=self.adv_output_prefix, width=20).grid(row=0, column=1, sticky="w", padx=6, pady=4)
 
-        ttk.Label(output, text="Output Suffix").grid(row=1, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(output, text=self._t("adv.out_suffix", "Output Suffix")).grid(row=1, column=0, sticky="e", padx=6, pady=4)
         ttk.Entry(output, textvariable=self.adv_output_suffix, width=20).grid(row=1, column=1, sticky="w", padx=6, pady=4)
 
         if not hasattr(self, "adv_copy_clipboard"):
             self.adv_copy_clipboard = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("copy_to_clipboard", False) else 0)
-        ttk.Checkbutton(output, text="Copy result to clipboard (Ctrl+V into Discord)",
+        ttk.Checkbutton(output, text=self._t("adv.clipboard", "Copy result to clipboard (Ctrl+V into Discord)"),
                         variable=self.adv_copy_clipboard).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=4)
 
-        ttk.Label(images, text="Image Format").grid(row=0, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(images, text=self._t("adv.image_format", "Image Format")).grid(row=0, column=0, sticky="e", padx=6, pady=4)
         img_values = ["jpg", "png", "webp"]
         ttk.Combobox(images, textvariable=self.adv_image_format, values=img_values, state="readonly", width=10).grid(row=0, column=1, sticky="w", padx=6, pady=4)
-        ttk.Checkbutton(images, text="PNG Optimize", variable=self.adv_pngopt).grid(row=1, column=0, sticky="w", padx=6, pady=4)
-        ttk.Checkbutton(images, text="Auto JPEG", variable=self.adv_auto_jpeg).grid(row=1, column=1, sticky="w", padx=6, pady=4)
+        ttk.Checkbutton(images, text=self._t("adv.png_opt", "PNG Optimize"), variable=self.adv_pngopt).grid(row=1, column=0, sticky="w", padx=6, pady=4)
+        ttk.Checkbutton(images, text=self._t("adv.auto_jpeg", "Auto JPEG"), variable=self.adv_auto_jpeg).grid(row=1, column=1, sticky="w", padx=6, pady=4)
 
-        ttk.Checkbutton(misc, text="Concurrent Compression", variable=self.adv_concurrent).grid(row=0, column=0, sticky="w", padx=6, pady=4)
-        ttk.Checkbutton(misc, text="Auto Create Output Folder", variable=self.adv_auto_output).grid(row=0, column=1, sticky="w", padx=6, pady=4)
+        ttk.Checkbutton(misc, text=self._t("adv.concurrent", "Concurrent Compression"), variable=self.adv_concurrent).grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        ttk.Checkbutton(misc, text=self._t("adv.auto_output", "Auto Create Output Folder"), variable=self.adv_auto_output).grid(row=0, column=1, sticky="w", padx=6, pady=4)
         if hasattr(self, "adv_grain_filter"):
-            ttk.Checkbutton(misc, text="Grain-aware denoise filter", variable=self.adv_grain_filter).grid(row=1, column=0, sticky="w", padx=6, pady=4)
+            ttk.Checkbutton(misc, text=self._t("adv.grain_filter", "Grain-aware denoise filter"), variable=self.adv_grain_filter).grid(row=1, column=0, sticky="w", padx=6, pady=4)
         if not hasattr(self, "dino_game_var"):
             self.dino_game_var = tk.IntVar(value=1 if (getattr(self, "settings", {}) or {}).get("dino_game", False) else 0)
-        ttk.Checkbutton(misc, text="Hidden dino runner (Activity area)", variable=self.dino_game_var,
+        ttk.Checkbutton(misc, text=self._t("adv.dino", "Hidden dino runner (Activity area)"), variable=self.dino_game_var,
                         command=self._toggle_dino).grid(row=1, column=1, sticky="w", padx=6, pady=4)
 
         # --- Watcher Rules -------------------------------------------------
@@ -10383,11 +10383,11 @@ class CompressorGUI:
         self._ensure_watch_rule_vars()
         _enc_choices = ("", "x264", "x265", "svt-av1", "aom-av1", "vp9",
                         "h264_nvenc", "hevc_nvenc", "av1_nvenc")
-        ttk.Label(watchrules, text="Leave any field blank to fall back to the global setting.",
+        ttk.Label(watchrules, text=self._t("adv.wr.hint", "Leave any field blank to fall back to the global setting."),
                   style="Sub.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 6))
 
         # Custom output folder for watched files.
-        ttk.Label(watchrules, text="Save watched files to").grid(row=1, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(watchrules, text=self._t("adv.wr.save_to", "Save watched files to")).grid(row=1, column=0, sticky="e", padx=6, pady=4)
         _wsd_row = ttk.Frame(watchrules); _wsd_row.grid(row=1, column=1, columnspan=3, sticky="ew", padx=6, pady=4)
         ttk.Entry(_wsd_row, textvariable=self.wr_vars["save_dir"], width=34).pack(side="left", fill="x", expand=True)
         def _pick_wr_dir():
@@ -10400,33 +10400,33 @@ class CompressorGUI:
         ttk.Button(_wsd_row, text="…", width=3, style="Ghost.TButton", command=_pick_wr_dir).pack(side="left", padx=(6, 0))
 
         # Watched-file defaults.
-        ttk.Label(watchrules, text="Default target size (MB)").grid(row=2, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(watchrules, text=self._t("adv.wr.target", "Default target size (MB)")).grid(row=2, column=0, sticky="e", padx=6, pady=4)
         ttk.Entry(watchrules, textvariable=self.wr_vars["target_mb"], width=8).grid(row=2, column=1, sticky="w", padx=6, pady=4)
-        ttk.Label(watchrules, text="Default encoder").grid(row=2, column=2, sticky="e", padx=6, pady=4)
+        ttk.Label(watchrules, text=self._t("adv.wr.encoder", "Default encoder")).grid(row=2, column=2, sticky="e", padx=6, pady=4)
         ttk.Combobox(watchrules, textvariable=self.wr_vars["encoder"], values=_enc_choices,
                      state="readonly", width=12).grid(row=2, column=3, sticky="w", padx=6, pady=4)
 
         ttk.Separator(watchrules, orient="horizontal").grid(row=3, column=0, columnspan=4, sticky="ew", pady=6)
 
         # Size-conditional target overrides.
-        ttk.Label(watchrules, text="If larger than (MB)").grid(row=4, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(watchrules, text=self._t("adv.wr.larger", "If larger than (MB)")).grid(row=4, column=0, sticky="e", padx=6, pady=4)
         ttk.Entry(watchrules, textvariable=self.wr_vars["big_mb"], width=8).grid(row=4, column=1, sticky="w", padx=6, pady=4)
         ttk.Label(watchrules, text="→ target (MB)").grid(row=4, column=2, sticky="e", padx=6, pady=4)
         ttk.Entry(watchrules, textvariable=self.wr_vars["big_target"], width=8).grid(row=4, column=3, sticky="w", padx=6, pady=4)
 
-        ttk.Label(watchrules, text="If smaller than (MB)").grid(row=5, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(watchrules, text=self._t("adv.wr.smaller", "If smaller than (MB)")).grid(row=5, column=0, sticky="e", padx=6, pady=4)
         ttk.Entry(watchrules, textvariable=self.wr_vars["small_mb"], width=8).grid(row=5, column=1, sticky="w", padx=6, pady=4)
         ttk.Label(watchrules, text="→ target (MB)").grid(row=5, column=2, sticky="e", padx=6, pady=4)
         ttk.Entry(watchrules, textvariable=self.wr_vars["small_target"], width=8).grid(row=5, column=3, sticky="w", padx=6, pady=4)
 
         # Duration-conditional encoder overrides.
-        ttk.Label(watchrules, text="If longer than (min)").grid(row=6, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(watchrules, text=self._t("adv.wr.longer", "If longer than (min)")).grid(row=6, column=0, sticky="e", padx=6, pady=4)
         ttk.Entry(watchrules, textvariable=self.wr_vars["long_min"], width=8).grid(row=6, column=1, sticky="w", padx=6, pady=4)
         ttk.Label(watchrules, text="→ encoder").grid(row=6, column=2, sticky="e", padx=6, pady=4)
         ttk.Combobox(watchrules, textvariable=self.wr_vars["long_enc"], values=_enc_choices,
                      state="readonly", width=12).grid(row=6, column=3, sticky="w", padx=6, pady=4)
 
-        ttk.Label(watchrules, text="If shorter than (min)").grid(row=7, column=0, sticky="e", padx=6, pady=4)
+        ttk.Label(watchrules, text=self._t("adv.wr.shorter", "If shorter than (min)")).grid(row=7, column=0, sticky="e", padx=6, pady=4)
         ttk.Entry(watchrules, textvariable=self.wr_vars["short_min"], width=8).grid(row=7, column=1, sticky="w", padx=6, pady=4)
         ttk.Label(watchrules, text="→ encoder").grid(row=7, column=2, sticky="e", padx=6, pady=4)
         ttk.Combobox(watchrules, textvariable=self.wr_vars["short_enc"], values=_enc_choices,
@@ -10444,10 +10444,10 @@ class CompressorGUI:
             except Exception:
                 pass
             adv.destroy()
-        ttk.Button(btnbar, text="Export Sanitized Logs...", style="Ghost.TButton",
+        ttk.Button(btnbar, text=self._t("btn.export_sanitized", "Export Sanitized Logs..."), style="Ghost.TButton",
                   command=self.export_sanitized_logs).pack(side="left")
-        ttk.Button(btnbar, text="OK", command=_close_and_save).pack(side="right", padx=(6, 0))
-        ttk.Button(btnbar, text="Cancel", style="Ghost.TButton", command=adv.destroy).pack(side="right")
+        ttk.Button(btnbar, text=self._t("btn.ok", "OK"), command=_close_and_save).pack(side="right", padx=(6, 0))
+        ttk.Button(btnbar, text=self._t("btn.cancel", "Cancel"), style="Ghost.TButton", command=adv.destroy).pack(side="right")
 
         _on_body_config()
         adv.wait_window()
@@ -11021,7 +11021,7 @@ class DropZone(TkinterDnD.Tk):
                 json.dump(data, f, indent=2)
             self.update_status(f"Presets exported to {fp}")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to export presets: {e}")
+            messagebox.showerror(self._t("dlg.error", "Error"), f"Failed to export presets: {e}")
 
     def import_presets(self):
         
@@ -11037,7 +11037,7 @@ class DropZone(TkinterDnD.Tk):
                 self.saved_profiles.update(data.get("profiles", {}))
             self.update_status("Presets imported.")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to import presets: {e}")
+            messagebox.showerror(self._t("dlg.error", "Error"), f"Failed to import presets: {e}")
 
     def toggle_theme(self):
         
@@ -11177,7 +11177,7 @@ class DropZone(TkinterDnD.Tk):
         _load_lang_packs()
 
         win = tk.Toplevel(self.root)
-        win.title("Language Manager")
+        win.title(self._t("dlg.language_manager", "Language Manager"))
         win.geometry("720x420")
         win.transient(self.root)
 
@@ -11225,7 +11225,7 @@ class DropZone(TkinterDnD.Tk):
         def _use_selected():
             sel = tree.selection()
             if not sel:
-                messagebox.showinfo("Language Manager", "Select a language first.")
+                messagebox.showinfo(self._t("dlg.language_manager", "Language Manager"), self._t("msg.select_lang_first", "Select a language first."))
                 return
             vals = tree.item(sel[0], "values")
             if not vals:
@@ -11247,7 +11247,7 @@ class DropZone(TkinterDnD.Tk):
     def show_dashboard(self):
         
         win = Toplevel(self.root)
-        win.title("Dashboard")
+        win.title(self._t("dlg.dashboard", "Dashboard"))
         total = len(self.stats_list)
         ratios = []
         for s in self.stats_list:
@@ -12046,7 +12046,7 @@ def _cgui_toggle_watch_folder(self):
         folder = (self.watch_folder.get() if hasattr(self, "watch_folder") else "").strip()
         if not folder or not os.path.isdir(folder):
             try:
-                messagebox.showerror("Watch folder", "Please choose a valid folder to watch.")
+                messagebox.showerror(self._t("dlg.watch_folder", "Watch Folder"), self._t("msg.choose_valid_folder", "Please choose a valid folder to watch."))
             except Exception:
                 pass
             try:
