@@ -8,6 +8,10 @@ logs/
 output/
 tmp/
 .deps_installed
+.venv/
 
-# Vendored binary tools
+# Vendored/fetched binary tools (Windows .exe + Linux/macOS binaries + shims)
 tools/*.exe
+tools/ffmpeg
+tools/ffprobe
+tools/HandBrakeCLI

@@ -9154,16 +9154,22 @@ class CompressorGUI:
 
 
     def check_dependencies(self):
-        
-        tools = {
-            "HandBrakeCLI": HANDBRAKE_CLI,
-            "ffprobe":      FFPROBE,
-            "ffmpeg":       FFMPEG
-        }
-        missing = [name for name, exe in tools.items() if not shutil.which(exe)]
-        if not missing:
+        # ffmpeg/ffprobe required; HandBrakeCLI is a fallback -- install it in
+        # the background, never block startup or force a restart over it.
+        required = {"ffprobe": FFPROBE, "ffmpeg": FFMPEG}
+        required_missing = [name for name, exe in required.items() if not shutil.which(exe)]
+        optional_missing = ["HandBrakeCLI"] if not shutil.which(HANDBRAKE_CLI) else []
+
+        # Fallback tool: best-effort, silent, non-blocking. Log warning, no popup.
+        if optional_missing:
+            def _opt_worker():
+                for name in optional_missing:
+                    self.install_tool(name)
+            threading.Thread(target=_opt_worker, daemon=True).start()
+
+        if not required_missing:
             return
-        msg = "Missing tools detected:\n" + "\n".join(missing) + "\n\nInstall now?"
+        msg = "Missing tools detected:\n" + "\n".join(required_missing) + "\n\nInstall now?"
         if messagebox.askyesno("Dependencies Missing", msg):
             def _done():
                 messagebox.showinfo("Install Complete",
@@ -9174,7 +9180,7 @@ class CompressorGUI:
                 # window ("Not Responding") for the length of the download.
                 # install_tool()'s status_cb already goes through the
                 # thread-safe update_status(), so this is safe off-thread.
-                for name in missing:
+                for name in required_missing:
                     self.install_tool(name)
                 self._ui(_done)
             threading.Thread(target=_worker, daemon=True).start()
@@ -11711,27 +11717,37 @@ def cli_main():
         return 1
 
     global HANDBRAKE_CLI, FFPROBE, FFMPEG
-    _missing = [name for name, exe in (("HandBrakeCLI", HANDBRAKE_CLI),
-                                        ("ffmpeg", FFMPEG), ("ffprobe", FFPROBE))
-                if not shutil.which(exe)]
-    if _missing:
+    # ffmpeg/ffprobe required; HandBrakeCLI is a fallback -- install best-effort,
+    # never block (no static build off Windows).
+    _required_missing = [name for name, exe in (("ffmpeg", FFMPEG), ("ffprobe", FFPROBE))
+                         if not shutil.which(exe)]
+    _optional_missing = [name for name, exe in (("HandBrakeCLI", HANDBRAKE_CLI),)
+                         if not shutil.which(exe)]
+    if _required_missing or _optional_missing:
         from support.tool_installer import install_tool as _install_tool, ToolInstallError
-        print("Missing required tool(s): " + ", ".join(_missing) + " -- downloading...")
         tools_dir = Path(SCRIPT_DIR) / "tools"
-        for name in _missing:
+        if _required_missing:
+            print("Missing required tool(s): " + ", ".join(_required_missing) + " -- downloading...")
+            for name in _required_missing:
+                try:
+                    _install_tool(name=name, tools_dir=tools_dir,
+                                 status_cb=lambda msg, level: print(f"[{level}] {msg}"))
+                except ToolInstallError as e:
+                    print(f"Failed to install {name}: {e}")
+                    print("Install it manually and put it on PATH, drop the binary into the "
+                         "'tools' folder next to BitCrusherV9.py, or set BC_FFMPEG/BC_FFPROBE.")
+                    return 1
+        for name in _optional_missing:
             try:
                 _install_tool(name=name, tools_dir=tools_dir,
                              status_cb=lambda msg, level: print(f"[{level}] {msg}"))
             except ToolInstallError as e:
-                print(f"Failed to install {name}: {e}")
-                print("Install it manually and put it on PATH, drop the .exe into the "
-                     "'tools' folder next to BitCrusherV9.py, or set BC_FFMPEG/BC_FFPROBE.")
-                return 1
+                print(f"[WARNING] {name} not installed: {e}")
+                print(f"[WARNING] Continuing without {name}; ffmpeg handles the primary encode.")
         HANDBRAKE_CLI, FFPROBE, FFMPEG = load_paths()
         _set_ffmpeg_exec_path(FFMPEG)
         _set_ffprobe_exec_path(FFPROBE)
-        _still_missing = [name for name, exe in (("HandBrakeCLI", HANDBRAKE_CLI),
-                                                  ("ffmpeg", FFMPEG), ("ffprobe", FFPROBE))
+        _still_missing = [name for name, exe in (("ffmpeg", FFMPEG), ("ffprobe", FFPROBE))
                           if not shutil.which(exe)]
         if _still_missing:
             print("Still missing after install attempt: " + ", ".join(_still_missing))
