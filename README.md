@@ -36,6 +36,13 @@ past encodes to make better first-attempt decisions over time.
   learning ledger, recent job logs, and settings — safe to paste into a bug
   report (strips your home path and any saved webhook URL).
 
+## Help translate it
+
+Speak a language other than English? The UI can be translated, but most
+languages are still mostly English right now. It's one JSON file in `i18n/` —
+no coding needed, and partial translations are genuinely useful (anything you
+skip just stays English). See [TRANSLATING.md](TRANSLATING.md).
+
 ## Benchmark
 
 Real CLI runs, not cherry-picked — reproduce with

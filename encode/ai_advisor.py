@@ -92,7 +92,7 @@ def _export_scene_env(scene_plan: Dict[str, Any]) -> None:
 
 LOG = logging.getLogger("BitCrusher.AIAdvisor")
 
-_APP_DIR = Path(__file__).resolve().parent
+_APP_DIR = Path(__file__).resolve().parent.parent
 _MODEL_DIR = _APP_DIR / "user_settings" / "advisor"
 _MODEL_DIR.mkdir(parents=True, exist_ok=True)
 _MODEL_PATH = _MODEL_DIR / "quality_model.json"

@@ -73,7 +73,7 @@ def register_send_to() -> tuple[bool, str]:
         return False, "Send To integration is Windows-only."
     lnk = _sendto_shortcut_path()
     target, arguments = _sendto_launch_target()
-    workdir = os.path.dirname(os.path.abspath(__file__))
+    workdir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     icon = os.path.join(workdir, "icon.png")
     try:
         os.makedirs(os.path.dirname(lnk), exist_ok=True)
