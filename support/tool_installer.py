@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 import hashlib
 import os
 import platform
@@ -107,30 +107,6 @@ def _is_executable_available(token: str) -> bool:
     if os.path.isabs(val) or any(sep in val for sep in ("\\", "/")):
         return Path(val).is_file()
     return shutil.which(val) is not None
-
-
-def resolve_tool_path(primary: str, aliases: Iterable[str]) -> str:
-    val = str(primary or "").strip()
-    if _is_executable_available(val):
-        if os.path.isabs(val) or any(sep in val for sep in ("\\", "/")):
-            return str(Path(val))
-        found = shutil.which(val)
-        if found:
-            return found
-        return val
-    for alias in aliases:
-        found = shutil.which(str(alias))
-        if found:
-            return found
-    return val
-
-
-def find_missing_tools(tool_map: dict[str, str]) -> list[str]:
-    missing: list[str] = []
-    for name, token in (tool_map or {}).items():
-        if not _is_executable_available(str(token or "")):
-            missing.append(str(name))
-    return missing
 
 
 def _safe_target(dest_dir: Path, member: str) -> Path:

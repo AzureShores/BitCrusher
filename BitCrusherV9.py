@@ -1,5 +1,4 @@
 ﻿
-import io
 import sys
 import json
 import logging
@@ -14,19 +13,13 @@ import glob
 from encode.probe_predictor import predict_crf_and_bitrate
 import threading
 import time
-import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from fractions import Fraction
 from pathlib import Path
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from ui.ui_aesthetics import init_aesthetics, animated_retheme, open_theme_lab
-import yt_dlp
 import queue
 import webbrowser
 
-import numpy as np
-import psutil
-import requests
 from PIL import Image, ImageTk
 from plyer import notification
 try:
@@ -76,53 +69,13 @@ _STATS_LOCK = threading.Lock()
 
 import sys, os, traceback
 
-def resource_path(rel_path: str) -> str:
-    
-    base = getattr(sys, "_MEIPASS", os.path.abspath("."))
-    return os.path.join(base, rel_path)
-
-
 _BOOT_PHASE = True  # only show popup during true startup failures
 
-def _install_crash_handler():
-    import sys, threading, tkinter, warnings, faulthandler
-
-    warnings.simplefilter("default")
-    logging.captureWarnings(True)
-
-    def _excepthook(exc_type, exc, tb):
-        LOG.critical("Uncaught exception", exc_info=(exc_type, exc, tb))
-    sys.excepthook = _excepthook
-
-    def _thread_excepthook(args):
-        LOG.critical("Uncaught thread exception", exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
-    threading.excepthook = _thread_excepthook
-
-    def _tk_cb_exc(_root, exc, val, tb):
-        LOG.error("Tkinter callback exception", exc_info=(exc, val, tb))
-    tkinter.Tk.report_callback_exception = _tk_cb_exc  # type: ignore
-
-    def _unraisable_hook(unraisable):
-        try:
-            import traceback
-            msg = getattr(unraisable, "err_msg", "") or "Unraisable exception"
-            LOG.error(f"{msg}: {unraisable.exc_value}", exc_info=(type(unraisable.exc_value), unraisable.exc_value, unraisable.exc_traceback))
-        except Exception:
-            pass
-    sys.unraisablehook = _unraisable_hook
-
-    try:
-        fh_path = os.path.join(_LOG_DIR, "faulthandler.log")
-        fh_file = open(fh_path, "a", encoding="utf-8")
-        faulthandler.enable(file=fh_file, all_threads=True)
-    except Exception:
-        pass
 
 
 
 
-
-from ui.ui_settings import _ui_json_path, _save_theme_choice, _load_theme_choice
+from ui.ui_settings import _save_theme_choice
 
 import os, sys, json, subprocess
 
@@ -143,60 +96,49 @@ from encode.ml_heuristics import analyze_and_advise, extract_media_features
 from encode.size_controller import SizeController
 from encode.encoder_profiles import select_profile
 from encode.planner import PlanInputs, plan as plan_encode
-from support.text_utils import _EMOJI_RE, _mojibake_score, _normalize_text, format_bytes
-from support.webhook import DiscordWebhookClient, _format_webhook_summary, _post_webhook_hardened
-from encode.ffmpeg_exec import (si, NO_WIN, _render_cmd, _tail, _orig_check_output,
-                         _check_output_logged, _sp_check_output, _ffmpeg_has_filter,
-                         _orig_run, _run_logged, _sp_run,
+from support.text_utils import _mojibake_score, _normalize_text, format_bytes
+from support.webhook import DiscordWebhookClient, _post_webhook_hardened
+from encode.ffmpeg_exec import (si, NO_WIN, _sp_check_output, _ffmpeg_has_filter, _sp_run,
                          _ffmpeg_emergency_encode, _detect_reencoding_risk,
-                         _ffmpeg_run_with_progress, _ffmpeg_two_pass_encode,
+                         _ffmpeg_two_pass_encode,
                          _handbrake_encode, compress_with_handbrake,
                          set_ffmpeg_path as _set_ffmpeg_exec_path,
                          set_ffprobe_path as _set_ffprobe_exec_path,
                          set_handbrake_path as _set_handbrake_exec_path)
-from encode.quality_metrics import (vmaf_quality_label, set_vmaf_model_pref, resolve_vmaf_model,
+from encode.quality_metrics import (set_vmaf_model_pref, resolve_vmaf_model,
                              _vmaf_model_opt, _escape_vmaf_opt_path, _vmaf_low_metrics,
                              compute_vmaf, compute_xpsnr, xpsnr_quality_label,
                              vmaf_floor_score, set_vmaf_objective_pref, resolve_vmaf_objective)
-from encode.trim import (_parse_timespec, _parse_trim_range, _prev_keyframe_time,
+from encode.trim import (_parse_trim_range,
                   make_trim_intermediate, _fmt_ts, _rank_energy_windows,
-                  _audio_energy_tracks, suggest_trim_ranges)
-from encode.spotlight import (_SPOTLIGHT_BOOST, _X264_BASE_PARAMS, _X265_BASE_PARAMS,
+                  suggest_trim_ranges)
+from encode.spotlight import (_SPOTLIGHT_BOOST,
                        _spotlight_zone_params)
-from encode.feature_helpers import (set_clipboard_files, _count_audio_streams,
+from encode.feature_helpers import (set_clipboard_files,
                              _audio_track_plan, _audio_map_ffmpeg_args,
                              _read_sibling_lrc, _embed_lyrics_into)
 from support.sendto_ipc import (_BC_IPC_HOST, _BC_IPC_PORT, _BC_STARTUP_FILES,
-                        _bc_ipc_send, _sendto_shortcut_path, _sendto_launch_target,
+                        _bc_ipc_send, _sendto_launch_target,
                         register_send_to, unregister_send_to)
 from encode.media_math import (bytes_from_value_unit, apply_target_size_margin, human_bytes,
-                        _sanitize_int, next_lower_std_width, determine_audio_bitrate,
+                        next_lower_std_width,
                         determine_tune_profile, determine_frame_rate, determine_resolution,
-                        get_media_type, parse_dnd_files)
-from encode.output_paths import (_build_vf_chain_for_noise, _build_output_path,
+                        get_media_type)
+from encode.output_paths import (_build_output_path,
                           _bc_build_output_path, _dedup_safe_output_path)
 from encode.remux import _privacy_args, _remux_smart
-from encode.encoder_caps import (_ENCODER_CANON, _merge_params_string, _canonical_encoder,
-                          _software_quality_encoder, _ffmpeg_encoder_set,
-                          _mark_hw_decode_broken, _available_hwaccels,
-                          _hw_decode_args, _strip_hw_args, best_av1_encoder)
+from encode.encoder_caps import (_merge_params_string, _canonical_encoder,
+                          best_av1_encoder)
 from encode.audio_encode import (_probe_audio_meta, _should_copy_audio, _adaptive_two_pass,
                           _supports_true_two_pass, _build_opus_cover_meta,
                           _encode_audio_once, _best_audio_codec, _prepare_cover_file,
                           binary_search_audio_bitrate)
-from encode.media_probe import (_MEDIA_PROBE_CACHE, _MEDIA_PROBE_LOCK, _probe_media_cached,
-                         _probe_video_stream, get_video_metadata, extract_video_duration,
-                         calculate_bitrate, _is_hdr_source, _hdr_pixel_fmt,
-                         _probe_is_hdr_path, _HDR_TONEMAP_VF, _hdr_tonemap_vf,
-                         _SVT_PRESET_MAP, _svt_preset_for_duration, _AOM_CPU_USED_MAP,
-                         _X265_VALID_TUNES, _codec_video_args, _strip_runtime_keys)
-from encode.codec_race import (_FILM_GRAIN_RATIO_THR, _probe_film_grain, _probe_codec_args,
-                        _probe_vmaf_fullrate, _probe_ref_clip, choose_best_codec_by_vmaf)
-from encode.preproc import (_PREPROC_BAND_THR, _PREPROC_BLOCK_THR, _PREPROC_GRAIN_THR,
-                     _PREPROC_ENTROPY_THR, _PREPROC_BPP_STARVED, _PREPROC_BPP_CRUSHED,
-                     _PREPROC_KEEP_MARGIN, _PREPROC_FILTERS, _preproc_candidates,
-                     _preproc_chain, _preproc_probe_variants, decide_preprocessing)
-from encode.pdf_encode import _which, compress_pdf, _rasterize_pdf_to_target
+from encode.media_probe import (_probe_media_cached,
+                         _probe_video_stream, get_video_metadata, extract_video_duration)
+from encode.codec_race import (_probe_film_grain, choose_best_codec_by_vmaf)
+from encode.preproc import (_preproc_candidates,
+                     _preproc_chain, decide_preprocessing)
+from encode.pdf_encode import compress_pdf
 
 def _ensure_dir(p):
     try: os.makedirs(p, exist_ok=True)
@@ -385,24 +327,6 @@ def _patch_tk_report_callback_exception():
 
 _patch_tk_report_callback_exception()
 
-def bridge_gui_logger(widget):
-    
-    class _TkHandler(logging.Handler):
-        def emit(self, record):
-            try:
-                msg = _normalize_text(self.format(record))
-                widget.configure(state="normal")
-                widget.insert("end", msg + "\n")
-                widget.see("end")
-                widget.configure(state="disabled")
-            except Exception:
-                pass
-    h = _TkHandler()
-    h.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", "%H:%M:%S"))
-    h.setLevel(logging.INFO)
-    LOG.addHandler(h)
-    return h
-
 def log_info(msg): LOG.info(msg)
 def log_warn(msg): LOG.warning(msg)
 def log_err(msg): LOG.error(msg)
@@ -462,32 +386,11 @@ def notify_info(title, msg, duration=3):
         except Exception:
             pass
 
-def notify_warn(title, msg, duration=4):
-    notify_info(title, msg, duration)
-
-def notify_error(title, msg, duration=5):
-    try:
-        notify_info(title, msg, duration)
-    except Exception:
-        pass
-    try:
-        LOG.error(str(msg))
-    except Exception:
-        pass
 
 
 
-
-def _bin_ok(bin_path, args=("-version",)):
-    try:
-        p = _sp_run([bin_path, *args], stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, startupinfo=si, creationflags=NO_WIN)
-        return p.returncode == 0
-    except Exception:
-        return False
 
 import math
-import threading as _th
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -600,21 +503,6 @@ import subprocess, platform
 
 
 import os
-
-def ensure_runtime_dirs():
-    base_path = os.path.expanduser("~")  # Or wherever you want them
-    settings_path = os.path.join(base_path, "BitCrusherSettings", "user_settings")
-    heuristic_path = os.path.join(base_path, "BitCrusherSettings", "heuristics")
-
-    os.makedirs(settings_path, exist_ok=True)
-    os.makedirs(heuristic_path, exist_ok=True)
-
-    return settings_path, heuristic_path
-
-
-
-    def start(self): pass
-    def stop(self): pass
 
 try:
     from tkinterdnd2 import TkinterDnD, DND_FILES
@@ -859,8 +747,6 @@ def _normalize_drop_path(p: str) -> str:
         return str(p)
 
 
-from functools import lru_cache
-
 def install_drop_highlight(frame):
     normal_bg = frame.cget("background") if str(frame.cget("style")) == "" else None
     def _enter(_e=None):
@@ -881,28 +767,7 @@ def install_drop_highlight(frame):
 
 
 
-@lru_cache(maxsize=64)
-def _cached_thumb(path, maxsize=(512, 288)):
-    im = Image.open(path)
-    im.thumbnail(maxsize, Image.LANCZOS)
-    return ImageTk.PhotoImage(im)
-
-def update_preview(self, *_):
-    try:
-        sel = self.queue_box.curselection()
-    except Exception:
-        sel = ()
-    if not sel:
-        self.update_status("No file selected.", level="INFO")
-        return
-    try:
-        fpath = self.queue_box.get(sel[0])
-        self.update_status(f"Selected: {os.path.basename(fpath)}", level="INFO")
-    except Exception:
-        pass
-
-
-import colorsys, json, tkinter as tk, tkinter.filedialog as fd
+import json, tkinter as tk, tkinter.filedialog as fd
 from tkinter import ttk
 from tkinter import simpledialog as sd
 
@@ -976,10 +841,6 @@ def _themes_dir():
     d = os.path.join(USER_SETTINGS_DIR, "themes")
     os.makedirs(d, exist_ok=True)
     return d
-
-def _validate_theme_dict(d: dict) -> bool:
-    req = {"APP_BG","CARD_BG","FG","FG_SUB","ACCENT","ACCENT_2","ERROR","WARN","TITLE"}
-    return isinstance(d, dict) and req.issubset(d.keys()) and all(isinstance(d[k], str) for k in req)
 
 def load_user_themes_at_startup():
     
@@ -1309,26 +1170,6 @@ def load_custom_theme(self):
         log_exc("Failed to load theme")
 
 
-def pulsate(widget, base=1.0, delta=0.05, period=16, _dir=1):
-    try:
-        scale = base + delta*_dir
-        widget.tk.call(widget, 'scale', 0, 0, scale, scale)
-    except Exception:
-        pass  # not every widget supports tk scale; safe to ignore
-    widget.after(period, lambda: pulsate(widget, base, delta, period, -_dir))
-
-
-def shimmer_progressbar(pb):
-
-    def _loop():
-        try:
-            pb.step(1)
-        except Exception:
-            return
-        pb.after(15, _loop)
-    _loop()
-
-
 def fade_window(win, start=0.0, end=1.0, dur_ms=220):
     steps = max(1, int(dur_ms/16))
     delta = (end-start)/steps
@@ -1506,92 +1347,8 @@ def log_message(log_widget, msg, level="INFO"):
 
 
 
-def _ff_args_unique(args: list[str] | None) -> list[str]:
-    if not args:
-        return []
-    out: list[str] = []
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if i + 1 < len(args) and a.startswith("-") and not args[i + 1].startswith("-"):
-
-            pair = (a, args[i + 1])
-
-            if any(out[j] == pair[0] and out[j + 1] == pair[1] for j in range(0, len(out) - 1, 2)):
-                i += 2
-                continue
-            out.extend(pair)
-            i += 2
-        else:
-
-            if a not in out:
-                out.append(a)
-            i += 1
-    return out
-
-
-
-def compress_audio_files(self):
-    files = [f for f in self.file_queue if f.lower().endswith(self.supported_audio_formats)]
-    if not files:
-        self.log_info("No audio files to compress.")
-        return
-
-    self.log_info(f"Starting audio compression: {len(files)} files.")
-    with ThreadPoolExecutor(max_workers=int(getattr(self, "settings", {}).get("parallel_workers", 1))) as pool:
-        futures = [pool.submit(self.compress_audio, f) for f in files]
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                self.log_exception(f"Audio compression crash: {e}")
-
-
-
-def compress_image_files(self):
-    files = [f for f in self.file_queue if f.lower().endswith(self.supported_image_formats)]
-    if not files:
-        self.log_info("No image files to compress.")
-        return
-
-    self.log_info(f"Starting image compression: {len(files)} files.")
-    with ThreadPoolExecutor(max_workers=int(getattr(self, "settings", {}).get("parallel_workers", 1))) as pool:
-        futures = [pool.submit(self.compress_image, f) for f in files]
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                self.log_exception(f"Image compression crash: {e}")
-
-
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
-
-def compress_video_files(self):
-    files = [f for f in self.file_queue if f.lower().endswith(self.supported_video_formats)]
-    if not files:
-        self.log_info("No video files to compress.")
-        return
-
-    self.log_info(f"Starting video compression: {len(files)} files.")
-    with ThreadPoolExecutor(max_workers=int(getattr(self, "settings", {}).get("parallel_workers", 1))) as pool:
-
-        out_dir = (self.save_path.get() if hasattr(self, "save_path") else os.path.dirname(files[0]) or os.getcwd())
-        tgt     = (self._get_target_bytes() if hasattr(self, "_get_target_bytes") else 10 * 1024 * 1024)
-        adv     = (self.gather_advanced_options() if hasattr(self, "gather_advanced_options") else {})
-        wh      = (self.webhook_url.get() if hasattr(self, "webhook_url") and getattr(self, "use_webhook", None) and self.use_webhook.get() else "")
-
-        futures = []
-        for f in files:
-            _adv = dict(adv)
-            _adv.update(getattr(self, "per_file_opts", {}).get(f, {}))
-            futures.append(pool.submit(self.compress_file_task, f, out_dir, tgt, wh, _adv))
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                self.log_exception(f"Video compression crash: {e}")
-
 
 import math
 
@@ -4396,14 +4153,6 @@ def compress_image(input_path: str, save_path: str, status_callback,
 
     return stats
 
-def settings_window():
-    win = Toplevel()
-    win.title("Settings")
-    win.geometry("300x200")
-    Label(win, text="Settings go here").pack(pady=20)
-    Button(win, text="Close", command=win.destroy).pack(pady=10)
-
-
 # Trim-aware compression: a trim range produces a stream-copied intermediate
 # (fast, zero quality loss) that the whole pipeline then consumes unchanged;
 # the source file is never modified.
@@ -5700,174 +5449,6 @@ class CompressorGUI:
 
 
 
-    def _pause_title(self, *_):
-        job = getattr(self, "_title_job", None)
-        if job:
-            self.root.after_cancel(job)
-            self._title_job = None
-
-
-    def download_from_youtube(self):
-        
-        from tkinter import simpledialog, messagebox
-
-        url = simpledialog.askstring("YouTube Download", "Enter YouTube URL:")
-        if not url:
-            return
-
-        choice = simpledialog.askstring(
-            "Format",
-            "Choose download format:\n• audio\n• video\n• audio+video"
-        )
-        if not choice:
-            return
-        choice = choice.strip().lower()
-        if choice not in ("audio", "video", "audio+video"):
-            messagebox.showerror(self._t("dlg.invalid_choice", "Invalid Choice"), self._t("msg.enter_av", "Enter exactly: audio, video, or audio+video."))
-            return
-
-        temp_dir = tempfile.mkdtemp(prefix="yt_")
-        if choice == "audio":
-            ydl_opts = {
-                "format": "bestaudio/best",
-                "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s")
-            }
-        elif choice == "video":
-            ydl_opts = {
-                "format": "bestvideo/best",
-                "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s")
-            }
-        else:  # audio+video
-            ydl_opts = {
-                "format": "best",
-                "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s")
-            }
-
-        self.update_status(f"Downloading from YouTube: {url} ({choice})")
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                downloaded_path = ydl.prepare_filename(info)
-        except Exception as e:
-            self.log_error(f"YouTube download failed: {e}")
-            messagebox.showerror(self._t("dlg.download_error", "Download Error"), str(e))
-            return
-
-        save_dir = self.save_path.get()
-        try:
-            tgt_size = int(self.target_size.get())
-        except ValueError:
-            from __main__ import MAX_SIZE_MB_DEFAULT
-            tgt_size = MAX_SIZE_MB_DEFAULT
-
-        adv_opts = self.gather_advanced_options()
-        threading.Thread(
-            target=lambda: self._compress_downloaded(downloaded_path, save_dir, tgt_size, adv_opts),
-            daemon=True
-        ).start()
-
-    def _compress_downloaded(self, input_path, save_dir, target_size_mb, adv_opts):
-        
-
-        self.update_status(f"Compressing downloaded file: {input_path}")
-        target_size_bytes = target_size_mb * 1024 * 1024
-        actual_size = os.path.getsize(input_path)
-        if actual_size <= target_size_bytes:
-            self.update_status(f"Skipping compression - file is {format_bytes(actual_size)}, under target.")
-            shutil.copy(input_path, os.path.join(save_dir, os.path.basename(input_path)))
-            return
-        stats = auto_compress(
-            input_path,
-            save_dir,
-            self.update_status,    # callback writes to your on-screen log :contentReference[oaicite:2]{index=2}
-            target_size_bytes,
-            "",                    # no webhook for YT downloads
-            {**(adv_opts or {}), "_target_is_bytes": True},
-            lambda: False          # never cancel
-        )
-
-        if not stats:
-            return
-
-        orig = stats.get("original_size", 0)
-        comp = stats.get("compressed_size", 0)
-        ratio = comp / orig if orig else 0
-        took  = stats.get("time_taken", stats.get("duration", 0))
-
-        def insert_row():
-            self.stats_table.insert("", "end", values=(
-                os.path.basename(input_path),
-                format_bytes(orig),
-                format_bytes(comp),
-                f"{ratio:.2f}",
-                f"{took:.1f}"
-            ))
-        self._ui(insert_row)
-
-    def start_youtube_download(self):
-        
-        url = self.yt_url_var.get().strip()
-        fmt = self.yt_format_var.get().strip().lower()
-        if not url or fmt not in ("audio", "video", "audio+video"):
-            self.log_error("Invalid YouTube URL or format")
-            return
-
-        threading.Thread(
-            target=self.download_from_youtube,
-            args=(url, fmt),
-            daemon=True
-        ).start()
-
-    def download_from_youtube(self, url, choice):
-        
-        temp_dir = tempfile.mkdtemp(prefix="yt_")
-        ydl_opts = {"outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s")}
-        if choice == "audio":
-            ydl_opts["format"] = "bestaudio/best"
-        elif choice == "video":
-            ydl_opts["format"] = "bestvideo/best"
-        else:  # audio+video
-            ydl_opts["format"] = "best"
-
-        self.update_status(f"Downloading from YouTube: {url} ({choice})")
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                downloaded_path = ydl.prepare_filename(info)
-        except Exception as e:
-            self.log_error(f"YouTube download failed: {e}")
-            return
-
-        save_dir = self.save_path.get()
-        try:
-            tgt_size = int(self.target_size.get())
-        except ValueError:
-            from __main__ import MAX_SIZE_MB_DEFAULT
-            tgt_size = MAX_SIZE_MB_DEFAULT
-
-        adv_opts = self.gather_advanced_options()
-        self._compress_downloaded(downloaded_path, save_dir, tgt_size, adv_opts)
-
-
-
-    def drop_file_handler(self, raw_data):
-        
-
-        self.logger.debug(f"Raw DnD drop data: {raw_data}")
-
-        paths = parse_dnd_files(raw_data if isinstance(raw_data, str) else "")
-
-        for p in paths:
-            if os.path.isfile(p):
-                self.logger.info(f"Adding dropped file to queue: {p}")
-
-                self.queue_files([p])
-            else:
-                self.logger.warning(f"Dropped item is not a file: {p}")
-
-
-
-
 
 
     def start_compression(self):
@@ -5957,16 +5538,6 @@ class CompressorGUI:
         self.root.after(0, _prep_after_start)
 
         logging.info(f"[GUI] Launching compression thread. files={len(self._thread_file_list)} save_dir={self._thread_save_path}")
-
-
-    def drop_file_handler(self, data):
-        
-
-        paths = parse_dnd_files(data if isinstance(data, str) else "")
-        for p in paths:
-            if os.path.isfile(p):
-
-                self.queue_files([p])
 
 
 
@@ -6360,27 +5931,6 @@ class CompressorGUI:
                                       icon_path=icon_path, duration=duration),
                          daemon=True).start()
 
-    def select_files(self):
-        from tkinter import filedialog
-        files = filedialog.askopenfilenames(
-            title="Select media files",
-            filetypes=[
-                ("All Media", "*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm *.m4v *.3gp *.3g2 *.mpeg *.mpg "
-                              "*.mp3 *.wav *.aac *.ogg *.flac *.wma *.m4a *.opus *.alac *.aiff *.aif "
-                              "*.jpg *.jpeg *.jfif *.png *.webp *.gif *.bmp *.tiff *.tif *.heic *.heif *.jxl *.raw *.avif *.pdf"),
-                ("Video", "*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm *.m4v *.3gp *.3g2 *.mpeg *.mpg"),
-                ("Audio", "*.mp3 *.wav *.aac *.ogg *.flac *.wma *.m4a *.opus *.alac *.aiff *.aif"),
-                ("Images", "*.jpg *.jpeg *.jfif *.png *.webp *.gif *.bmp *.tiff *.tif *.heic *.heif *.jxl *.raw *.avif"),
-                ("Documents", "*.pdf"),
-                ("All files", "*.*"),
-            ]
-
-        )
-        if files:
-
-            self.queue_files(files)
-
-
     def setup_drag_and_drop(self):
 
         widgets = [w for w in (getattr(self, "drop_frame", None), getattr(self, "queue_box", None)) if w is not None] # add more if needed
@@ -6436,14 +5986,6 @@ class CompressorGUI:
         except Exception:
             pass
         return 0
-
-    def on_quit(self, icon=None, item=None):
-        
-        try:
-            self.save_settings()
-        except Exception:
-            pass
-        self._ui(self._shutdown_and_exit)
 
     def on_close(self):
 
@@ -6586,21 +6128,9 @@ class CompressorGUI:
         if hasattr(self, "logger"):
             self.logger.info(msg)
 
-    def log_warn(self, msg):
-        if hasattr(self, "logger"):
-            self.logger.warning(msg)
-
     def log_error(self, msg):
         if hasattr(self, "logger"):
             self.logger.error(msg)
-
-    def log_debug(self, msg):
-        if hasattr(self, "logger"):
-            self.logger.debug(msg)
-
-    def log_critical(self, msg):
-        if hasattr(self, "logger"):
-            self.logger.critical(msg)
 
     def log_exception(self, msg):
         if hasattr(self, "logger"):
@@ -7479,19 +7009,6 @@ class CompressorGUI:
 
 
 
-    def make_responsive(self):
-        
-
-        for r in range(6):
-            self.root.grid_rowconfigure(r, weight=0)
-
-        self.root.grid_rowconfigure(1, weight=3)  # drop+queue+preview
-        self.root.grid_rowconfigure(4, weight=2)  # stats table
-        self.root.grid_rowconfigure(5, weight=1)  # log pane
-
-        self.root.grid_columnconfigure(0, weight=1)
-        self.root.grid_columnconfigure(1, weight=1)
-
 
     def setup_menu(self):
         import tkinter as tk
@@ -7565,227 +7082,6 @@ class CompressorGUI:
             LOG.info("Menubar entries: %s", items)
         except Exception:
             pass
-
-    def open_language_manager(self):
-        import tkinter as tk
-        from tkinter import ttk, messagebox
-
-        _load_lang_packs()
-
-        win = tk.Toplevel(self.root)
-        win.title(self._t("dlg.language_manager", "Language Manager"))
-        win.geometry("720x420")
-        win.transient(self.root)
-
-        frame = tk.Frame(win)
-        frame.pack(fill="both", expand=True, padx=12, pady=12)
-
-        cols = ("code", "name", "coverage", "source")
-        tree = ttk.Treeview(frame, columns=cols, show="headings", height=14)
-        tree.heading("code", text="Code")
-        tree.heading("name", text="Display Name")
-        tree.heading("coverage", text="Coverage")
-        tree.heading("source", text="Source")
-        tree.column("code", width=90, anchor="w")
-        tree.column("name", width=300, anchor="w")
-        tree.column("coverage", width=120, anchor="w")
-        tree.column("source", width=120, anchor="w")
-        tree.pack(fill="both", expand=True)
-
-        hint = tk.Label(
-            frame,
-            text="Coverage is relative to English base keys. Edit user_settings/i18n/<code>.json and click Reload.",
-            anchor="w",
-            justify="left",
-        )
-        hint.pack(fill="x", pady=(8, 4))
-
-        btns = tk.Frame(frame)
-        btns.pack(fill="x", pady=(4, 0))
-
-        def _refresh_rows():
-            _load_lang_packs()
-            tree.delete(*tree.get_children())
-            for code in _language_codes_ordered():
-                tree.insert(
-                    "",
-                    "end",
-                    values=(
-                        code,
-                        LANG_DISPLAY.get(code, LANG_CODE_NAME.get(code, code)),
-                        f"{int(LANG_COVERAGE.get(code, 0))}%",
-                        LANG_SOURCE.get(code, "fallback"),
-                    ),
-                )
-
-        def _use_selected():
-            sel = tree.selection()
-            if not sel:
-                messagebox.showinfo(self._t("dlg.language_manager", "Language Manager"), self._t("msg.select_lang_first", "Select a language first."))
-                return
-            vals = tree.item(sel[0], "values")
-            if not vals:
-                return
-            code = str(vals[0])
-            self.lang_var.set(code)
-            self._on_language_change()
-            try:
-                win.destroy()
-            except Exception:
-                pass
-
-        ttk.Button(btns, text="Reload", command=_refresh_rows).pack(side="left")
-        ttk.Button(btns, text="Export Templates", command=lambda: (_export_lang_templates(), _refresh_rows())).pack(side="left", padx=6)
-        ttk.Button(btns, text="Open i18n Folder", command=lambda: _open_folder(_i18n_dir())).pack(side="left", padx=6)
-        ttk.Button(btns, text="Use Selected", command=_use_selected).pack(side="right")
-
-        _refresh_rows()
-    def show_dashboard(self):
-        
-        import tkinter as tk
-        from tkinter import ttk
-
-        if getattr(self, "_dash_win", None) and tk.Toplevel.winfo_exists(self._dash_win):
-            try:
-                self._dash_win.lift()
-                self._dash_win.focus_force()
-            except Exception:
-                pass
-            return
-
-        win = tk.Toplevel(self.root)
-        self._dash_win = win
-        win.title(self._t("dlg.dashboard_full", "BitCrusher - Dashboard"))
-        win.geometry("520x360")
-        win.resizable(False, False)
-
-        container = ttk.Frame(win, padding=12)
-        container.pack(fill="both", expand=True)
-
-        ttk.Label(container, text="Runtime Metrics", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-
-        rows = [
-            ("Queue (pending)", "queue_pending"),
-            ("Processing", "processing"),
-            ("Processed (this run)", "processed"),
-            ("Average Size Ratio", "avg_ratio"),
-            ("Average Time / File", "avg_time"),
-            ("Watcher", "watcher"),
-            ("Watched Folders", "watch_dirs"),
-            ("Webhook", "webhook"),
-        ]
-        self._dash_vars = {}
-        r = 1
-        for label, key in rows:
-            ttk.Label(container, text=label + ":").grid(row=r, column=0, sticky="w", padx=(0, 10), pady=4)
-            var = tk.StringVar(value="—")
-            self._dash_vars[key] = var
-            ttk.Label(container, textvariable=var).grid(row=r, column=1, sticky="w", pady=4)
-            r += 1
-
-        ttk.Separator(container).grid(row=r, column=0, columnspan=2, sticky="ew", pady=(10, 8))
-        r += 1
-        ttk.Button(container, text="Close", command=win.destroy).grid(row=r, column=1, sticky="e")
-
-        def _queue_len():
-            for attr in ("queue_files", "file_queue", "files_to_process", "pending_files", "queued_files"):
-                q = getattr(self, attr, None)
-                if isinstance(q, (list, tuple, set)):
-                    return len(q)
-                if hasattr(q, "__len__"):
-                    try:
-                        return len(q)
-                    except Exception:
-                        pass
-            return 0
-
-        def _is_processing():
-            for attr in ("_is_processing", "is_processing", "processing"):
-                v = getattr(self, attr, None)
-                if isinstance(v, bool):
-                    return v
-            for attr in ("_worker_running", "worker_running"):
-                v = getattr(self, attr, None)
-                if isinstance(v, bool):
-                    return v
-            return False
-
-        def _processed_count():
-            lst = getattr(self, "stats_list", None)
-            return len(lst) if isinstance(lst, list) else 0
-
-        def _avg_ratio_and_time():
-            lst = getattr(self, "stats_list", None)
-            if not isinstance(lst, list) or not lst:
-                return ("—", "—")
-            ratios, times = [], []
-            for rec in lst:
-                try:
-                    if "ratio" in rec:
-                        ratios.append(float(rec["ratio"]))
-                    elif "original_size" in rec and "compressed_size" in rec:
-                        o = float(rec["original_size"]) or 1.0
-                        c = float(rec["compressed_size"])
-                        ratios.append(c / o)
-                    if "time_taken" in rec:
-                        times.append(float(rec["time_taken"]))
-                except Exception:
-                    pass
-            avg_r = (sum(ratios) / len(ratios)) if ratios else None
-            avg_t = (sum(times) / len(times)) if times else None
-            r_txt = f"{avg_r*100:.1f}%" if isinstance(avg_r, float) else "—"
-            t_txt = f"{avg_t:.2f}s" if isinstance(avg_t, float) else "—"
-            return (r_txt, t_txt)
-
-        def _watcher_status():
-            enabled = bool(self.settings.get("watch_enabled", False))
-            active = False
-            try:
-                w = getattr(self, "watcher", None)
-                active = bool(getattr(w, "_running", False))
-            except Exception:
-                pass
-            return "On (active)" if enabled and active else ("On (idle)" if enabled else "Off")
-
-        def _watch_dirs():
-            try:
-                dirs = list(self.settings.get("watch_folders", []) or [])
-            except Exception:
-                dirs = []
-            return str(len(dirs)) if dirs else "0"
-
-        def _webhook_status():
-            url = ""
-            try:
-                url = self.settings.get("webhook_url", "") or getattr(self, "webhook_url_var", None).get()
-            except Exception:
-                pass
-            if url:
-                masked = url[:40] + "..." if len(url) > 41 else url
-                return f"Configured ({masked})"
-            return "Not set"
-
-        def _refresh():
-            try:
-                self._dash_vars["queue_pending"].set(str(_queue_len()))
-                self._dash_vars["processing"].set("Yes" if _is_processing() else "No")
-                self._dash_vars["processed"].set(str(_processed_count()))
-                r_txt, t_txt = _avg_ratio_and_time()
-                self._dash_vars["avg_ratio"].set(r_txt)
-                self._dash_vars["avg_time"].set(t_txt)
-                self._dash_vars["watcher"].set(_watcher_status())
-                self._dash_vars["watch_dirs"].set(_watch_dirs())
-                self._dash_vars["webhook"].set(_webhook_status())
-            except Exception:
-                pass
-            try:
-                win.after(1000, _refresh)
-            except Exception:
-                pass
-
-        _refresh()
-
-
 
     def open_language_manager(self):
         import tkinter as tk
@@ -8993,75 +8289,6 @@ class CompressorGUI:
 
 
 
-    def compress_file(self, input_path, output_path):
-        try:
-            handbrake_path = self.get_handbrake_path()
-            command = [
-                handbrake_path,
-                '-i', input_path,
-                '-o', output_path,
-                '-e', 'x264',
-                '-q', '22',
-                '--optimize',
-                '--preset', 'Very Fast 1080p30'
-            ]
-            result = _sp_run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if result.returncode != 0:
-                raise Exception(result.stderr)
-        except Exception as e:
-            raise RuntimeError(f"Compression failed for {input_path}: {e}")
-
-    def process_queue(self):
-        if not self.files:
-            messagebox.showwarning(self._t("dlg.warning", "Warning"), self._t("msg.no_files_queue", "No files in queue."))
-            return
-
-        def compress_files():
-            for file in self.files:
-                if self.stop_event.is_set():
-                    self.log("Compression canceled by user.")
-                    break
-                try:
-                    ext = os.path.splitext(file)[1]
-                    output_file = self.get_output_filename(file, ext)
-                    self.log(f"Compressing: {file}")
-                    notify_info(
-                        title="BitCrusher",
-                        msg=f"Started compressing:\n{os.path.basename(file)}",
-                        duration=3
-                    )
-
-                    self.compress_file(file, output_file)
-                    self.log(f"Done: {output_file}")
-
-                    try:
-                        if os.path.isfile(output_file):
-                            self._last_output_path = output_file
-                    except Exception:
-                        pass
-                    notify_info(
-                        title="BitCrusher",
-                        msg=f"Finished compressing:\n{os.path.basename(file)}",
-                        duration=3
-                    )
-
-                except Exception as e:
-                    self.log(f"Error: {e}")
-                    notify_error(
-                        title="BitCrusher - Error",
-                        msg="Compression failed! Check logs.",
-                        duration=5
-                    )
-            self.stop_event.clear()
-
-        self.stop_event.clear()
-        self.processing_thread = threading.Thread(target=compress_files)
-        self.processing_thread.start()
-
-    def get_output_filename(self, input_file, ext=None):
-        base = os.path.splitext(input_file)[0]
-        ext = ext if ext else os.path.splitext(input_file)[1]
-        return f"{base}_compressed{ext}"
 
 
     def setup_style(self):
@@ -9210,27 +8437,6 @@ class CompressorGUI:
 
 
 
-    def setup_shortcuts(self):
-        self.root.bind("<Control-o>", lambda e: self.add_files())
-        self.root.bind("<Control-s>", lambda e: self.start_compression())
-        self.root.bind("<Control-p>", lambda e: self.toggle_pause())
-        self.root.bind("<Escape>",    lambda e: self.cancel_compression())
-
-    def toggle_pause(self):
-        
-        self.paused = not getattr(self, "paused", False)
-        self.update_status("Paused" if self.paused else "Resumed")
-
-    def select_watch_folder(self):
-        folder = filedialog.askdirectory()
-        if folder:
-            self.watch_folder.set(folder)
-            self.update_status(f"Watch folder set to: {folder}")
-            if self.enable_watch.get():
-                self.stop_folder_watcher()
-                self.start_folder_watcher()
-
-
     def set_preset(self, value):
 
         v = str(value or "")
@@ -9256,49 +8462,6 @@ class CompressorGUI:
 
 
 
-
-    def toggle_watch(self):
-        if self.enable_watch.get():
-            if not self.watch_folder.get():
-                messagebox.showwarning(self._t("dlg.watch_folder", "Watch Folder"), self._t("msg.select_folder_first", "Please select a folder first."))
-                self.enable_watch.set(False)
-            else:
-                self.start_folder_watcher()
-        else:
-            self.stop_folder_watcher()
-
-
-    def handle_drop(self, event):
-        raw_data = event.data
-        self.update_status(f"Drag-and-Drop raw data: {raw_data}", level="DEBUG")
-        notification.notify(
-            title="BitCrusher",
-            message="File dropped into BitCrusher!",
-            timeout=2
-        )
-
-        for f in parse_dnd_files(raw_data):
-            if os.path.exists(f) and f not in self.file_list:
-                _norm = _normalize_drop_path(filepath)
-                try:
-                    if not hasattr(self, "file_list"):
-                        self.file_list = []
-                    if _norm not in self.file_list:
-                        self.file_list.append(_norm)
-                except Exception:
-                    pass
-                self.queue_box.insert("end", _norm)
-
-
-    def notify(title, message):
-        try:
-            notification.notify(
-                title=title,
-                message=message,
-                timeout=5  # seconds
-            )
-        except Exception as e:
-            print(f"[NOTIFY ERROR] {e}")
 
     def drop_file_handler(self, event):
         
@@ -10124,20 +9287,6 @@ class CompressorGUI:
             pass
         self._apply_dino()
 
-    def apply_log_filter(self, filter_val):
-        self.log_widget.config(state="normal")
-        self.log_widget.delete(1.0, "end")
-        for lev, msg in self.all_logs:
-            if filter_val == "ALL" or lev == filter_val:
-                timestamp = time.strftime("%H:%M:%S")
-                _lv = str(lev or "INFO").upper()
-                line = f"{timestamp}   {_lv:<7} {_normalize_text(msg)}\n"
-                try:
-                    self.log_widget.insert("end", line, (_lv,))
-                except Exception:
-                    self.log_widget.insert("end", line)
-        self.log_widget.config(state="disabled")
-
     def export_sanitized_logs(self):
         """Advanced Options button: export a redacted copy of the learning
         ledger, recent job logs, and settings.json (webhook URL stripped) that
@@ -10453,10 +9602,6 @@ class CompressorGUI:
         adv.wait_window()
 
 
-
-    def cancel_compression(self):
-        self.cancel_flag = True
-        self.update_status("Cancel requested.")
 
     def compression_cancelled(self):
         return self.cancel_flag
@@ -10774,7 +9919,6 @@ except Exception:
         pass
     FileCreatedEvent = FileMovedEvent = ()   # isinstance(x, ()) is always False
     Observer = None
-import queue as _queue
 from fnmatch import fnmatch
 
 
@@ -10982,407 +10126,6 @@ class FolderWatcher:
                 except Exception:
                     LOG.exception("FolderWatcher callback failed for %s", p)
 
-
-class DropZone(TkinterDnD.Tk):
-    def __init__(self, file_callback):
-        super().__init__()
-        self.file_callback = file_callback
-        self.withdraw()
-        self.overrideredirect(True)
-        self.geometry("1x1+10+10")
-        self.drop_target_register(DND_FILES)
-        self.dnd_bind('<<Drop>>', self.handle_drop)
-        self.after(1000, self.hide_near_tray)
-
-    def handle_drop(self, event):
-        files = self.tk.splitlist(event.data)
-        for f in files:
-            if os.path.isfile(f):
-                self.file_callback(f)
-
-    def hide_near_tray(self):
-        if platform.system() == "Windows":
-            screen_width = self.winfo_screenwidth()
-            screen_height = self.winfo_screenheight()
-            self.geometry(f"100x100+{screen_width - 120}+{screen_height - 140}")
-        self.deiconify()
-
-
-
-
-    def export_presets(self):
-        
-        fp = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON","*.json")])
-        if not fp:
-            return
-        data = {"presets": PRESETS, "profiles": getattr(self, "saved_profiles", {})}
-        try:
-            with open(fp, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            self.update_status(f"Presets exported to {fp}")
-        except Exception as e:
-            messagebox.showerror(self._t("dlg.error", "Error"), f"Failed to export presets: {e}")
-
-    def import_presets(self):
-        
-        fp = filedialog.askopenfilename(filetypes=[("JSON","*.json")])
-        if not fp:
-            return
-        try:
-            data = json.load(open(fp, "r", encoding="utf-8"))
-            PRESETS.clear()
-            PRESETS.update(data.get("presets", {}))
-            if hasattr(self, "saved_profiles"):
-                self.saved_profiles.clear()
-                self.saved_profiles.update(data.get("profiles", {}))
-            self.update_status("Presets imported.")
-        except Exception as e:
-            messagebox.showerror(self._t("dlg.error", "Error"), f"Failed to import presets: {e}")
-
-    def toggle_theme(self):
-        
-        self.dark_mode.set(not self.dark_mode.get())
-        self.apply_theme()
-        self.save_settings()
-
-    import colorsys
-    APP_BG = "#0f1216"
-    CARD_BG = "#161a20"
-    FG      = "#E8EAED"
-    FG_SUB  = "#A8B0BA"
-    ACCENT  = "#7C5CFF"   # purple
-    ACCENT_2= "#3DDC97"   # mint
-    ERROR   = "#FF6B6B"
-    WARN    = "#FFB020"
-
-    def _hsl_shift(hex_color: str, h_delta=0.0, s_mul=1.0, l_mul=1.0) -> str:
-        hex_color = hex_color.lstrip('#')
-        r = int(hex_color[0:2], 16) / 255.0
-        g = int(hex_color[2:4], 16) / 255.0
-        b = int(hex_color[4:6], 16) / 255.0
-        h,l,s = colorsys.rgb_to_hls(r,g,b)
-        h = (h + h_delta) % 1.0
-        s = max(0.0, min(1.0, s * s_mul))
-        l = max(0.0, min(1.0, l * l_mul))
-        r,g,b = colorsys.hls_to_rgb(h,l,s)
-        return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
-
-    def apply_theme(style: ttk.Style):
-        style.theme_use("clam")
-
-        style.configure(
-            "TNotebook.Tab",
-            padding=(int(12*PAD), int(6*PAD)),
-            foreground=FG,                     # high-contrast text on tabs
-            background=_hsl_shift(APP_BG, l_mul=0.92),
-            borderwidth=BORD
-        )
-        style.configure("TFrame", background=APP_BG)
-        style.configure("Card.TFrame", background=CARD_BG)
-        style.configure("TLabel", background=APP_BG, foreground=FG)
-        style.configure("Sub.TLabel", background=APP_BG, foreground=FG_SUB)
-
-        btn_bg  = _hsl_shift(ACCENT, l_mul=0.88)
-        btn_bg2 = ACCENT
-        style.configure("TButton",
-            font=("Segoe UI", 10, "bold"),
-            padding=(int(12*PAD), int(8*PAD)), background=btn_bg, foreground="#ffffff",
-            borderwidth=BORD, focusthickness=0)
-        style.map("TButton",
-            background=[("active", btn_bg2), ("disabled", "#2B2F36")],
-            foreground=[("disabled", "#7a8088")])
-
-        style.configure("Ghost.TButton",
-            font=("Segoe UI", 10), padding=(int(10*PAD), int(6*PAD)), borderwidth=BORD,
-            background=CARD_BG, foreground=FG,
-            bordercolor="#2A2E34", relief="flat")
-        style.map("Ghost.TButton",
-            background=[("active", _hsl_shift(CARD_BG, l_mul=1.06))])
-
-        style.configure("TEntry", fieldbackground=_hsl_shift(CARD_BG, l_mul=1.06),
-                        bordercolor="#2A2E34", relief="flat", padding=int(6*PAD), borderwidth=BORD)
-        style.configure("TCombobox", fieldbackground=_hsl_shift(CARD_BG, l_mul=1.06),
-                        foreground=FG, background=CARD_BG)
-        style.map("TCombobox",
-            fieldbackground=[("readonly", _hsl_shift(CARD_BG, l_mul=1.02))])
-
-        style.configure("Accent.Horizontal.TProgressbar",
-            troughcolor=CARD_BG, background=ACCENT, bordercolor=CARD_BG,
-            lightcolor=ACCENT, darkcolor=_hsl_shift(ACCENT, l_mul=0.8))
-
-        style.configure("Card.TLabelframe",
-                        background=CARD_BG,
-                        borderwidth=0,   # removes that white line
-                        relief="flat")   # ensure no groove outline
-        style.configure("Card.TLabelframe.Label",
-                        background=CARD_BG,
-                        foreground=FG_SUB,
-                        padding=(6,0))
-
-        style.configure("TCheckbutton", background=APP_BG, foreground=FG)
-        style.map("TCheckbutton", foreground=[("disabled", FG_SUB)])
-
-        entry_bg    = _hsl_shift(CARD_BG, l_mul=1.06)
-        entry_bg_ro = _hsl_shift(CARD_BG, l_mul=1.02)
-        entry_fg_dis = "#7a8088"
-
-        style.configure("Dark.TEntry",
-            fieldbackground=entry_bg,
-            foreground=FG,
-            padding=int(6*PAD), borderwidth=BORD,
-            bordercolor="#2A2E34",
-            relief="flat")
-        style.map("Dark.TEntry",
-            fieldbackground=[("focus", entry_bg), ("!focus", entry_bg), ("disabled", _hsl_shift(CARD_BG, l_mul=1.0))],
-            foreground=[("disabled", entry_fg_dis)])
-
-        style.configure("Dark.TCombobox",
-            fieldbackground=entry_bg,
-            background=CARD_BG,
-            foreground=FG,
-            padding=int(4*PAD), borderwidth=BORD,
-            bordercolor="#2A2E34",
-            relief="flat")
-        style.map("Dark.TCombobox",
-            fieldbackground=[("readonly", entry_bg_ro), ("!readonly", entry_bg)],
-            foreground=[("disabled", entry_fg_dis)])
-
-        style.configure("Card.TLabelframe",
-                        background=CARD_BG,
-                        borderwidth=BORD,
-                        relief="flat")
-        style.configure("Card.TLabelframe.Label",
-                        background=CARD_BG,
-                        foreground=FG_SUB,
-                        padding=(int(6*PAD), 0))
-
-        style.layout("Card.TLabelframe", [
-            ('Labelframe.padding', {'sticky': 'nswe', 'children': [
-                ('Labelframe.label',  {'side': 'top', 'sticky': ''}),
-                ('Labelframe.client', {'sticky': 'nswe'})
-            ]})
-        ])
-
-        style.configure("Dark.TSeparator", background=_hsl_shift(CARD_BG, l_mul=1.02))
-
-
-
-
-
-
-    def open_language_manager(self):
-        import tkinter as tk
-        from tkinter import ttk, messagebox
-
-        _load_lang_packs()
-
-        win = tk.Toplevel(self.root)
-        win.title(self._t("dlg.language_manager", "Language Manager"))
-        win.geometry("720x420")
-        win.transient(self.root)
-
-        frame = tk.Frame(win)
-        frame.pack(fill="both", expand=True, padx=12, pady=12)
-
-        cols = ("code", "name", "coverage", "source")
-        tree = ttk.Treeview(frame, columns=cols, show="headings", height=14)
-        tree.heading("code", text="Code")
-        tree.heading("name", text="Display Name")
-        tree.heading("coverage", text="Coverage")
-        tree.heading("source", text="Source")
-        tree.column("code", width=90, anchor="w")
-        tree.column("name", width=300, anchor="w")
-        tree.column("coverage", width=120, anchor="w")
-        tree.column("source", width=120, anchor="w")
-        tree.pack(fill="both", expand=True)
-
-        hint = tk.Label(
-            frame,
-            text="Coverage is relative to English base keys. Edit user_settings/i18n/<code>.json and click Reload.",
-            anchor="w",
-            justify="left",
-        )
-        hint.pack(fill="x", pady=(8, 4))
-
-        btns = tk.Frame(frame)
-        btns.pack(fill="x", pady=(4, 0))
-
-        def _refresh_rows():
-            _load_lang_packs()
-            tree.delete(*tree.get_children())
-            for code in _language_codes_ordered():
-                tree.insert(
-                    "",
-                    "end",
-                    values=(
-                        code,
-                        LANG_DISPLAY.get(code, LANG_CODE_NAME.get(code, code)),
-                        f"{int(LANG_COVERAGE.get(code, 0))}%",
-                        LANG_SOURCE.get(code, "fallback"),
-                    ),
-                )
-
-        def _use_selected():
-            sel = tree.selection()
-            if not sel:
-                messagebox.showinfo(self._t("dlg.language_manager", "Language Manager"), self._t("msg.select_lang_first", "Select a language first."))
-                return
-            vals = tree.item(sel[0], "values")
-            if not vals:
-                return
-            code = str(vals[0])
-            self.lang_var.set(code)
-            self._on_language_change()
-            try:
-                win.destroy()
-            except Exception:
-                pass
-
-        ttk.Button(btns, text="Reload", command=_refresh_rows).pack(side="left")
-        ttk.Button(btns, text="Export Templates", command=lambda: (_export_lang_templates(), _refresh_rows())).pack(side="left", padx=6)
-        ttk.Button(btns, text="Open i18n Folder", command=lambda: _open_folder(_i18n_dir())).pack(side="left", padx=6)
-        ttk.Button(btns, text="Use Selected", command=_use_selected).pack(side="right")
-
-        _refresh_rows()
-    def show_dashboard(self):
-        
-        win = Toplevel(self.root)
-        win.title(self._t("dlg.dashboard", "Dashboard"))
-        total = len(self.stats_list)
-        ratios = []
-        for s in self.stats_list:
-            orig = s.get("orig_size", 1)
-            comp = s.get("compressed_size", 0)
-            ratios.append(comp / orig if orig else 0)
-        avg_ratio = sum(ratios) / total if total else 0
-        Label(win, text=f"Files processed: {total}").pack(padx=10, pady=5)
-        Label(win, text=f"Avg compression ratio: {avg_ratio:.2f}").pack(padx=10, pady=5)
-        columns = ("File","Ratio")
-        tree = ttk.Treeview(win, columns=columns, show="headings")
-        for col in columns:
-            tree.heading(col, text=col)
-        for s in self.stats_list[-5:]:
-            f = os.path.basename(s.get("filepath",""))
-            orig = s.get("orig_size",1)
-            comp = s.get("compressed_size",0)
-            ratio = comp/orig if orig else 0
-            tree.insert("", "end", values=(f, f"{ratio:.2f}"))
-        tree.pack(fill="both", expand=True, padx=10, pady=10)
-
-    def main():
-
-        setup_logging()
-
-        if TkinterDnD:
-            root = TkinterDnD.Tk()
-        else:
-            root = tk.Tk()
-
-        app = CompressorGUI(root)
-        root.mainloop()
-
-import http.server, socketserver, json as _json
-
-class _AgentState:
-    paused = False
-    cpu_cap = 85  # percent
-    queue = []
-    lock = _th.Lock()
-
-def _agent_should_pause():
-    try:
-        return _AgentState.paused or psutil.cpu_percent(interval=1) > _AgentState.cpu_cap
-    except Exception:
-        return _AgentState.paused
-
-class _SimpleHandler(http.server.BaseHTTPRequestHandler):
-    def _send(self, code, payload):
-        body = _json.dumps(payload).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        if self.path.startswith("/state"):
-            with _AgentState.lock:
-                self._send(200, {"paused": _AgentState.paused, "cpu_cap": _AgentState.cpu_cap, "queued": len(_AgentState.queue)})
-        else:
-            self._send(404, {"error":"not found"})
-
-    def do_POST(self):
-        if self.path.startswith("/pause"):
-            _AgentState.paused = True
-            self._send(200, {"ok": True, "paused": True})
-        elif self.path.startswith("/resume"):
-            _AgentState.paused = False
-            self._send(200, {"ok": True, "paused": False})
-        elif self.path.startswith("/cap/"):
-            try:
-                cap = int(self.path.split("/cap/")[1])
-                _AgentState.cpu_cap = max(10, min(99, cap))
-                self._send(200, {"ok":True, "cpu_cap":_AgentState.cpu_cap})
-            except Exception:
-                self._send(400, {"ok":False})
-        else:
-            self._send(404, {"error":"not found"})
-
-def _agent_worker(out_dir, target_mb, adv_opts, webhook):
-    while True:
-        with _AgentState.lock:
-            path = _AgentState.queue.pop(0) if _AgentState.queue else None
-        if not path:
-            time.sleep(0.5); continue
-
-        while _agent_should_pause():
-            time.sleep(2)
-        try:
-            media = get_media_type(path)
-            if media == "video":
-                auto_compress(path, out_dir, lambda m, level="INFO": None, int(target_mb) * 1024 * 1024, webhook, {**(adv_opts or {}), "_target_is_bytes": True}, lambda: False)
-            elif media in ("audio","image"):
-                auto_compress(path, out_dir, lambda m, level="INFO": None, int(target_mb) * 1024 * 1024, webhook, {**(adv_opts or {}), "_target_is_bytes": True}, lambda: False)
-
-        except Exception as e:
-
-            pass
-
-class _AgentWatchHandler(FileSystemEventHandler):
-    def __init__(self, out_dir, target_mb, adv_opts, webhook):
-        self.out_dir = out_dir
-        self.target_mb = target_mb
-        self.adv_opts = adv_opts
-        self.webhook = webhook
-    def on_created(self, event):
-        if not event.is_directory and os.path.isfile(event.src_path):
-            with _AgentState.lock:
-                _AgentState.queue.append(event.src_path)
-
-def run_agent(watch_dir, out_dir, target_mb=10, webhook=""):
-
-    adv_opts = {
-        "encoder": "x264", "two_pass": False, "iterative": False,
-        "manual_crf":"", "manual_bitrate":"", "output_prefix":"", "output_suffix":"_discord_ready",
-        "audio_format":"aac", "image_format":"jpg", "concurrent": False,
-        "auto_output_folder": False, "guetzli": False, "pngopt": False, "auto_jpeg": False,
-    }
-
-    os.makedirs(out_dir, exist_ok=True)
-
-    _th.Thread(target=_agent_worker, args=(out_dir, target_mb, adv_opts, webhook), daemon=True).start()
-
-    obs = Observer()
-    obs.schedule(_AgentWatchHandler(out_dir, target_mb, adv_opts, webhook), watch_dir, recursive=False)
-    obs.start()
-
-    with socketserver.TCPServer(("127.0.0.1", 8765), _SimpleHandler) as httpd:
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            obs.stop(); obs.join()
 
 
 def _cli_status(msg, level="INFO"):

@@ -48,11 +48,6 @@ def _apply_confidence_margin(vbps: float, confidence: float, bounds: Optional[Di
     return float(vbps) * (1.0 - float(margin))
 
 
-def _smoothstep01(x: float) -> float:
-    x = float(max(0.0, min(1.0, x)))
-    return x * x * (3.0 - 2.0 * x)
-
-
 def _clamp_float(v: float, lo: float, hi: float) -> float:
     return float(max(lo, min(hi, float(v))))
 
