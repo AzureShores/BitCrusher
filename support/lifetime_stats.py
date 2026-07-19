@@ -4,7 +4,7 @@ import glob as _glob
 import json
 import os
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_LOG_DIR = os.path.join(_SCRIPT_DIR, "logs")
 
 

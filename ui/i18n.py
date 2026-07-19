@@ -11,7 +11,7 @@ from ui.ui_settings import _ui_json_path
 def _i18n_dir():
     """User-local language packs. Override bundled packs; not tracked in git."""
     try:
-        base = os.path.dirname(os.path.abspath(__file__))
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     except Exception:
         base = os.getcwd()
     d = os.path.join(base, "user_settings", "i18n")

@@ -6,7 +6,7 @@ import os
 
 def _ui_json_path():
     try:
-        base = os.path.dirname(os.path.abspath(__file__))
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     except Exception:
         base = os.getcwd()
     p = os.path.join(base, "user_settings")

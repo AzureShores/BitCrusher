@@ -10,7 +10,7 @@ import tempfile
 from fractions import Fraction
 
 import encode.ffmpeg_exec as ffmpeg_exec
-from encode.ffmpeg_exec import si, NO_WIN, _sp_check_output, _ffmpeg_has_filter, probe_video_stream_dims
+from encode.ffmpeg_exec import si, NO_WIN, _ffmpeg_has_filter, probe_video_stream_dims
 
 LOG = logging.getLogger("BitCrusher")
 
@@ -50,7 +50,7 @@ def set_vmaf_model_pref(pref: str | None):
 
 def _vmaf_models_dir() -> str:
     try:
-        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         return os.path.join(_script_dir, "tools", "vmaf_models")
     except Exception:
         return os.path.join("tools", "vmaf_models")
