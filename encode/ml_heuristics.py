@@ -1,6 +1,6 @@
 from __future__ import annotations
-import json, os, subprocess, math, tempfile, statistics, shutil, hashlib, time
-from typing import Dict, Any, Tuple, Optional, List
+import json, os, subprocess, tempfile, shutil, hashlib, time
+from typing import Dict, Any, Tuple, List
 from pathlib import Path
 from PIL import Image
 import numpy as np
@@ -188,29 +188,6 @@ def _sample_frames(path: str, num: int = 16) -> Tuple[List[Image.Image], float]:
         try: shutil.rmtree(tmpdir, ignore_errors=True)
         except Exception: pass
 
-
-def _temporal_stats(frames: list[Image.Image]) -> dict:
-    import numpy as _np
-    if not frames or len(frames) < 2:
-        return {"temporal_mad_mean": 0.0, "temporal_mad_std": 0.0, "temporal_ssim_std": 0.0}
-    arrs = [_np.asarray(f, dtype=_np.float32) for f in frames]
-    # mean absolute difference between consecutive frames
-    mads = [_np.mean(_np.abs(arrs[i+1] - arrs[i])) for i in range(len(arrs)-1)]
-    # crude grayscale SSIM-like proxy across samples (windowless)
-    def _ssim01(a,b):
-        mu_a, mu_b = a.mean(), b.mean()
-        va, vb = a.var(), b.var()
-        vab = ((a-mu_a)*(b-mu_b)).mean()
-        L=255.0; c1=(0.01*L)**2; c2=(0.03*L)**2
-        den=(mu_a**2+mu_b**2+c1)*(va+vb+c2)
-        if den == 0: return 1.0
-        return float(max(0.0, min(1.0, ((2*mu_a*mu_b + c1) * (2*vab + c2)) / den)))
-    sseq = [_ssim01(arrs[i+1], arrs[i]) for i in range(len(arrs)-1)]
-    return {
-        "temporal_mad_mean": float(np.mean(mads)),
-        "temporal_mad_std": float(np.std(mads)),
-        "temporal_ssim_std": float(np.std(sseq)),
-    }
 
 # ---------- Scene analysis + zones (new) ----------
 def _detect_scene_boundaries(path: str, thresh: float = 0.40) -> list[float]:

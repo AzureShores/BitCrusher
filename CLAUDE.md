@@ -121,8 +121,6 @@ Learning, reporting, and support:
   completed encode to `user_settings/stats/ledger.jsonl`; shadow predictors read it.
 - `dashboard.py` / `visual_compare.py` — pure, framework-agnostic view-models (VMAF
   sparkline + codec-race scoreboard; side-by-side frame compare). No Tkinter, unit-testable.
-- `queue_flow.py` / `compression_task_flow.py` — queue collection, per-file option merging
-  (watcher / Send-To rules), job log paths.
 - `tool_installer.py` — fetches/verifies ffmpeg (one of the few network touchpoints).
 
 ## Dependency investigation rules

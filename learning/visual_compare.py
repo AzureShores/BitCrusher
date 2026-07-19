@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 import os, subprocess, tempfile, math, shutil
-from pathlib import Path
-from typing import Tuple
 from PIL import Image, ImageTk
 import numpy as np
 
@@ -78,67 +76,3 @@ def open_compare_viewer(root, original_path: str, compressed_path: str, duration
     win.after(200, _refresh)
     try: win.attributes("-topmost", True); win.after(300, lambda: win.attributes("-topmost", False))
     except Exception: pass
-
-
-def compute_metrics(original_path: str, compressed_path: str, out_json: str | None = None,
-                    sample_count: int = 10, use_vmaf: bool | None = None) -> dict:
-    """
-    Compute PSNR/SSIM across sampled timestamps; add VMAF if libvmaf is available.
-    Saves to JSON if out_json provided.
-    """
-    dur = 0.0
-    try:
-        from subprocess import check_output
-        dur = float(check_output([ "ffprobe","-v","error","-show_entries","format=duration",
-                                   "-of","default=noprint_wrappers=1:nokey=1", original_path ], text=True).strip() or "0")
-    except Exception:
-        pass
-    if dur <= 0: dur = 60.0
-
-    ts = np.linspace(0.0, max(0.0, dur-0.1), num=max(3, int(sample_count)))
-    psnrs, ssims = [], []
-    for t in ts:
-        o = _grab_frame(original_path, float(t), scale_w=640)
-        c = _grab_frame(compressed_path, float(t), scale_w=640)
-        if o is None or c is None: continue
-        og = np.asarray(o.convert("L")); cg = np.asarray(c.convert("L"))
-        psnrs.append(_psnr(og, cg)); ssims.append(_ssim(og, cg))
-
-    metrics = {
-        "psnr_mean": float(np.mean(psnrs)) if psnrs else 0.0,
-        "psnr_min": float(np.min(psnrs)) if psnrs else 0.0,
-        "ssim_mean": float(np.mean(ssims)) if ssims else 0.0,
-        "ssim_min": float(np.min(ssims)) if ssims else 0.0,
-    }
-
-    # VMAF (optional)
-    try:
-        if use_vmaf or (use_vmaf is None):
-            # Try run; if libvmaf missing this will fail and we'll ignore
-            tmp = tempfile.mkdtemp(prefix="bc_vmaf_")
-            try:
-                log = os.path.join(tmp, "vmaf.json")
-                subprocess.run([
-                    FFMPEG, "-i", original_path, "-i", compressed_path,
-                    "-lavfi", "libvmaf=log_fmt=json:log_path="+log,
-                    "-f", "null", "-"
-                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                if os.path.exists(log):
-                    import json as _json
-                    data = _json.loads(Path(log).read_text(encoding="utf-8"))
-                    scores = [f["metrics"]["vmaf"] for f in data.get("frames", []) if "metrics" in f]
-                    if scores:
-                        metrics["vmaf_mean"] = float(np.mean(scores))
-                        metrics["vmaf_min"] = float(np.min(scores))
-            finally:
-                shutil.rmtree(tmp, ignore_errors=True)
-    except Exception:
-        pass
-
-    if out_json:
-        try:
-            import json as _json
-            Path(out_json).write_text(_json.dumps(metrics, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-    return metrics

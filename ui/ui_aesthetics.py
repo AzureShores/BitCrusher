@@ -8,7 +8,6 @@ from tkinter import colorchooser as tkcolor
 from tkinter import simpledialog as tksimple
 import tkinter.font as tkfont
 import json, colorsys
-from typing import Callable
 from importlib import import_module
 
 
