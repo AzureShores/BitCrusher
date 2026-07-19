@@ -93,10 +93,32 @@ def shutter_encode_audio(input_path, output_path, target_mb, codec="aac"):
             "kbps": kbps, "secs": round(time.time() - t0, 1)}
 
 
-def measure_vmaf(reference, distorted):
+def _ref_dims(path):
     try:
+        r = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v:0",
+                            "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", path],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        w, h = r.stdout.strip().split("x")
+        return int(w), int(h)
+    except Exception:
+        return 0, 0
+
+
+def measure_vmaf(reference, distorted):
+    """VMAF of distorted vs reference. Scale the distorted stream UP to the
+    reference resolution first — BitCrusher may downscale, and libvmaf refuses
+    mismatched dimensions (returns nothing -> a silent null that HIDES the
+    quality loss a downscale causes). Mirrors the real pipeline's compute_vmaf,
+    which scales distorted to ref res with bicubic before scoring."""
+    try:
+        rw, rh = _ref_dims(reference)
+        if rw > 0 and rh > 0:
+            lavfi = (f"[0:v]scale={rw}:{rh}:flags=bicubic,setpts=PTS-STARTPTS[d];"
+                     f"[1:v]setpts=PTS-STARTPTS[r];[d][r]libvmaf")
+        else:
+            lavfi = "[0:v][1:v]libvmaf"
         r = subprocess.run([FFMPEG, "-i", distorted, "-i", reference,
-                            "-lavfi", "[0:v][1:v]libvmaf", "-f", "null", "-"],
+                            "-lavfi", lavfi, "-f", "null", "-"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1200)
         import re
         m = re.search(r"VMAF score:\s*([0-9.]+)", r.stderr)
