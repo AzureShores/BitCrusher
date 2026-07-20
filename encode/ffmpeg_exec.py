@@ -21,6 +21,57 @@ else:
     NO_WIN = 0
 
 
+# --- Active-process registry (cancellation support) -----------------------
+# Every long-running encoder Popen registers here so a GUI Stop / CLI Ctrl+C
+# can tree-kill it immediately instead of waiting out the pass. Short probe
+# runs (_sp_run) are deliberately not registered; cancel latency is bounded
+# by one such run.
+_ACTIVE_PROCS: set = set()
+_ACTIVE_LOCK = threading.Lock()
+
+
+def _register_proc(proc):
+    with _ACTIVE_LOCK:
+        _ACTIVE_PROCS.add(proc)
+
+
+def _unregister_proc(proc):
+    with _ACTIVE_LOCK:
+        _ACTIVE_PROCS.discard(proc)
+
+
+def _tree_kill(proc):
+    """Kill a process and its children (ffmpeg can spawn helpers)."""
+    try:
+        if proc.poll() is not None:
+            return
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           startupinfo=si, creationflags=NO_WIN)
+        else:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except Exception:
+                proc.kill()
+    except Exception:
+        pass
+
+
+def kill_active_processes() -> int:
+    """Tree-kill every registered encoder process. Returns the kill count."""
+    with _ACTIVE_LOCK:
+        procs = list(_ACTIVE_PROCS)
+    n = 0
+    for p in procs:
+        if p.poll() is None:
+            _tree_kill(p)
+            LOG.info("[Cancel] Killed encoder pid %s", getattr(p, "pid", "?"))
+            n += 1
+    return n
+
+
 def _render_cmd(cmd):
     try:
         return " ".join(str(c) for c in cmd)
@@ -378,6 +429,7 @@ def _ffmpeg_run_with_progress(cmd: list, duration_s: float, pass_label: str, cwd
             text=True,
             bufsize=1,
         )
+        _register_proc(proc)
         # x265 writes progress to stderr even at -loglevel error; an undrained
         # stderr fills the OS pipe buffer and blocks the encoder mid-pass.
         # Drain on a background thread, keeping the tail for diagnosis.
@@ -432,6 +484,7 @@ def _ffmpeg_run_with_progress(cmd: list, duration_s: float, pass_label: str, cwd
                     except Exception:
                         pass
         proc.wait()
+        _unregister_proc(proc)
         try:
             _err_thread.join(timeout=2.0)
         except Exception:
@@ -441,6 +494,10 @@ def _ffmpeg_run_with_progress(cmd: list, duration_s: float, pass_label: str, cwd
                        " | ".join(list(_err_tail)[-6:]))
         return proc.returncode
     except Exception as exc:
+        try:
+            _unregister_proc(proc)
+        except Exception:
+            pass
         _log.debug("Progress-aware run failed (%r); falling back", exc)
         # Fallback: plain run (stderr to DEVNULL so it can't deadlock).
         r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd)
@@ -1047,6 +1104,7 @@ def compress_with_handbrake(
             if "-progress" not in cmd:
                 cmd = list(cmd) + ["-progress", "pipe:1"]
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            _register_proc(proc)
             try:
                 out_time = 0.0
                 total_size = 0
@@ -1104,6 +1162,7 @@ def compress_with_handbrake(
                     raise subprocess.CalledProcessError(returncode=rc, cmd=cmd, output="ffmpeg failed")
                 return
             finally:
+                _unregister_proc(proc)
                 try:
                     proc.kill()
                 except Exception:

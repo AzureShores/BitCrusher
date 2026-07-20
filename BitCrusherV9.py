@@ -5508,7 +5508,9 @@ class CompressorGUI:
             pass
 
         self.compression_running = True
+        self.cancel_event.clear()
         th = threading.Thread(target=self.compress_all, name="compress_all", daemon=True)
+        self.processing_thread = th
         th.start()
         self.update_status(f"Worker started for {len(files)} file(s).", level="DEBUG")
 
@@ -5659,7 +5661,9 @@ class CompressorGUI:
             else os.path.abspath(__file__)
         )
 
-        self.cancel_flag     = False
+        # Single cancel authority: set by stop_compression (GUI) and read by
+        # every encode step via the compression_cancelled property / cancel_cb.
+        self.cancel_event    = threading.Event()
         self.file_list       = []
         self.stats_list      = []
         self.save_path       = tk.StringVar(value=str(Path.home()))
@@ -5769,7 +5773,6 @@ class CompressorGUI:
 
         self.notifier  = ToastNotifier()
         self.all_logs  = []
-        self.stop_event = threading.Event()
         self.settings_path = os.path.join(USER_SETTINGS_DIR, "settings.json")
         data = {}
 
@@ -8409,13 +8412,33 @@ class CompressorGUI:
             threading.Thread(target=_worker, daemon=True).start()
 
 
+    def stop_compression(self):
+        """Stop button: cancel the running batch and kill active encoders.
+
+        Sets the single cancel_event (every encode step's cancel_cb reads it)
+        and tree-kills any live ffmpeg/HandBrake processes so cancellation
+        takes seconds, not the remainder of a two-pass encode.
+        """
+        if not getattr(self, "compression_running", False):
+            self.update_status("[Cancel] Nothing to stop.", level="INFO")
+            return
+        if self.cancel_event.is_set():
+            return  # already stopping
+        self.cancel_event.set()
+        self.update_status("[Cancel] Stop requested - halting active encode...",
+                           level="WARNING")
+        try:
+            from encode.ffmpeg_exec import kill_active_processes
+            n = kill_active_processes()
+            if n:
+                self.update_status(f"[Cancel] Killed {n} active encoder process(es).",
+                                   level="INFO")
+        except Exception:
+            pass
+
     def cancel_queue(self):
-        if hasattr(self, 'processing_thread') and self.processing_thread.is_alive():
-            self.stop_event.set()
-            self.log("Cancel requested.")
-            messagebox.showinfo(self._t("title.cancel", "Cancel"), self._t("msg.cancel_requested", "Queue cancel requested."))
-        else:
-            messagebox.showinfo(self._t("title.cancel", "Cancel"), self._t("msg.no_active_cancel", "No active compression to cancel."))
+        # Legacy name kept for old callers; the Stop button binds stop_compression.
+        self.stop_compression()
 
 
 
@@ -9618,13 +9641,13 @@ class CompressorGUI:
 
 
 
+    @property
     def compression_cancelled(self):
-        return self.cancel_flag
+        return self.cancel_event.is_set()
 
     def compress_all(self):
 
-        self.cancel_flag = False
-        self.compression_cancelled = False
+        self.cancel_event.clear()
         self.paused = False
 
         files = list(getattr(self, "_thread_file_list", []) or [])
@@ -9720,7 +9743,7 @@ class CompressorGUI:
                                 "container", "trim_range", "spotlight_range")
 
         def _run_one(idx, path):
-            if self.cancel_flag or self.compression_cancelled:
+            if self.compression_cancelled:
                 self._ui(self._job_update, path, status="cancelled")
                 return {"path": path, "ok": False, "in_bytes": 0, "out_bytes": 0,
                         "vmaf": None, "encoder": None, "secs": 0.0, "error": "cancelled"}
@@ -9828,13 +9851,20 @@ class CompressorGUI:
                          size=(res["out_bytes"] or None),
                          vmaf=(res["vmaf"] if isinstance(res["vmaf"], (int, float)) else None))
             else:
-                _st = "cancelled" if (self.cancel_flag or self.compression_cancelled) else "failed"
+                _st = "cancelled" if self.compression_cancelled else "failed"
                 self._ui(self._job_update, path, status=_st, eta="")
             return res
 
         results = []
         if workers <= 1:
             for idx, path in enumerate(files, start=1):
+                if self.compression_cancelled:
+                    # Leave the untouched remainder as pending (resumable);
+                    # only files that actually started get a cancelled badge.
+                    self.update_status(
+                        f"[Cancel] Stopped after {len(results)} of {total} file(s).",
+                        level="INFO")
+                    break
                 results.append(_run_one(idx, path))
                 self._ui(self._bump_progress, len(results))
         else:
@@ -10088,9 +10118,36 @@ def _cli_status(msg, level="INFO"):
     ts = time.strftime("%H:%M:%S")
     print(f"[{ts}] [{level}] {msg}")
 
-def _cli_cancel():
+# CLI cancellation: first Ctrl+C sets this event (encode steps poll it via
+# _cli_cancel) and kills active encoder processes; a second Ctrl+C falls back
+# to the default KeyboardInterrupt behavior.
+_CLI_CANCEL_EVENT = threading.Event()
 
-    return False
+
+def _cli_install_sigint_handler():
+    import signal
+
+    def _handler(signum, frame):
+        if _CLI_CANCEL_EVENT.is_set():
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+            raise KeyboardInterrupt
+        _CLI_CANCEL_EVENT.set()
+        _cli_status("[Cancel] Ctrl+C - cancelling after current step "
+                    "(press again to force quit)", level="WARNING")
+        try:
+            from encode.ffmpeg_exec import kill_active_processes
+            kill_active_processes()
+        except Exception:
+            pass
+
+    try:
+        signal.signal(signal.SIGINT, _handler)
+    except Exception:
+        pass
+
+
+def _cli_cancel():
+    return _CLI_CANCEL_EVENT.is_set()
 
 def _ensure_dir(p):
     os.makedirs(p, exist_ok=True)
@@ -10331,6 +10388,8 @@ def cli_main():
     if args.version:
         print("BitCrusher CLI - powered by HandBrakeCLI/ffmpeg")
         return 0
+
+    _cli_install_sigint_handler()
 
     if getattr(args, "vmaf_model", None):
         set_vmaf_model_pref(args.vmaf_model)
