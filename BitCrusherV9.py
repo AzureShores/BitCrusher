@@ -118,7 +118,7 @@ from encode.feature_helpers import (set_clipboard_files,
                              _audio_track_plan, _audio_map_ffmpeg_args,
                              _read_sibling_lrc, _embed_lyrics_into)
 from support.sendto_ipc import (_BC_IPC_HOST, _BC_IPC_PORT, _BC_STARTUP_FILES,
-                        _bc_ipc_send, _sendto_launch_target,
+                        _bc_ipc_send, _sendto_launch_target, IpcServer,
                         register_send_to, unregister_send_to)
 from encode.media_math import (bytes_from_value_unit, apply_target_size_margin, human_bytes,
                         next_lower_std_width,
@@ -6074,6 +6074,11 @@ class CompressorGUI:
         except Exception:
             pass
         try:
+            if getattr(self, "_ipc_srv", None) is not None:
+                self._ipc_srv.stop()   # closes socket + removes endpoint file
+        except Exception:
+            pass
+        try:
             self.stop_folder_watcher()
         except Exception:
             pass
@@ -6400,61 +6405,46 @@ class CompressorGUI:
 
     def _start_ipc_server(self):
         """
-        Listen on the loopback IPC port so a later 'Send to BitCrusher' invocation
-        (or `--enqueue`) hands its files to THIS running instance instead of
-        launching a second copy. If the bind fails, another instance already owns
-        the port — we simply don't listen (single-instance handoff still works,
-        just pointed at that other instance).
+        Start the loopback IPC listener (support.sendto_ipc.IpcServer) so a
+        later 'Send to BitCrusher' / `--enqueue` hands files to THIS instance.
+        The server writes user_settings/ipc_endpoint.json (port + session
+        token); clients require an OK ack, so a foreign app squatting on the
+        port can never swallow a hand-off silently.
         """
-        import socket, threading
         if getattr(self, "_ipc_srv", None) is not None:
             return
-
-        def _serve():
-            try:
-                srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                # Deliberately NOT SO_REUSEADDR: on Windows that would let a second
-                # instance also bind, defeating the single-owner guarantee.
-                srv.bind((_BC_IPC_HOST, _BC_IPC_PORT))
-                srv.listen(8)
-            except OSError:
-                return  # another instance is the listener; nothing to do here
+        srv = IpcServer(
+            on_paths=lambda paths, target_mb: self._ui(
+                self._ipc_enqueue_batch, paths, target_mb),
+            settings_dir=USER_SETTINGS_DIR,
+        )
+        if srv.start():
             self._ipc_srv = srv
-            while not getattr(self, "_ipc_stop", False):
-                try:
-                    conn, _ = srv.accept()
-                except Exception:
-                    break
-                try:
-                    conn.settimeout(3.0)
-                    chunks = []
-                    while True:
-                        b = conn.recv(4096)
-                        if not b:
-                            break
-                        chunks.append(b)
-                    data = b"".join(chunks).decode("utf-8", "replace")
-                except Exception:
-                    data = ""
-                finally:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-                lines = [ln.strip() for ln in data.splitlines() if ln.strip()]
-                if lines and lines[0] == "BCENQUEUE":
-                    for p in lines[1:]:
-                        self._ui(self._ipc_enqueue, p)
+        else:
+            self.update_status(
+                "[IPC] Send-To hand-off unavailable (loopback ports busy).",
+                level="WARNING")
 
-        threading.Thread(target=_serve, name="bc_ipc", daemon=True).start()
+    def _ipc_enqueue_batch(self, paths, target_mb=None):
+        """Main-thread entry for a hand-off batch (paths + optional target)."""
+        for p in paths or []:
+            self._ipc_enqueue(p, target_mb)
 
-    def _ipc_enqueue(self, path: str):
+    def _ipc_enqueue(self, path: str, target_mb=None):
         """Enqueue a file handed over by Send-To / --enqueue (main thread)."""
         try:
             if not path or not os.path.isfile(path):
                 return
             self._apply_watch_rules_to_file(path)
             self.queue_file(path)
+            if target_mb:
+                try:
+                    po = getattr(self, "per_file_opts", None)
+                    if isinstance(po, dict):
+                        po.setdefault(_normalize_drop_path(path), {})[
+                            "_watch_target_bytes"] = int(float(target_mb) * 1024 * 1024)
+                except Exception:
+                    pass
             self.update_status(f"Queued via Send To: {os.path.basename(path)}")
             try:
                 self.root.deiconify(); self.root.lift(); self.root.focus_force()
@@ -10458,7 +10448,7 @@ def cli_main():
         if not _paths:
             print("Nothing to enqueue (no existing files matched).")
             return 1
-        if _bc_ipc_send(_paths):
+        if _bc_ipc_send(_paths, settings_dir=USER_SETTINGS_DIR):
             print(f"Sent {len(_paths)} file(s) to the running BitCrusher window.")
             return 0
         # No running instance — launch the GUI with these queued.
