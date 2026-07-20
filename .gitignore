@@ -1,6 +1,12 @@
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Backups / restores
+backups/
+*.bak
 
 # Runtime state / output
 user_settings/
@@ -10,8 +16,22 @@ tmp/
 .deps_installed
 .venv/
 
+# Test/output artifacts (large binaries)
+shootout_out/
+compression_testing_videos/
+test_pipeline/out/
+test_pipeline/*.log
+test_pipeline/*.err
+test_pipeline/corpus/
+test_pipeline/results_*.json
+
 # Vendored/fetched binary tools (Windows .exe + Linux/macOS binaries + shims)
 tools/*.exe
 tools/ffmpeg
 tools/ffprobe
 tools/HandBrakeCLI
+
+# Local tooling / state
+.claude/
+_bmad/
+_bmad-output/

@@ -5449,8 +5449,6 @@ class CompressorGUI:
 
 
 
-
-
     def start_compression(self):
         
         if getattr(self, "compression_running", False):
@@ -8289,8 +8287,6 @@ class CompressorGUI:
 
 
 
-
-
     def setup_style(self):
         
         from tkinter import ttk
@@ -10068,65 +10064,6 @@ class FolderWatcher:
             try: self._observer.stop(); self._observer.join(timeout=3)
             except Exception: pass
         self._observer = None
-
-
-    def on_created(self, event):
-        if isinstance(event, FileCreatedEvent) and not event.is_directory:
-            self._enqueue(event.src_path)
-
-    def on_moved(self, event):
-        if isinstance(event, FileMovedEvent) and not event.is_directory:
-            self._enqueue(event.dest_path)
-
-    def _enqueue(self, path):
-        try:
-            p = os.path.abspath(path)
-            name = os.path.basename(p)
-
-            for pat in self.ignore_globs:
-                if fnmatch(name.lower(), pat.lower()):
-                    return
-
-            if self.exts and not any(p.lower().endswith(e) for e in self.exts):
-                return
-            self._work.put(p, block=False)
-            if self.status_cb: self.status_cb(f"Detected new file: {p}")
-            if self.notify_cb: self.notify_cb("New file detected", p)
-        except Exception:
-            pass
-
-    def _is_stable(self, p):
-        try:
-            st = os.stat(p)
-            if st.st_size < self.min_bytes: return False
-            last = self._seen.get(p)
-            self._seen[p] = st.st_size
-            return (last is not None and last == st.st_size)
-        except Exception:
-            return False
-
-    def _drain(self):
-        while True:
-            try:
-                p = self._work.get(timeout=0.5)
-            except Exception:
-                if not self._running: return
-                continue
-
-            t0 = time.time()
-            stable = False
-            while time.time() - t0 < max(3.0, self.stable_secs * 3):
-                time.sleep(self.stable_secs)
-                if self._is_stable(p):
-                    stable = True
-                    break
-            if stable and os.path.isfile(p):
-                try:
-                    self.on_file_ready(p)
-                except Exception:
-                    LOG.exception("FolderWatcher callback failed for %s", p)
-
-
 
 def _cli_status(msg, level="INFO"):
     ts = time.strftime("%H:%M:%S")
