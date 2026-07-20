@@ -5877,7 +5877,7 @@ class CompressorGUI:
         self.watcher = FolderWatcher(
             on_file_ready=lambda fp: self._enqueue_from_watcher(fp),
             status_cb=lambda m: self.update_status(m, level="INFO"),
-            notify_cb=lambda title, msg: notify_info(title, msg),
+            notify_cb=lambda title, msg=None: notify_info(title, msg if msg is not None else title),
             exts=(".mp4", ".mkv", ".mov", ".avi", ".webm",
                   ".mp3", ".flac", ".wav", ".m4a", ".aac",
                   ".jpg", ".jpeg", ".png", ".gif", ".webp"),
@@ -8533,6 +8533,25 @@ class CompressorGUI:
             del self.file_list[i]
         self._save_queue()
 
+    def move_selection(self, delta):
+        """Queue toolbar arrows: move selected rows up (-1) or down (+1),
+        keeping the moved rows selected so repeated clicks keep working
+        (refresh_queue_box rebuilds rows and drops the selection)."""
+        selections = list(self.queue_box.curselection())
+        if not selections:
+            return
+        moved = [self.file_list[i] for i in selections
+                 if 0 <= i < len(self.file_list)]
+        if delta < 0:
+            self.move_up()
+        else:
+            self.move_down()
+        try:
+            iids = [_normalize_drop_path(p) for p in moved]
+            self.queue_box.selection_set(iids)
+        except Exception:
+            pass
+
     def move_up(self):
         selections = self.queue_box.curselection()
         for i in selections:
@@ -10023,7 +10042,7 @@ class FolderWatcher:
         for p in sorted(set(ready)):
             try: self.on_file_ready(p)
             except Exception: pass
-            try: self._notify(f"Detected new file: {p}")
+            try: self._notify("BitCrusher Watcher", f"Detected new file: {p}")
             except Exception: pass
 
     # polling backend
