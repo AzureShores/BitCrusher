@@ -10065,7 +10065,6 @@ class FolderWatcher:
             except Exception: pass
         self._observer = None
 
-
 def _cli_status(msg, level="INFO"):
     ts = time.strftime("%H:%M:%S")
     print(f"[{ts}] [{level}] {msg}")

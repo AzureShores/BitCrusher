@@ -5,6 +5,13 @@ it aims for but never overshoots. Built for upload limits like Discord's
 10/25/50MB caps. Runs as a desktop GUI or a CLI, and learns from its own
 past encodes to make better first-attempt decisions over time.
 
+> **Requires Python 3.10+ on your PATH.** Get it from
+> [python.org/downloads](https://www.python.org/downloads/) — check
+> "Add python.exe to PATH" during install. `BitCrusher.bat` will tell you
+> if it's missing.
+
+![BitCrusher GUI](assets/screenshot.png)
+
 ## Features
 
 - Video, audio, image, and PDF compression in one queue, routed automatically.
@@ -72,24 +79,38 @@ acceleration.
 
 ## Requirements
 
-- Windows, Python 3.10+
-- ffmpeg, ffprobe, and HandBrakeCLI — either on `PATH`, or dropped into a
-  `tools/` folder next to `BitCrusherV9.py`. Configure custom paths in the
-  app (Settings > Configure Paths) or with the `BC_FFMPEG`/`BC_FFPROBE`
-  env vars.
-
-## Install
-
-```
-pip install -r requirements.txt
-```
+- Windows, macOS, or Linux; [Python 3.10+](https://www.python.org/downloads/)
+- ffmpeg + ffprobe — BitCrusher auto-fetches them on first run if they aren't
+  already on your `PATH` or in a `tools/` folder next to `BitCrusherV9.py`.
+  HandBrakeCLI is an optional fallback (auto-fetched on Windows; on macOS/Linux
+  via `brew`/`flatpak` if available). Set custom paths in Settings > Configure
+  Paths or via `BC_FFMPEG`/`BC_FFPROBE`.
 
 ## Run
+
+**Windows** — double-click `BitCrusher.bat` (GUI), or from a terminal:
+
+```
+BitCrusher.bat                          # GUI
+BitCrusher.bat clip.mp4 -t 8            # CLI — any argument switches to CLI mode
+```
+
+**macOS / Linux** — first run installs deps into a local `.venv`:
+
+```
+chmod +x bitcrusher.sh                  # once
+./bitcrusher.sh                         # GUI
+./bitcrusher.sh clip.mp4 -t 8           # CLI
+```
+
+Or run the script directly (deps installed yourself):
 
 ```
 python BitCrusherV9.py                  # GUI
 python BitCrusherV9.py clip.mp4 -t 8    # CLI — any argument switches to CLI mode
 ```
+
+> macOS/Linux support is new — if you hit a snag, please open an issue.
 
 ## Docs
 

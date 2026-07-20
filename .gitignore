@@ -8,23 +8,30 @@ __pycache__/
 backups/
 *.bak
 
+# Runtime state / output
+user_settings/
+logs/
+output/
+tmp/
+.deps_installed
+.venv/
+
 # Test/output artifacts (large binaries)
 shootout_out/
 compression_testing_videos/
-output/
-logs/
-tmp/
 test_pipeline/out/
 test_pipeline/*.log
 test_pipeline/*.err
 test_pipeline/corpus/
 test_pipeline/results_*.json
 
-# Vendored binary tools
+# Vendored/fetched binary tools (Windows .exe + Linux/macOS binaries + shims)
 tools/*.exe
+tools/ffmpeg
+tools/ffprobe
+tools/HandBrakeCLI
 
 # Local tooling / state
 .claude/
-user_settings/
 _bmad/
 _bmad-output/
