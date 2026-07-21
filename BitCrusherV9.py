@@ -118,7 +118,7 @@ from encode.feature_helpers import (set_clipboard_files,
                              _audio_track_plan, _audio_map_ffmpeg_args,
                              _read_sibling_lrc, _embed_lyrics_into)
 from support.sendto_ipc import (_BC_IPC_HOST, _BC_IPC_PORT, _BC_STARTUP_FILES,
-                        _bc_ipc_send, _sendto_launch_target,
+                        _bc_ipc_send, _sendto_launch_target, IpcServer,
                         register_send_to, unregister_send_to)
 from encode.media_math import (bytes_from_value_unit, apply_target_size_margin, human_bytes,
                         next_lower_std_width,
@@ -5508,7 +5508,9 @@ class CompressorGUI:
             pass
 
         self.compression_running = True
+        self.cancel_event.clear()
         th = threading.Thread(target=self.compress_all, name="compress_all", daemon=True)
+        self.processing_thread = th
         th.start()
         self.update_status(f"Worker started for {len(files)} file(s).", level="DEBUG")
 
@@ -5659,7 +5661,9 @@ class CompressorGUI:
             else os.path.abspath(__file__)
         )
 
-        self.cancel_flag     = False
+        # Single cancel authority: set by stop_compression (GUI) and read by
+        # every encode step via the compression_cancelled property / cancel_cb.
+        self.cancel_event    = threading.Event()
         self.file_list       = []
         self.stats_list      = []
         self.save_path       = tk.StringVar(value=str(Path.home()))
@@ -5769,7 +5773,6 @@ class CompressorGUI:
 
         self.notifier  = ToastNotifier()
         self.all_logs  = []
-        self.stop_event = threading.Event()
         self.settings_path = os.path.join(USER_SETTINGS_DIR, "settings.json")
         data = {}
 
@@ -5877,7 +5880,7 @@ class CompressorGUI:
         self.watcher = FolderWatcher(
             on_file_ready=lambda fp: self._enqueue_from_watcher(fp),
             status_cb=lambda m: self.update_status(m, level="INFO"),
-            notify_cb=lambda title, msg: notify_info(title, msg),
+            notify_cb=lambda title, msg=None: notify_info(title, msg if msg is not None else title),
             exts=(".mp4", ".mkv", ".mov", ".avi", ".webm",
                   ".mp3", ".flac", ".wav", ".m4a", ".aac",
                   ".jpg", ".jpeg", ".png", ".gif", ".webp"),
@@ -6068,6 +6071,11 @@ class CompressorGUI:
 
         try:
             self.save_settings()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_ipc_srv", None) is not None:
+                self._ipc_srv.stop()   # closes socket + removes endpoint file
         except Exception:
             pass
         try:
@@ -6397,61 +6405,46 @@ class CompressorGUI:
 
     def _start_ipc_server(self):
         """
-        Listen on the loopback IPC port so a later 'Send to BitCrusher' invocation
-        (or `--enqueue`) hands its files to THIS running instance instead of
-        launching a second copy. If the bind fails, another instance already owns
-        the port — we simply don't listen (single-instance handoff still works,
-        just pointed at that other instance).
+        Start the loopback IPC listener (support.sendto_ipc.IpcServer) so a
+        later 'Send to BitCrusher' / `--enqueue` hands files to THIS instance.
+        The server writes user_settings/ipc_endpoint.json (port + session
+        token); clients require an OK ack, so a foreign app squatting on the
+        port can never swallow a hand-off silently.
         """
-        import socket, threading
         if getattr(self, "_ipc_srv", None) is not None:
             return
-
-        def _serve():
-            try:
-                srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                # Deliberately NOT SO_REUSEADDR: on Windows that would let a second
-                # instance also bind, defeating the single-owner guarantee.
-                srv.bind((_BC_IPC_HOST, _BC_IPC_PORT))
-                srv.listen(8)
-            except OSError:
-                return  # another instance is the listener; nothing to do here
+        srv = IpcServer(
+            on_paths=lambda paths, target_mb: self._ui(
+                self._ipc_enqueue_batch, paths, target_mb),
+            settings_dir=USER_SETTINGS_DIR,
+        )
+        if srv.start():
             self._ipc_srv = srv
-            while not getattr(self, "_ipc_stop", False):
-                try:
-                    conn, _ = srv.accept()
-                except Exception:
-                    break
-                try:
-                    conn.settimeout(3.0)
-                    chunks = []
-                    while True:
-                        b = conn.recv(4096)
-                        if not b:
-                            break
-                        chunks.append(b)
-                    data = b"".join(chunks).decode("utf-8", "replace")
-                except Exception:
-                    data = ""
-                finally:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-                lines = [ln.strip() for ln in data.splitlines() if ln.strip()]
-                if lines and lines[0] == "BCENQUEUE":
-                    for p in lines[1:]:
-                        self._ui(self._ipc_enqueue, p)
+        else:
+            self.update_status(
+                "[IPC] Send-To hand-off unavailable (loopback ports busy).",
+                level="WARNING")
 
-        threading.Thread(target=_serve, name="bc_ipc", daemon=True).start()
+    def _ipc_enqueue_batch(self, paths, target_mb=None):
+        """Main-thread entry for a hand-off batch (paths + optional target)."""
+        for p in paths or []:
+            self._ipc_enqueue(p, target_mb)
 
-    def _ipc_enqueue(self, path: str):
+    def _ipc_enqueue(self, path: str, target_mb=None):
         """Enqueue a file handed over by Send-To / --enqueue (main thread)."""
         try:
             if not path or not os.path.isfile(path):
                 return
             self._apply_watch_rules_to_file(path)
             self.queue_file(path)
+            if target_mb:
+                try:
+                    po = getattr(self, "per_file_opts", None)
+                    if isinstance(po, dict):
+                        po.setdefault(_normalize_drop_path(path), {})[
+                            "_watch_target_bytes"] = int(float(target_mb) * 1024 * 1024)
+                except Exception:
+                    pass
             self.update_status(f"Queued via Send To: {os.path.basename(path)}")
             try:
                 self.root.deiconify(); self.root.lift(); self.root.focus_force()
@@ -8409,13 +8402,33 @@ class CompressorGUI:
             threading.Thread(target=_worker, daemon=True).start()
 
 
+    def stop_compression(self):
+        """Stop button: cancel the running batch and kill active encoders.
+
+        Sets the single cancel_event (every encode step's cancel_cb reads it)
+        and tree-kills any live ffmpeg/HandBrake processes so cancellation
+        takes seconds, not the remainder of a two-pass encode.
+        """
+        if not getattr(self, "compression_running", False):
+            self.update_status("[Cancel] Nothing to stop.", level="INFO")
+            return
+        if self.cancel_event.is_set():
+            return  # already stopping
+        self.cancel_event.set()
+        self.update_status("[Cancel] Stop requested - halting active encode...",
+                           level="WARNING")
+        try:
+            from encode.ffmpeg_exec import kill_active_processes
+            n = kill_active_processes()
+            if n:
+                self.update_status(f"[Cancel] Killed {n} active encoder process(es).",
+                                   level="INFO")
+        except Exception:
+            pass
+
     def cancel_queue(self):
-        if hasattr(self, 'processing_thread') and self.processing_thread.is_alive():
-            self.stop_event.set()
-            self.log("Cancel requested.")
-            messagebox.showinfo(self._t("title.cancel", "Cancel"), self._t("msg.cancel_requested", "Queue cancel requested."))
-        else:
-            messagebox.showinfo(self._t("title.cancel", "Cancel"), self._t("msg.no_active_cancel", "No active compression to cancel."))
+        # Legacy name kept for old callers; the Stop button binds stop_compression.
+        self.stop_compression()
 
 
 
@@ -8532,6 +8545,25 @@ class CompressorGUI:
             self.queue_box.delete(i)
             del self.file_list[i]
         self._save_queue()
+
+    def move_selection(self, delta):
+        """Queue toolbar arrows: move selected rows up (-1) or down (+1),
+        keeping the moved rows selected so repeated clicks keep working
+        (refresh_queue_box rebuilds rows and drops the selection)."""
+        selections = list(self.queue_box.curselection())
+        if not selections:
+            return
+        moved = [self.file_list[i] for i in selections
+                 if 0 <= i < len(self.file_list)]
+        if delta < 0:
+            self.move_up()
+        else:
+            self.move_down()
+        try:
+            iids = [_normalize_drop_path(p) for p in moved]
+            self.queue_box.selection_set(iids)
+        except Exception:
+            pass
 
     def move_up(self):
         selections = self.queue_box.curselection()
@@ -9599,13 +9631,13 @@ class CompressorGUI:
 
 
 
+    @property
     def compression_cancelled(self):
-        return self.cancel_flag
+        return self.cancel_event.is_set()
 
     def compress_all(self):
 
-        self.cancel_flag = False
-        self.compression_cancelled = False
+        self.cancel_event.clear()
         self.paused = False
 
         files = list(getattr(self, "_thread_file_list", []) or [])
@@ -9701,7 +9733,7 @@ class CompressorGUI:
                                 "container", "trim_range", "spotlight_range")
 
         def _run_one(idx, path):
-            if self.cancel_flag or self.compression_cancelled:
+            if self.compression_cancelled:
                 self._ui(self._job_update, path, status="cancelled")
                 return {"path": path, "ok": False, "in_bytes": 0, "out_bytes": 0,
                         "vmaf": None, "encoder": None, "secs": 0.0, "error": "cancelled"}
@@ -9809,13 +9841,20 @@ class CompressorGUI:
                          size=(res["out_bytes"] or None),
                          vmaf=(res["vmaf"] if isinstance(res["vmaf"], (int, float)) else None))
             else:
-                _st = "cancelled" if (self.cancel_flag or self.compression_cancelled) else "failed"
+                _st = "cancelled" if self.compression_cancelled else "failed"
                 self._ui(self._job_update, path, status=_st, eta="")
             return res
 
         results = []
         if workers <= 1:
             for idx, path in enumerate(files, start=1):
+                if self.compression_cancelled:
+                    # Leave the untouched remainder as pending (resumable);
+                    # only files that actually started get a cancelled badge.
+                    self.update_status(
+                        f"[Cancel] Stopped after {len(results)} of {total} file(s).",
+                        level="INFO")
+                    break
                 results.append(_run_one(idx, path))
                 self._ui(self._bump_progress, len(results))
         else:
@@ -10023,7 +10062,7 @@ class FolderWatcher:
         for p in sorted(set(ready)):
             try: self.on_file_ready(p)
             except Exception: pass
-            try: self._notify(f"Detected new file: {p}")
+            try: self._notify("BitCrusher Watcher", f"Detected new file: {p}")
             except Exception: pass
 
     # polling backend
@@ -10069,9 +10108,36 @@ def _cli_status(msg, level="INFO"):
     ts = time.strftime("%H:%M:%S")
     print(f"[{ts}] [{level}] {msg}")
 
-def _cli_cancel():
+# CLI cancellation: first Ctrl+C sets this event (encode steps poll it via
+# _cli_cancel) and kills active encoder processes; a second Ctrl+C falls back
+# to the default KeyboardInterrupt behavior.
+_CLI_CANCEL_EVENT = threading.Event()
 
-    return False
+
+def _cli_install_sigint_handler():
+    import signal
+
+    def _handler(signum, frame):
+        if _CLI_CANCEL_EVENT.is_set():
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+            raise KeyboardInterrupt
+        _CLI_CANCEL_EVENT.set()
+        _cli_status("[Cancel] Ctrl+C - cancelling after current step "
+                    "(press again to force quit)", level="WARNING")
+        try:
+            from encode.ffmpeg_exec import kill_active_processes
+            kill_active_processes()
+        except Exception:
+            pass
+
+    try:
+        signal.signal(signal.SIGINT, _handler)
+    except Exception:
+        pass
+
+
+def _cli_cancel():
+    return _CLI_CANCEL_EVENT.is_set()
 
 def _ensure_dir(p):
     os.makedirs(p, exist_ok=True)
@@ -10313,6 +10379,8 @@ def cli_main():
         print("BitCrusher CLI - powered by HandBrakeCLI/ffmpeg")
         return 0
 
+    _cli_install_sigint_handler()
+
     if getattr(args, "vmaf_model", None):
         set_vmaf_model_pref(args.vmaf_model)
     if getattr(args, "vmaf_objective", None):
@@ -10380,7 +10448,7 @@ def cli_main():
         if not _paths:
             print("Nothing to enqueue (no existing files matched).")
             return 1
-        if _bc_ipc_send(_paths):
+        if _bc_ipc_send(_paths, settings_dir=USER_SETTINGS_DIR):
             print(f"Sent {len(_paths)} file(s) to the running BitCrusher window.")
             return 0
         # No running instance — launch the GUI with these queued.
