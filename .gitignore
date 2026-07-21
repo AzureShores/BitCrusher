@@ -34,6 +34,10 @@ tools/HandBrakeCLI
 # Release bundle build output (per-OS zips from build_bundle.py)
 dist/
 
+# Dev-only test suites — kept locally, not published to the repo.
+tests/
+test_pipeline/
+
 # Local tooling / state
 .claude/
 CLAUDE.md
