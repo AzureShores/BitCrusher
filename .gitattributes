@@ -1,3 +1,13 @@
 # Shell scripts must keep LF endings — a CRLF shebang (#!/bin/sh\r) breaks
 # on Linux/macOS with "bad interpreter".
 *.sh text eol=lf
+
+# Keep dev-only material out of release archives. git archive (used by both
+# build_bundle.py and GitHub's auto-generated "Source code" zip) honours these,
+# so test harnesses and the release tooling never ship to end users.
+tests/ export-ignore
+test_pipeline/ export-ignore
+pytest.ini export-ignore
+build_bundle.py export-ignore
+smoke_c1.py export-ignore
+smoke_c5.py export-ignore
