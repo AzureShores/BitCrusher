@@ -440,10 +440,12 @@ class ThemeLab(Toplevel):
         tab_colors = ttk.Frame(nb); nb.add(tab_colors, text="  Colors  ")
         tab_adjust = ttk.Frame(nb); nb.add(tab_adjust, text="  Adjust  ")
         tab_more = ttk.Frame(nb); nb.add(tab_more, text="  Font & Layout  ")
+        tab_gallery = ttk.Frame(nb); nb.add(tab_gallery, text="  Gallery  ")
 
         self._build_colors_tab(tab_colors)
         self._build_adjust_tab(tab_adjust)
         self._build_more_tab(tab_more)
+        self._build_gallery_tab(tab_gallery)
 
         prev_wrap = ttk.LabelFrame(body, text="Live preview", style="Card.TLabelframe")
         prev_wrap.grid(row=0, column=1, sticky="nsew")
@@ -901,6 +903,71 @@ class ThemeLab(Toplevel):
             except Exception:
                 pass
         self._draft_changed()
+
+    # --- preset gallery (swatch cards rendered from palette dicts) ---------
+    _GALLERY_CHIPS = ("APP_BG", "CARD_BG", "ACCENT", "ACCENT_2", "FG")
+
+    def _build_gallery_tab(self, parent):
+        """Scrollable grid of clickable palette thumbnails for every theme
+        (built-ins + saved drafts). No screenshots - each card is painted
+        straight from the theme's palette dict. Clicking loads it into the
+        draft (undoable). The ThemeLab window is flagged _bc_no_retint, so the
+        app-wide retint walk never stomps these hand-painted swatches."""
+        wrap = ttk.Frame(parent); wrap.pack(fill="both", expand=True, padx=8, pady=8)
+        bg = self.style.lookup(".", "background") or "#14161A"
+        canvas = tk.Canvas(wrap, highlightthickness=0, bd=0, bg=bg)
+        vs = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vs.set)
+        vs.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(canvas, bg=bg)
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>",
+                   lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfigure(win, width=e.width))
+
+        names = [n for n in self._themes.keys() if not n.startswith("__")]
+        cols = 3
+        for c in range(cols):
+            inner.columnconfigure(c, weight=1, uniform="gallery")
+        for i, name in enumerate(names):
+            pal = self._themes.get(name) or {}
+            card = self._make_swatch_card(inner, name, pal)
+            card.grid(row=i // cols, column=i % cols, sticky="nsew", padx=6, pady=6)
+
+    def _make_swatch_card(self, parent, name: str, pal: dict):
+        app_bg = _hex_norm(pal.get("APP_BG", "#202020"))
+        card_bg = _hex_norm(pal.get("CARD_BG", app_bg))
+        fg = _hex_norm(pal.get("FG", "#ffffff"))
+        accent = _hex_norm(pal.get("ACCENT", "#4caf7d"))
+
+        card = tk.Frame(parent, bg=card_bg, bd=1, relief="solid",
+                        highlightbackground=accent, highlightthickness=1,
+                        cursor="hand2")
+        title = tk.Frame(card, bg=app_bg)
+        title.pack(fill="x")
+        tk.Label(title, text=name, bg=app_bg, fg=fg, anchor="w",
+                 font=("Segoe UI", 9, "bold")).pack(fill="x", padx=8, pady=(6, 4))
+        chips = tk.Frame(card, bg=card_bg)
+        chips.pack(fill="x", padx=8, pady=(2, 8))
+        for key in self._GALLERY_CHIPS:
+            col = _hex_norm(pal.get(key, "#000000"))
+            tk.Label(chips, bg=col, width=3, height=1, bd=1, relief="solid").pack(
+                side="left", padx=2)
+
+        def _load(_e=None, nm=name, p=pal):
+            self._push_undo()
+            self._apply_palette_to_draft(
+                {k: _hex_norm(p.get(k, self.draft.get(k, "#000000")))
+                 for k in _THEMELAB_KEYS})
+            self._snack(f"Loaded '{nm}' into the draft")
+
+        for w in (card, title, chips):
+            w.bind("<Button-1>", _load)
+        for w in list(title.winfo_children()) + list(chips.winfo_children()):
+            w.bind("<Button-1>", _load)
+        return card
 
     def _generate(self):
         self._push_undo()
