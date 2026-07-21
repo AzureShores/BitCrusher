@@ -6610,6 +6610,25 @@ class CompressorGUI:
         except Exception:
             self.update_status(msg, level="INFO")
 
+    def register_ctx_presets_menu(self):
+        from tkinter import messagebox
+        from support.context_menu import register_presets
+        ok, msg = register_presets()
+        try:
+            (messagebox.showinfo if ok else messagebox.showerror)(
+                self._t("dlg.ctx_presets", "Right-click presets"), msg)
+        except Exception:
+            self.update_status(msg, level=("INFO" if ok else "ERROR"))
+
+    def unregister_ctx_presets_menu(self):
+        from tkinter import messagebox
+        from support.context_menu import unregister_presets
+        ok, msg = unregister_presets()
+        try:
+            messagebox.showinfo(self._t("dlg.ctx_presets", "Right-click presets"), msg)
+        except Exception:
+            self.update_status(msg, level="INFO")
+
     # ---- Watcher rules -------------------------------------------------------
     # Optional per-file conditions applied to files picked up by the folder
     # watcher (or Send-To): size/duration → target-size or encoder overrides,
@@ -7162,6 +7181,10 @@ class CompressorGUI:
                                   command=self.register_send_to_menu)
         settings_menu.add_command(label=self._t("menu.remove_sendto", "Remove 'Send to BitCrusher'"),
                                   command=self.unregister_send_to_menu)
+        settings_menu.add_command(label=self._t("menu.add_ctx_presets", "Add right-click size presets (10/25/50 MB)"),
+                                  command=self.register_ctx_presets_menu)
+        settings_menu.add_command(label=self._t("menu.remove_ctx_presets", "Remove right-click size presets"),
+                                  command=self.unregister_ctx_presets_menu)
         menubar.add_cascade(label=self._t("menu.settings","Settings"), menu=settings_menu)
 
         themes_menu = tk.Menu(menubar, tearoff=0)
@@ -10562,6 +10585,9 @@ def build_arg_parser():
     p.add_argument("--contact-sheet", action="store_true",
                    help="Save a 4x4 frame-grid JPEG (<output>_sheet.jpg) beside "
                         "each video output")
+    p.add_argument("--enqueue-target", type=float, default=None, metavar="MB",
+                   help="With --enqueue: per-file target size override carried "
+                        "into the running instance (context-menu presets use this)")
     p.add_argument("--encoder", choices=["x264","x265","av1","svt-av1","aom-av1","vp9","vvc",
                                          "h264_nvenc","hevc_nvenc","av1_nvenc",
                                          "h264_qsv","hevc_qsv","av1_qsv",
@@ -10745,11 +10771,14 @@ def cli_main():
         if not _paths:
             print("Nothing to enqueue (no existing files matched).")
             return 1
-        if _bc_ipc_send(_paths, settings_dir=USER_SETTINGS_DIR):
+        _enq_target = getattr(args, "enqueue_target", None)
+        if _bc_ipc_send(_paths, settings_dir=USER_SETTINGS_DIR,
+                        target_mb=_enq_target):
             print(f"Sent {len(_paths)} file(s) to the running BitCrusher window.")
             return 0
         # No running instance — launch the GUI with these queued.
         globals()["_BC_STARTUP_FILES"] = list(_paths)
+        globals()["_BC_STARTUP_TARGET"] = _enq_target
         return None
 
     if not args.inputs:
@@ -11171,11 +11200,12 @@ if __name__ == "__main__":
 
         # Files handed over by --enqueue when no instance was running yet.
         _startup_files = list(globals().get("_BC_STARTUP_FILES") or [])
+        _startup_target = globals().get("_BC_STARTUP_TARGET")
         if _startup_files:
             def _enqueue_startup():
                 for _p in _startup_files:
                     try:
-                        app._ipc_enqueue(_p)
+                        app._ipc_enqueue(_p, _startup_target)
                     except Exception:
                         pass
             try:
