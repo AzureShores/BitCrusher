@@ -7,9 +7,18 @@ from typing import Tuple, List, Optional
 def _find_bin(env_keys: List[str], default_name: str) -> str:
     for k in env_keys:
         v = os.environ.get(k)
-        if v:
+        if v and (os.path.isfile(v) or shutil.which(v)):
             return v
-    return shutil.which(default_name) or default_name
+    # Prefer the binary bundled in tools/ (ships with the release) over PATH:
+    # on a clean machine ffmpeg is not on PATH, and returning a bare name spawns
+    # a missing exe (WinError 2). tools/ is one level above this encode/ package.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    for _root in (os.path.dirname(_here), _here):
+        for _name in (default_name + ".exe", default_name):
+            _cand = os.path.join(_root, "tools", _name)
+            if os.path.isfile(_cand):
+                return _cand
+    return shutil.which(default_name) or shutil.which(default_name + ".exe") or default_name
 
 FFMPEG  = _find_bin(["BC_FFMPEG", "FFMPEG"], "ffmpeg")
 FFPROBE = _find_bin(["BC_FFPROBE", "FFPROBE"], "ffprobe")
@@ -313,8 +322,8 @@ def _extract_probe_segments(src: str, out_dir: str, seconds: int = 5) -> list[st
 
 
 def _probe_encode_ssim(clips: list[str], encoder: str, crf: int, tmpdir: str | None = None) -> tuple[float, float]:
-    ffmpeg = os.environ.get("FFMPEG", "ffmpeg")
-    ffprobe = os.environ.get("FFPROBE", "ffprobe")
+    ffmpeg = FFMPEG
+    ffprobe = FFPROBE
 
     tmp = tmpdir or tempfile.mkdtemp(prefix="bc_probe_")
     try:

@@ -5,7 +5,22 @@ import os, subprocess, tempfile, math, shutil
 from PIL import Image, ImageTk
 import numpy as np
 
-FFMPEG  = os.environ.get("FFMPEG", "ffmpeg")
+def _resolve_ffmpeg() -> str:
+    for en in ("BC_FFMPEG", "FFMPEG"):
+        v = os.environ.get(en)
+        if v and (os.path.isfile(v) or shutil.which(v)):
+            return v
+    # Bundled tools/ dir sits one level above this learning/ package.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    for _root in (os.path.dirname(_here), _here):
+        for _name in ("ffmpeg.exe", "ffmpeg"):
+            _cand = os.path.join(_root, "tools", _name)
+            if os.path.isfile(_cand):
+                return _cand
+    return shutil.which("ffmpeg") or shutil.which("ffmpeg.exe") or "ffmpeg"
+
+
+FFMPEG  = _resolve_ffmpeg()
 
 def _grab_frame(path: str, t: float, scale_w: int = 640) -> Image.Image | None:
     tmpdir = tempfile.mkdtemp(prefix="bc_cmp_")

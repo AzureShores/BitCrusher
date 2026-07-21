@@ -643,7 +643,7 @@ PRESETS = {
 }
 
 
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 
 ADVANCED_DEFAULTS = {
     "auto_retry": True,
@@ -7800,7 +7800,12 @@ class CompressorGUI:
             except Exception:
                 pass
 
-            logging.error(f"Compression error for {filepath}: {e}")
+            # Use the BitCrusher logger (LOG) with exc_info so the failure and
+            # its full traceback land in errors.jsonl. The plain logging.error()
+            # here went to the ROOT logger, which does NOT reach LOG's JSON error
+            # handler, so encode failures left errors.jsonl completely empty -
+            # exactly the file you'd reach for to diagnose a failed compress.
+            LOG.error("Compression error for %s: %s", filepath, e, exc_info=True)
             self._notify(
                 "Compression Failed",
                 f"{os.path.basename(filepath)}: {e}"

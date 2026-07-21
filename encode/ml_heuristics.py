@@ -5,8 +5,33 @@ from pathlib import Path
 from PIL import Image
 import numpy as np
 
-FFPROBE = os.environ.get("FFPROBE", "ffprobe")
-FFMPEG  = os.environ.get("FFMPEG", "ffmpeg")
+def _resolve_tool(base: str, *env_names: str) -> str:
+    """Resolve ffmpeg/ffprobe independently of the host app's init order.
+
+    This module is imported (BitCrusherV9.py top) BEFORE the app resolves the
+    bundled tool paths, and nothing exports FFMPEG/FFPROBE to the environment,
+    so the old `os.environ.get("FFPROBE", "ffprobe")` always fell back to a bare
+    name. On a clean machine with no ffmpeg on PATH that spawns a missing exe
+    (WinError 2) and every video encode failed at the content-analysis step.
+    Order: explicit env override -> bundled tools/ dir (ships in the release)
+    -> PATH -> bare name.
+    """
+    for en in env_names:
+        v = os.environ.get(en)
+        if v and (os.path.isfile(v) or shutil.which(v)):
+            return v
+    # tools/ sits at the repo/bundle root, one level above this encode/ package.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    for _root in (os.path.dirname(_here), _here):
+        for _name in (base + ".exe", base):
+            _cand = os.path.join(_root, "tools", _name)
+            if os.path.isfile(_cand):
+                return _cand
+    return shutil.which(base) or shutil.which(base + ".exe") or base
+
+
+FFPROBE = _resolve_tool("ffprobe", "BC_FFPROBE", "FFPROBE")
+FFMPEG  = _resolve_tool("ffmpeg", "BC_FFMPEG", "FFMPEG")
 
 # -----------------------
 # On-disk analysis cache
