@@ -121,6 +121,7 @@ from support.sendto_ipc import (_BC_IPC_HOST, _BC_IPC_PORT, _BC_STARTUP_FILES,
                         _bc_ipc_send, _sendto_launch_target, IpcServer,
                         register_send_to, unregister_send_to)
 from support.queue_store import dump_queue, load_queue
+from support.watch_digest import DigestBuffer
 from encode.media_math import (bytes_from_value_unit, apply_target_size_margin, human_bytes,
                         next_lower_std_width,
                         determine_tune_profile, determine_frame_rate, determine_resolution,
@@ -4873,715 +4874,14 @@ class CompressorGUI:
 
     
     def setup_ui(self):
-        self.queue_box = None
-        import os
-        import tkinter as tk
-        from tkinter import ttk, filedialog, messagebox
-        from tkinter.scrolledtext import ScrolledText
-
-        if not hasattr(self, "root") or self.root is None:
-            self.root = tk.Tk()
-        self.theme_var = tk.StringVar(value="Dark")   # default theme
-        self.lang_var = tk.StringVar(value=_load_language_choice("en"))
-        _load_lang_packs()
-        if self.lang_var.get() not in LANG:
-            self.lang_var.set("en")
-        self.root.configure(bg="#14161A")             # initial bg; gets overridden by apply_theme
-        self.style = ttk.Style(self.root)
-
-        saved_theme = (self.settings.get("theme") if hasattr(self, "settings") else None) or "Dark"
-        self.theme_var = tk.StringVar(value=saved_theme)
-
-        apply_theme(self.style, self.theme_var.get())
+        # View construction lives in ui/main_view.py (verbatim extraction;
+        # all state/vars/handlers stay on this object). Import both layouts
+        # per the repo's packaged/flat convention.
         try:
-            retheme_runtime(self, self.style, self.theme_var.get())
-        except Exception:
-            pass
-        try:
-            self.root.configure(bg=APP_BG)
-        except Exception:
-            pass
-
-        if not hasattr(self, "preset_var"):        self.preset_var = tk.StringVar(value=next(iter(PRESETS)))
-        if not hasattr(self, "target_size_var"):   self.target_size_var = tk.IntVar(value=PRESETS[self.preset_var.get()])
-        if not hasattr(self, "save_path"):         self.save_path = tk.StringVar(value=os.path.join(SCRIPT_DIR, "output"))
-        if not hasattr(self, "size_unit_var"):
-            self.size_unit_var = tk.StringVar(value=(self.settings.get("size_unit", "MB") if hasattr(self, "settings") and isinstance(self.settings, dict) else "MB"))
-        if not hasattr(self, "profile_var"):       self.profile_var = tk.StringVar(value="")
-        if not hasattr(self, "watch_var"):         self.watch_var = tk.BooleanVar(value=False)
-        self.per_file_opts = {}
-        if not hasattr(self, "watch_folder"):      self.watch_folder = tk.StringVar(value=SCRIPT_DIR)
-        if not hasattr(self, "webhook_url"):       self.webhook_url = ""
-        if not hasattr(self, "webhook_var"):       self.webhook_var = tk.StringVar(value=self.webhook_url)
-        if not hasattr(self, "file_list"): self.file_list = []
-        if not hasattr(self, "per_file_opts"): self.per_file_opts = {}  # path -> dict overrides
-
-        def _adv_bool(name, key):
-            if not hasattr(self, name):
-                setattr(self, name, tk.BooleanVar(value=bool(ADVANCED_DEFAULTS.get(key, False))))
-        def _adv_str(name, key):
-            if not hasattr(self, name):
-                setattr(self, name, tk.StringVar(value=str(ADVANCED_DEFAULTS.get(key, ""))))
-
-        _adv_str ("adv_encoder",            "encoder")
-        _adv_bool("adv_iterative",          "iterative")
-        _adv_bool("adv_two_pass",           "two_pass")
-        _adv_str ("adv_manual_crf",         "manual_crf")
-        _adv_str ("adv_manual_bitrate",     "manual_bitrate")
-        _adv_str ("adv_output_prefix",      "output_prefix")
-        _adv_str ("adv_output_suffix",      "output_suffix")
-        _adv_str ("adv_audio_format",       "audio_format")
-        _adv_str ("adv_image_format",       "image_format")
-        _adv_bool("adv_concurrent",         "concurrent")
-        _adv_bool("adv_auto_output_folder", "auto_output_folder")
-        _adv_bool("adv_guetzli",            "guetzli")
-        _adv_bool("adv_pngopt",             "pngopt")
-        _adv_bool("adv_auto_jpeg",          "auto_jpeg")
-        _adv_bool("adv_scene_zones",        "scene_zones")
-        _adv_bool("adv_hw_decode",          "hw_decode")
-        if not hasattr(self, "adv_two_pass_fallback"): self.adv_two_pass_fallback = tk.BooleanVar(value=bool(ADVANCED_DEFAULTS.get("two_pass_fallback", True)))
-        if not hasattr(self, "adv_auto_retry"):        self.adv_auto_retry        = tk.BooleanVar(value=bool(ADVANCED_DEFAULTS.get("auto_retry", True)))
-
-        self.root.grid_columnconfigure(0, weight=1)
-
-        header = tk.Frame(self.root, bg=APP_BG)
-        header.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 4))
-
-        # Static title (the old typewriter animation left it truncated whenever
-        # the window lost focus mid-cycle).
-        self.title_label = ttk.Label(header, text="BitCrusher", style="Title.TLabel")
-        self.title_label.pack(side="left")
-
-        # Right side of the header: quality mode + quick actions.
-        if not hasattr(self, "adv_quality_mode"):
-            self.adv_quality_mode = tk.StringVar(value="max")
-        ttk.Button(header, text=self._t("btn.user_guide", "User Guide"), style="Ghost.TButton",
-                   command=getattr(self, "show_user_guide", lambda: None)).pack(side="right", padx=(8, 0))
-        ttk.Button(header, text=self._t("btn.advanced", "Advanced…"), style="Ghost.TButton",
-                   command=getattr(self, "open_advanced_options", lambda: None)).pack(side="right", padx=(8, 0))
-        _qwrap = tk.Frame(header, bg=APP_BG)
-        _qwrap.pack(side="right", padx=(0, 12))
-        ttk.Label(_qwrap, text=self._t("lbl.quality", "Quality:"), style="Sub.TLabel").pack(side="left", padx=(0, 6))
-        for _qv, _qt in (("fast", "Fast"), ("balanced", "Balanced"), ("max", "Max")):
-            ttk.Radiobutton(_qwrap, text=self._t("qmode." + _qv, _qt), value=_qv,
-                            variable=self.adv_quality_mode).pack(side="left", padx=(0, 6))
-
-        self.root.grid_rowconfigure(1, weight=1)
-        content = tk.Frame(self.root, bg=APP_BG)
-        content.grid(row=1, column=0, sticky="nsew")
-
-        ctrl = tk.Frame(content, bg=APP_BG)
-        ctrl.pack(fill="x", padx=16, pady=(6, 8))
-
-        ttk.Label(ctrl, text=self._t("lbl.preset", "Preset:")).pack(side="left")
-        self.preset_combo = ttk.Combobox(
-            ctrl,
-            textvariable=self.preset_var,
-            state="readonly",
-            width=24,
-            values=sorted(list(PRESETS.keys()))
-        )
-        self.preset_combo.pack(side="left", padx=(6, 16))
-        self.preset_combo.bind("<<ComboboxSelected>>",
-            lambda _: getattr(self, "set_preset", lambda _=None: None)(self.preset_var.get())
-        )
-
-        ttk.Label(ctrl, text=self._t("lbl.target_size", "Target Size:")).pack(side="left")
-
-        self.size_unit_var = tk.StringVar(
-            value=self.settings.get("size_unit","MB") if hasattr(self,"settings") and isinstance(self.settings,dict) else "MB"
-        )
-
-        size_frame = tk.Frame(ctrl, bg=APP_BG)
-        size_frame.pack(side="left", padx=(6, 16))
-
-        ttk.Entry(size_frame, textvariable=self.target_size_var, width=7, style="Dark.TEntry").pack(side="left")
-        ttk.Combobox(
-            size_frame,
-            textvariable=self.size_unit_var,
-            values=["KB","MB","GB","TB"],
-            width=4,
-            state="readonly"
-        ).pack(side="left", padx=(6, 0))
-
-        ttk.Button(ctrl, text=self._t("btn.estimate", "Estimate"), style="Ghost.TButton",
-                   command=lambda: getattr(self, "_estimate_queue", lambda: None)()).pack(side="left", padx=(0, 16))
-
-        ttk.Label(ctrl, text=self._t("lbl.save_to", "Save to:")).pack(side="left")
-        self.save_entry = ttk.Entry(ctrl, textvariable=self.save_path, style="Dark.TEntry")
-        self.save_entry.pack(side="left", padx=6, fill="x", expand=True)
-        ttk.Button(ctrl, text=self._t("btn.browse", "Browse…"), style="Ghost.TButton",
-                   command=self.select_output_dir).pack(side="left", padx=(4, 0))
-
-        paned = ttk.Panedwindow(content, orient="horizontal")
-        paned.pack(fill="both", expand=True, padx=10, pady=(4, 10))
-
-        left  = tk.Frame(paned, bg=APP_BG)
-        mid   = tk.Frame(paned, bg=APP_BG)
-        right = tk.Frame(paned, bg=APP_BG)
-
-        tk.Label(right, text=self._t("lbl.display", "Display"), bg=APP_BG, fg=FG, anchor="w").pack(fill="x", padx=12, pady=(12, 0))
-
-        self.display_mode_var = tk.StringVar(value="Quality Metrics")
-        mode_row = tk.Frame(right, bg=APP_BG); mode_row.pack(fill="x", padx=12, pady=(6, 8))
-        ttk.Label(mode_row, text=self._t("lbl.mode", "Mode:")).pack(side="left")
-        mode_cbx = ttk.Combobox(mode_row, textvariable=self.display_mode_var, state="readonly",
-                                values=["Quality Metrics","Advisor Insights","History","Visual Compare"], width=22)
-        mode_cbx.pack(side="left", padx=(6,0))
-        mode_cbx.bind("<<ComboboxSelected>>", lambda e: self._rebuild_display_panel())
-
-        self.preview_container = tk.Frame(right, bg=CARD_BG, bd=1, relief="solid", highlightthickness=0)
-        self.preview_container.pack(fill="both", expand=True, padx=12, pady=(6, 12))
-
-
-
-
-
-
-        def _clear_container():
-            for w in self.preview_container.winfo_children():
-                try: w.destroy()
-                except Exception: pass
-
-        def _mk_metrics():
-
-            wrap = tk.Frame(self.preview_container, bg=CARD_BG); wrap.pack(fill="both", expand=True)
-            self._metrics_text = tk.Text(wrap, height=16, relief="flat", bd=0, bg=CARD_BG, fg=FG)
-            self._metrics_text.pack(fill="both", expand=True, padx=10, pady=10)
-            self._metrics_text.configure(state="disabled")
-
-        def _mk_insights():
-            wrap = tk.Frame(self.preview_container, bg=CARD_BG); wrap.pack(fill="both", expand=True)
-            self._insights_text = tk.Text(wrap, height=16, relief="flat", bd=0, bg=CARD_BG, fg=FG)
-            self._insights_text.pack(fill="both", expand=True, padx=10, pady=10)
-            self._insights_text.configure(state="disabled")
-
-        def _mk_history():
-            from tkinter import ttk as _ttk
-            wrap = tk.Frame(self.preview_container, bg=CARD_BG); wrap.pack(fill="both", expand=True)
-            cols = ("time","file","target_mb","encoder","actual_mb","overshoot")
-            self._hist = _ttk.Treeview(wrap, columns=cols, show="headings", height=10)
-            for c, w in zip(cols, (150, 220, 90, 80, 90, 90)):
-                self._hist.heading(c, text=c); self._hist.column(c, width=w, anchor="w")
-            self._hist.pack(fill="both", expand=True, padx=10, pady=10)
-
-        def _mk_compare():
-            wrap = tk.Frame(self.preview_container, bg=CARD_BG); wrap.pack(fill="both", expand=True)
-            ttk.Label(wrap, text=self._t("msg.compare_hint", "Compare the last output with the source.")).pack(anchor="w", padx=10, pady=(10,6))
-            btn = ttk.Button(wrap, text=self._t("btn.open_visual_compare", "Open Visual Compare"), command=self._open_visual_compare_for_selection)
-            btn.pack(anchor="w", padx=10, pady=(0,10))
-
-        self._mk_metrics   = _mk_metrics
-        self._mk_insights  = _mk_insights
-        self._mk_history   = _mk_history
-        self._mk_compare   = _mk_compare
-
-        def _rebuild_display_panel():
-            _clear_container()
-            m = self.display_mode_var.get()
-            if m == "Quality Metrics":   _mk_metrics()
-            elif m == "Advisor Insights":_mk_insights()
-            elif m == "History":         _mk_history()
-            else:                        _mk_compare()
-
-            self._refresh_display_panel()
-
-        self._rebuild_display_panel = _rebuild_display_panel
-
-        paned.add(left,  weight=3)
-        paned.add(mid,   weight=4)
-        paned.add(right, weight=3)
-
-        self.paned = paned
-        self.root.after(0, self._set_default_layout)
-
-        self.root.update_idletasks()
-        try:
-
-            paned.paneconfigure(left,  stretch="always")
-            paned.paneconfigure(mid,   stretch="always")
-            paned.paneconfigure(right, stretch="always")
-
-            paned.paneconfigure(left,  minsize=480)
-            paned.paneconfigure(mid,   minsize=340)
-            paned.paneconfigure(right, minsize=300)
-
-            total = paned.winfo_width() or content.winfo_width() or self.root.winfo_width() or 1400
-
-            paned.sashpos(0, max(480, int(total * 0.42)))
-            paned.sashpos(1, max(paned.sashpos(0) + 340, int(total * 0.72)))
-        except Exception:
-            pass
-
-        tk.Label(left, text=self._t("lbl.queue","Queue"), bg=APP_BG, fg=FG, anchor="w").pack(fill="x", padx=12, pady=(12, 0))
-
-        self.drop_frame = tk.Frame(left, bg=CARD_BG, bd=1, relief="solid", highlightthickness=0)
-        self.drop_frame.pack(fill="both", expand=True, padx=12, pady=(8, 12))
-
-        self.queue_box = QueueTree(self.drop_frame)
-        self._queue_scroll = ttk.Scrollbar(self.drop_frame, orient="vertical",
-                                           command=self.queue_box.yview)
-        self.queue_box.configure(yscrollcommand=self._queue_scroll.set)
-        self._queue_scroll.pack(side="right", fill="y")
-        self.job_rows: dict = {}
-        self.queue_menu = tk.Menu(self.root, tearoff=0)
-        self.queue_menu.add_command(label=self._t("qmenu.set_encoder", "Set encoder for this file..."), command=lambda: self._queue_set("encoder"))
-        self.queue_menu.add_command(label=self._t("qmenu.set_container", "Set container/format for this file..."), command=lambda: self._queue_set("container"))
-        self.queue_menu.add_command(label=self._t("qmenu.set_prefix", "Set prefix for this file..."),  command=lambda: self._queue_set("output_prefix"))
-        self.queue_menu.add_command(label=self._t("qmenu.set_suffix", "Set suffix for this file..."),  command=lambda: self._queue_set("output_suffix"))
-        self.queue_menu.add_command(label=self._t("qmenu.trim", "Trim / clip range for this file..."), command=lambda: self._queue_set_trim())
-        self.queue_menu.add_command(label=self._t("qmenu.suggest_trim", "Suggest trim ranges (audio peaks)..."), command=lambda: self._queue_suggest_trim())
-        self.queue_menu.add_command(label=self._t("qmenu.spotlight", "Spotlight quality range for this file..."), command=lambda: self._queue_set_spotlight())
-        self.queue_menu.add_command(label=self._t("qmenu.also_targets", "Also export at size(s) MB (e.g. 25 or 8,25)..."), command=lambda: self._queue_set("also_targets"))
-        self.queue_menu.add_command(label=self._t("qmenu.export_format", "Export as GIF/WebP (gif, webp, or blank)..."), command=lambda: self._queue_set("export_format"))
-        self.queue_menu.add_separator()
-        self.queue_menu.add_command(label=self._t("qmenu.reset_overrides", "Reset per-file overrides"), command=lambda: self._queue_reset_overrides())
-        self.queue_menu.add_command(label=self._t("qmenu.reset_status", "Reset status (re-encode)"), command=lambda: self._queue_reset_status())
-        self.queue_menu.add_command(label=self._t("qmenu.open_output", "Open Output Folder"), command=self.open_save_folder)
-        self.queue_menu.add_command(label=self._t("qmenu.remove", "Remove from Queue"),  command=self.remove_selected)
-        def _on_queue_context(event):
-            try:
-                i = self.queue_box.nearest(event.y)
-                self.queue_box.selection_clear(0, "end")
-                self.queue_box.selection_set(i)
-                self.queue_box.activate(i)
-            except Exception:
-                pass
-            try:
-                self.queue_menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                try: self.queue_menu.grab_release()
-                except Exception: pass
-
-        def _queue_set(key: str):
-            from tkinter import simpledialog
-            sel = list(self.queue_box.curselection())
-            if not sel:
-                return
-            try:
-                # Always look up the full path from file_list by index, not from listbox display text
-                path = self.file_list[sel[0]]
-            except (IndexError, AttributeError):
-                return
-            if not hasattr(self, "per_file_opts") or self.per_file_opts is None:
-                self.per_file_opts = {}
-            cur = (self.per_file_opts.get(path, {}) or {}).get(key, "")
-            # parent=self.root is critical on Windows — without it the dialog appears
-            # behind the main window, making the app appear frozen/crashed
-            val = simpledialog.askstring(
-                "Per-file override",
-                f"{key} for:\n{os.path.basename(path)}",
-                initialvalue=str(cur),
-                parent=self.root,
-            )
-            if val is None:
-                return
-            self.per_file_opts.setdefault(path, {})[key] = val.strip()
-            try: self.update_status(f"Per-file: {os.path.basename(path)} -> {key}={val.strip()}")
-            except Exception: pass
-            try: self._save_queue()
-            except Exception: pass
-
-        def _queue_reset_overrides():
-            sel = list(self.queue_box.curselection())
-            if not sel or not getattr(self, "per_file_opts", None):
-                return
-            for i in sel:
-                try:
-                    path = self.file_list[i]
-                    if self.per_file_opts.pop(path, None) is not None:
-                        self.update_status(f"Per-file overrides cleared: {os.path.basename(path)}")
-                except Exception:
-                    pass
-            try:
-                self._save_queue()
-            except Exception:
-                pass
-
-        def _queue_reset_status():
-            sel = list(self.queue_box.curselection())
-            if not sel:
-                return
-            for i in sel:
-                try:
-                    path = self.file_list[i]
-                    self._record_job_state(path, "pending")
-                    self._job_update(path, status="pending", progress=None,
-                                     eta="", size=None, vmaf=None)
-                    self.update_status(f"Status reset (will re-encode): "
-                                       f"{os.path.basename(path)}")
-                except Exception:
-                    pass
-
-        def _queue_set_trim():
-            from tkinter import simpledialog, messagebox
-            sel = list(self.queue_box.curselection())
-            if not sel:
-                return
-            try:
-                path = self.file_list[sel[0]]
-            except (IndexError, AttributeError):
-                return
-            if not hasattr(self, "per_file_opts") or self.per_file_opts is None:
-                self.per_file_opts = {}
-            cur = (self.per_file_opts.get(path, {}) or {}).get("trim_range", "")
-            val = simpledialog.askstring(
-                "Trim / clip range",
-                "Compress only this range of:\n"
-                f"{os.path.basename(path)}\n\n"
-                "Format: START-END (e.g. 1:42-2:05 or 12-31).\n"
-                "The whole size budget goes to the kept range.\n"
-                "Leave blank to clear the trim.",
-                initialvalue=str(cur),
-                parent=self.root,
-            )
-            if val is None:
-                return
-            val = val.strip()
-            if not val:
-                if (self.per_file_opts.get(path, {}) or {}).pop("trim_range", None) is not None:
-                    self.update_status(f"Per-file: trim cleared for {os.path.basename(path)}")
-                try: self._save_queue()
-                except Exception: pass
-                return
-            try:
-                _a, _b = _parse_trim_range(val)
-            except ValueError as e:
-                try:
-                    messagebox.showerror(self._t("dlg.trim_range", "Trim range"), f"Invalid range: {e}", parent=self.root)
-                except Exception:
-                    pass
-                return
-            self.per_file_opts.setdefault(path, {})["trim_range"] = val
-            self.update_status(f"Per-file: {os.path.basename(path)} trim={val} "
-                               f"({_b - _a:.1f}s kept)")
-            try: self._save_queue()
-            except Exception: pass
-
-        def _queue_selected_path():
-            sel = list(self.queue_box.curselection())
-            if not sel:
-                return None
-            try:
-                return self.file_list[sel[0]]
-            except (IndexError, AttributeError):
-                return None
-
-        def _queue_set_spotlight():
-            from tkinter import simpledialog, messagebox
-            path = _queue_selected_path()
-            if not path:
-                return
-            if not hasattr(self, "per_file_opts") or self.per_file_opts is None:
-                self.per_file_opts = {}
-            cur = (self.per_file_opts.get(path, {}) or {}).get("spotlight_range", "")
-            val = simpledialog.askstring(
-                "Spotlight quality range",
-                "Keep the WHOLE video, but boost quality in this range\n"
-                "(the rest of the video pays for it under the same cap):\n"
-                f"{os.path.basename(path)}\n\n"
-                "Format: START-END (e.g. 1:42-2:05). Uses x264/x265 rate zones.\n"
-                "Leave blank to clear.",
-                initialvalue=str(cur), parent=self.root)
-            if val is None:
-                return
-            val = val.strip()
-            if not val:
-                if (self.per_file_opts.get(path, {}) or {}).pop("spotlight_range", None) is not None:
-                    self.update_status(f"Per-file: spotlight cleared for {os.path.basename(path)}")
-                try: self._save_queue()
-                except Exception: pass
-                return
-            try:
-                _parse_trim_range(val)
-            except ValueError as e:
-                try:
-                    messagebox.showerror(self._t("dlg.spotlight_range", "Spotlight range"), f"Invalid range: {e}", parent=self.root)
-                except Exception:
-                    pass
-                return
-            self.per_file_opts.setdefault(path, {})["spotlight_range"] = val
-            self.update_status(f"Per-file: {os.path.basename(path)} spotlight={val}")
-            try: self._save_queue()
-            except Exception: pass
-
-        def _queue_suggest_trim():
-            from tkinter import messagebox
-            path = _queue_selected_path()
-            if not path:
-                return
-            self.update_status(f"[Suggest] Analyzing audio energy of {os.path.basename(path)}...")
-
-            def _work():
-                try:
-                    cands = suggest_trim_ranges(path, clip_seconds=20.0,
-                                                status_cb=lambda m, l="INFO": self.update_status(m, level=l))
-                except Exception:
-                    cands = []
-                self._ui(_show, cands)
-
-            def _show(cands):
-                if not cands:
-                    try:
-                        messagebox.showinfo(
-                            "Suggest trim",
-                            "No clear audio peaks found.\n\n"
-                            "Silent or uniform-loudness moments (e.g. a great play in a "
-                            "quiet game) can't be detected by signal analysis - set the "
-                            "trim manually via 'Trim / clip range for this file...'.",
-                            parent=self.root)
-                    except Exception:
-                        pass
-                    return
-                win = tk.Toplevel(self.root)
-                win.title(self._t("dlg.suggested_trim", "Suggested trim ranges"))
-                win.transient(self.root)
-                tk.Label(win, text=f"Candidate moments in {os.path.basename(path)}:",
-                         anchor="w", justify="left").pack(fill="x", padx=12, pady=(10, 4))
-                _choice = tk.StringVar(value=cands[0]["range"])
-                for c in cands:
-                    ttk.Radiobutton(
-                        win, value=c["range"], variable=_choice,
-                        text=f"{c['range']}   ({c['why']}, score {c['score']})"
-                    ).pack(anchor="w", padx=18, pady=2)
-                btns = tk.Frame(win); btns.pack(fill="x", padx=12, pady=10)
-
-                def _apply():
-                    rng = _choice.get()
-                    if not hasattr(self, "per_file_opts") or self.per_file_opts is None:
-                        self.per_file_opts = {}
-                    self.per_file_opts.setdefault(path, {})["trim_range"] = rng
-                    self.update_status(f"Per-file: {os.path.basename(path)} trim={rng} (from suggestion)")
-                    try: self._save_queue()
-                    except Exception: pass
-                    win.destroy()
-
-                ttk.Button(btns, text="Apply as trim", command=_apply).pack(side="right", padx=(6, 0))
-                ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right")
-
-            threading.Thread(target=_work, name="bc_suggest", daemon=True).start()
-
-        # expose nested helpers as instance attributes for event bindings/menu commands
-        self._on_queue_context = _on_queue_context
-        self._queue_set = _queue_set
-        self._queue_set_trim = _queue_set_trim
-        self._queue_set_spotlight = _queue_set_spotlight
-        self._queue_suggest_trim = _queue_suggest_trim
-        self._queue_reset_overrides = _queue_reset_overrides
-        self._queue_reset_status = _queue_reset_status
-
-        self.queue_box.bind("<Button-3>", self._on_queue_context)
-        self.queue_box.pack(fill="both", expand=True, padx=6, pady=6)
-        self._rebuild_display_panel()
-        self.queue_box.bind("<<TreeviewSelect>>", lambda e: self._schedule_display_refresh())
-        self.queue_box.bind("<Double-Button-1>", lambda e: self._schedule_display_refresh())
-
-
-        # Primary action row: big Start, Stop beside it.
-        start_row = tk.Frame(left, bg=APP_BG)
-        start_row.pack(side="bottom", fill="x", padx=12, pady=(4, 12))
-
-        ttk.Button(
-            start_row,
-            text="▶  " + self._t("btn.start", "Start Compression"),
-            command=getattr(self, "start_compression", lambda: None)
-        ).pack(side="left", expand=True, fill="x", padx=(0, 8))
-
-        ttk.Button(
-            start_row,
-            text=self._t("btn.stop", "Stop"),
-            style="Ghost.TButton",
-            command=getattr(self, "stop_compression", lambda: None)
-        ).pack(side="left", padx=(0, 0), ipadx=10)
-
-        # Queue management toolbar (secondary/ghost buttons).
-        qbtns = tk.Frame(left, bg=APP_BG)
-        qbtns.pack(side="bottom", fill="x", padx=12, pady=(6, 4))
-
-        ttk.Button(qbtns, text="+ " + self._t("btn.add_files","Add Files…"), style="Ghost.TButton",
-                   command=getattr(self, "add_files", lambda: None)).pack(side="left", padx=(0, 6))
-        ttk.Button(qbtns, text=self._t("btn.remove_selected","Remove"), style="Ghost.TButton",
-                   command=getattr(self, "remove_selected", lambda: None)).pack(side="left", padx=(0, 6))
-        ttk.Button(qbtns, text=self._t("btn.clear","Clear"), style="Ghost.TButton",
-                   command=getattr(self, "clear_queue", lambda: None)).pack(side="left", padx=(0, 6))
-        ttk.Button(qbtns, text=self._t("btn.sort_eta","Sort: fastest first"), style="Ghost.TButton",
-                   command=getattr(self, "sort_queue_by_eta", lambda: None)).pack(side="left", padx=(0, 6))
-        ttk.Button(qbtns, text="▼", width=3, style="Ghost.TButton",
-                   command=lambda: getattr(self, "move_selection", lambda *_: None)(+1)).pack(side="right", padx=(6, 0))
-        ttk.Button(qbtns, text="▲", width=3, style="Ghost.TButton",
-                   command=lambda: getattr(self, "move_selection", lambda *_: None)(-1)).pack(side="right")
-
-        try:
-            if TkinterDnD and hasattr(self.root, "drop_target_register"):
-                for w in (self.drop_frame, self.queue_box, self.root):
-                    if hasattr(w, "drop_target_register"):
-                        w.drop_target_register(DND_FILES)
-                        w.dnd_bind("<<Drop>>", getattr(self, "drop_file_handler", lambda *_: None))
-        except Exception:
-            pass
-
-        from tkinter.scrolledtext import ScrolledText
-        self._activity_label = tk.Label(mid, text=self._t("lbl.activity", "Activity"), bg=APP_BG, fg=FG, anchor="w")
-        self._activity_label.pack(fill="x", padx=12, pady=(12, 0))
-
-        # Overall queue progress lives at the bottom of the middle pane.
-        self.progress = ttk.Progressbar(mid, style="Accent.Horizontal.TProgressbar",
-                                        mode="determinate")
-        self.progress.pack(side="bottom", fill="x", padx=12, pady=(6, 12))
-
-        _mid_nb = ttk.Notebook(mid)
-        _mid_nb.pack(fill="both", expand=True, padx=12, pady=(8, 0))
-
-        # Optional hidden T-Rex runner in the dead space above the Activity feed
-        # (toggled from Advanced Options). Recreate cleanly if setup_ui re-runs.
-        try:
-            if getattr(self, "dino_runner", None) is not None:
-                self.dino_runner.stop()
-        except Exception:
-            pass
-        if not hasattr(self, "dino_game_var"):
-            self.dino_game_var = tk.IntVar(
-                value=1 if (getattr(self, "settings", {}) or {}).get("dino_game", False) else 0)
-        self._mid_frame = mid
-        self.dino_runner = DinoRunner(mid, bg=_hsl_shift(CARD_BG, l_mul=0.90),
-                                      fg=FG_SUB, accent=(globals().get("ACCENT") or "#4caf7d"))
-        self._apply_dino()
-
-        # Plain-language view for everyone: friendly proportional font, roomy
-        # line spacing, a left margin, and a blank line between files.
-        _tab_feed = tk.Frame(_mid_nb, bg=CARD_BG)
-        _mid_nb.add(_tab_feed, text=f"  {self._t('tab.progress', 'Progress')}  ")
-        self.stage_text = ScrolledText(_tab_feed, height=16, wrap="word",
-                                       bg=_hsl_shift(CARD_BG, l_mul=0.98), fg=FG,
-                                       insertbackground=FG, relief="flat", borderwidth=0,
-                                       font=("Segoe UI", 10), spacing1=3, spacing3=5,
-                                       padx=10, pady=8)
-        self.stage_text.pack(fill="both", expand=True, padx=2, pady=2)
-        self.stage_text.config(state="disabled")
-
-        # Technical detail for power users: monospace so the time/level/message
-        # columns line up, tight spacing, section dividers between jobs.
-        _tab_log = tk.Frame(_mid_nb, bg=CARD_BG)
-        _mid_nb.add(_tab_log, text=f"  {self._t('tab.details', 'Details')}  ")
-        self.log_text = ScrolledText(_tab_log, height=10, bg=_hsl_shift(CARD_BG, l_mul=0.96),
-                                     fg=FG, insertbackground=FG, relief="flat", borderwidth=0,
-                                     state="disabled", font=("Consolas", 9),
-                                     spacing1=1, spacing3=1, padx=8, pady=6)
-        self.log_text.pack(fill="both", expand=True, padx=2, pady=2)
-        self.log_widget = self.log_text
-        self.Log_widget = self.log_widget
-        bridge_gui_logger_color(self.log_widget)
-
-        # Lifetime stats: read-only roll-up of the run_*.jsonl encode history
-        # (total bytes saved, VMAF distribution, encoder win-rates). Offline.
-        _tab_stats = tk.Frame(_mid_nb, bg=CARD_BG)
-        _mid_nb.add(_tab_stats, text=f"  {self._t('tab.stats', 'Stats')}  ")
-        _sbar = tk.Frame(_tab_stats, bg=CARD_BG); _sbar.pack(fill="x", padx=2, pady=(4, 0))
-        ttk.Button(_sbar, text=self._t("btn.refresh", "Refresh"), style="Ghost.TButton",
-                   command=lambda: self.refresh_lifetime_stats()).pack(side="right")
-        self.stats_view = ScrolledText(_tab_stats, height=14, wrap="word",
-                                       bg=_hsl_shift(CARD_BG, l_mul=0.98), fg=FG,
-                                       insertbackground=FG, relief="flat", borderwidth=0,
-                                       font=("Consolas", 10), spacing1=2, spacing3=2,
-                                       padx=10, pady=8)
-        self.stats_view.pack(fill="both", expand=True, padx=2, pady=2)
-        self.stats_view.config(state="disabled")
-        try:
-            self.refresh_lifetime_stats()
-        except Exception:
-            pass
-
-        wb = ttk.LabelFrame(right, text=self._t("panel.webhook","Webhook"), style="Card.TLabelframe")
-        wb.pack(fill="x", padx=12, pady=(12, 10))
-        ttk.Label(wb, text=self._t("lbl.webhook_url","Discord/Webhook URL"), style="Sub.TLabel").pack(anchor="w", padx=10, pady=(8, 0))
-        ttk.Entry(wb, textvariable=self.webhook_var, style="Dark.TEntry").pack(fill="x", padx=10, pady=(4, 10))
-
-        wf = ttk.LabelFrame(right, text=self._t("panel.watcher","Folder Watcher"), style="Card.TLabelframe")
-        wf.pack(fill="x", padx=12, pady=(0, 10))
-        self.watch_chk = ttk.Checkbutton(
-            wf, text=self._t("lbl.enable_watcher","Enable watcher"), variable=self.watch_var,
-            onvalue=True, offvalue=False,
-            command=getattr(self, "toggle_watch_folder", lambda: None)
-        )
-        self.watch_chk.pack(anchor="w", padx=10, pady=(8, 4))
-        wrow = tk.Frame(wf, bg=APP_BG); wrow.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Entry(wrow, textvariable=self.watch_folder, style="Dark.TEntry").pack(side="left", fill="x", expand=True)
-        ttk.Button(wrow, text="…", width=3, style="Ghost.TButton",
-                   command=getattr(self, "browse_watch_folder", lambda: None)).pack(side="left", padx=(6, 0))
-        if not hasattr(self, "pipeline_var"):
-            self.pipeline_var = tk.BooleanVar(value=bool((getattr(self, "settings", {}) or {}).get("pipeline_mode", False)))
-        self.pipeline_chk = ttk.Checkbutton(
-            wf, text=self._t("lbl.pipeline_mode", "Pipeline mode (auto-compress watched files + webhook)"),
-            variable=self.pipeline_var, onvalue=True, offvalue=False,
-            command=lambda: self.settings.__setitem__("pipeline_mode", bool(self.pipeline_var.get())))
-        self.pipeline_chk.pack(anchor="w", padx=10, pady=(0, 10))
-
-        pf = ttk.LabelFrame(right, text=self._t("panel.profiles","Profiles"), style="Card.TLabelframe")
-        pf.pack(fill="x", padx=12, pady=(0, 10))
-        ttk.Entry(pf, textvariable=self.profile_var, style="Dark.TEntry").pack(fill="x", padx=10, pady=(8, 4))
-        prow = tk.Frame(pf, bg=APP_BG); prow.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Button(prow, text=self._t("btn.save","Save"), style="Ghost.TButton",
-                   command=getattr(self, "save_profile", lambda: None)).pack(side="left")
-        ttk.Button(prow, text=self._t("btn.load","Load"), style="Ghost.TButton",
-                   command=getattr(self, "load_profile", lambda: None)).pack(side="left", padx=6)
-
-        ttk.Button(right, text=self._t("btn.open_save", "Open Save Folder"), style="Ghost.TButton",
-                   command=getattr(self, "open_save_folder", lambda: None)).pack(fill="x", padx=12, pady=(0, 12))
-
-        if getattr(self, "queue_box", None) is not None and self.queue_box.size() == 0:
-            try:
-                getattr(self, "set_preset", lambda *_a, **_k: None)(self.preset_var.get())
-            except Exception:
-                pass
-
-            try:
-                self.webhook_url = self.webhook_var.get()
-            except Exception:
-                pass
-
-            try:
-                self._on_save_dir_changed()
-            except Exception:
-                pass
-
-        # Final retheme so widgets created above (notebook tabs, entries,
-        # scrolled texts) pick up the palette — the first pass ran before
-        # most of the UI existed.
-        try:
-            retheme_runtime(self, self.style, self.theme_var.get())
-        except Exception:
-            pass
-
-        # Make the quality score stand out in the plain-language feed so a
-        # non-technical user skimming a long batch can't miss it.
-        try:
-            self.stage_text.tag_configure(
-                "QSCORE", foreground=(globals().get("ACCENT") or "#4caf7d"),
-                font=("Segoe UI", 10, "bold"), spacing1=4, spacing3=4)
-        except Exception:
-            pass
-
-        # Render any restored / already-queued files into the freshly built
-        # queue widget. setup_ui runs more than once (init + main launch), and
-        # each rebuild creates an EMPTY queue_box — without this, files kept in
-        # file_list (restored from last session, or added before a rebuild) stay
-        # invisible even though they're really queued and will compress. This
-        # was the "file not showing but still compresses" bug.
-        try:
-            if getattr(self, "file_list", None):
-                self.refresh_queue_box()
-            else:
-                self._load_queue()
-        except Exception:
-            pass
-
-
-
-
-
-
-
-
+            from ui.main_view import build_main_view
+        except ImportError:
+            from main_view import build_main_view
+        build_main_view(self)
 
     def start_compression(self):
         
@@ -5915,7 +5215,6 @@ class CompressorGUI:
         data = {}
 
         self.setup_directories()
-        self.setup_style()
         self.setup_ui()
         self.setup_drag_and_drop()
 
@@ -6016,6 +5315,13 @@ class CompressorGUI:
             pass
 
         self.watch_folders = self.settings.get("watch_folders", [])
+        # Watcher digest: aggregate queued/done/failed into one ~20s summary
+        # (support/watch_digest.py) instead of a toast per file.
+        self._watch_digest = DigestBuffer()
+        try:
+            self.root.after(20000, self._watch_digest_tick)
+        except Exception:
+            pass
         self.watcher = FolderWatcher(
             on_file_ready=lambda fp: self._enqueue_from_watcher(fp),
             status_cb=lambda m: self.update_status(m, level="INFO"),
@@ -6498,15 +5804,52 @@ class CompressorGUI:
             self.queue_file(filepath)
             self.update_status(f"Queued via Watcher: {filepath}")
             try:
-                notify_info("BitCrusher", f"Queued via Watcher:\n{os.path.basename(filepath)}", duration=4)
+                po = getattr(self, "per_file_opts", None)
+                if isinstance(po, dict):
+                    po.setdefault(_normalize_drop_path(filepath), {})["_via_watcher"] = True
             except Exception:
                 pass
+            if self._watch_digest_enabled():
+                # Digest mode (default): one summary every ~20s instead of a
+                # toast per file dropped into the watch folder.
+                try:
+                    self._watch_digest.add("queued")
+                except Exception:
+                    pass
+            else:
+                try:
+                    notify_info("BitCrusher", f"Queued via Watcher:\n{os.path.basename(filepath)}", duration=4)
+                except Exception:
+                    pass
             # Pipeline mode: zero-touch watch → compress → webhook. Debounce so a
             # burst of files dropped together starts ONE batch, not one per file.
             if self._pipeline_enabled():
                 self._pipeline_kick()
         except Exception as e:
             self.update_status(f"Watcher enqueue failed: {e}", level="ERROR")
+
+    def _watch_digest_enabled(self) -> bool:
+        try:
+            return bool(self.settings.get("watch_digest", True))
+        except Exception:
+            return True
+
+    def _watch_digest_tick(self):
+        """Flush the watcher digest every ~20s (only speaks when non-empty)."""
+        try:
+            msg = self._watch_digest.flush()
+            if msg:
+                self.update_status(f"[Watcher] {msg}", level="INFO")
+                try:
+                    self.ui_info(msg)   # snackbar (install_snackbar_hooks)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self.root.after(20000, self._watch_digest_tick)
+        except Exception:
+            pass
 
     def _pipeline_enabled(self) -> bool:
         try:
@@ -8453,67 +7796,6 @@ class CompressorGUI:
 
 
 
-    def setup_style(self):
-        
-        from tkinter import ttk
-
-        style = ttk.Style()
-        style.theme_use("clam")
-
-        style.configure(
-            "TButton",
-            background="#7289DA",
-            foreground="white",
-            relief="flat",
-            padding=6,
-            font=("Segoe UI", 10)
-        )
-        style.map(
-            "TButton",
-            background=[("active", "#99AAB5")],
-            foreground=[("active", "white")]
-        )
-
-        style.configure(
-            "TLabel",
-            background="#2C2F33",
-            foreground="white",
-            font=("Segoe UI", 10)
-        )
-
-        style.configure(
-            "TEntry",
-            fieldbackground="#99AAB5",
-            foreground="black",
-            padding=3
-        )
-        style.configure(
-            "TCombobox",
-            fieldbackground="#99AAB5",
-            foreground="black",
-            padding=3
-        )
-
-        style.configure("TSeparator",            background="#2C2F33")
-        style.configure("Horizontal.TSeparator", background="#2C2F33")
-        style.configure("Vertical.TSeparator",   background="#2C2F33")
-
-        style.configure(
-            "Treeview",
-            background="#2C2F33",
-            fieldbackground="#2C2F33",
-            foreground="white",
-            font=("Segoe UI", 10)
-        )
-        style.configure(
-            "Treeview.Heading",
-            background="#23272A",
-            foreground="white",
-            font=("Segoe UI", 10, "bold")
-        )
-
-
-
 
 
 
@@ -9059,6 +8341,38 @@ class CompressorGUI:
             c.create_text(cw / 2, ch / 2, text="no VMAF series for this encode",
                           fill=muted)
 
+        # Scene heatmap strip: time x quality bands (green/amber/red) with a
+        # hover timestamp readout. Levels come from the framework-free
+        # view-model; only the colors are chosen here.
+        bands = m.get("heatmap") or []
+        if bands:
+            _heat_colors = {"good": accent, "ok": "#d0a24a", "poor": danger}
+            hh = 18
+            hc = tk.Canvas(win, width=cw, height=hh, bg=APP_BG,
+                           highlightthickness=0, bd=0)
+            hc.pack(padx=14, pady=(0, 2))
+            for b in bands:
+                hc.create_rectangle(16 + (cw - 32) * b["x0"], 2,
+                                    16 + (cw - 32) * b["x1"], hh - 2,
+                                    fill=_heat_colors.get(b["level"], muted),
+                                    outline="")
+            _heat_lbl = ttk.Label(win, text="Scene quality map — hover for timestamps",
+                                  foreground=muted)
+            _heat_lbl.pack(anchor="w", padx=14, pady=(0, 6))
+
+            def _heat_hover(ev, _bands=bands, _lbl=_heat_lbl):
+                frac = min(1.0, max(0.0, (ev.x - 16) / max(1, cw - 32)))
+                for b in _bands:
+                    if b["x0"] <= frac <= b["x1"]:
+                        if b.get("t0") is not None:
+                            _lbl.config(text=f"{b['t0']:.0f}s - {b['t1']:.0f}s: "
+                                             f"{b['level']}")
+                        else:
+                            _lbl.config(text=f"{b['x0']*100:.0f}%-"
+                                             f"{b['x1']*100:.0f}%: {b['level']}")
+                        return
+            hc.bind("<Motion>", _heat_hover)
+
         board = m.get("scoreboard") or []
         if board:
             ttk.Label(win, text="Codec race — VMAF-per-bit on the probe clip",
@@ -9357,6 +8671,23 @@ class CompressorGUI:
                 self.job_states[_norm] = {"status": status, "output": output,
                                           "finished_at": time.time()}
             self._save_queue()
+            # Watcher digest: files that arrived via the watcher report their
+            # outcome into the periodic summary instead of individual toasts.
+            try:
+                po = getattr(self, "per_file_opts", {}) or {}
+                if (po.get(_norm, {}) or {}).get("_via_watcher") and self._watch_digest_enabled():
+                    if status == "done":
+                        saved = 0
+                        try:
+                            if output and os.path.isfile(output) and os.path.isfile(_norm):
+                                saved = max(0, os.path.getsize(_norm) - os.path.getsize(output))
+                        except Exception:
+                            pass
+                        self._watch_digest.add("done", saved)
+                    elif status == "failed":
+                        self._watch_digest.add("failed")
+            except Exception:
+                pass
         except Exception:
             LOG.debug("Job-state record failed", exc_info=True)
 

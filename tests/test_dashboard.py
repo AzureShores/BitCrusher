@@ -76,3 +76,34 @@ def test_build_model_from_record():
     assert m["scoreboard"][0]["encoder"] == "av1"
     assert m["under_target"] is True
     assert 0.9 < m["size_ratio"] < 1.0
+
+
+def test_heatmap_bands_merge_runs():
+    bands = db.heatmap_bands([96, 97, 90, 88, 70, 60], series_span_s=60.0)
+    assert [b["level"] for b in bands] == ["good", "ok", "poor"]
+    assert bands[0]["x0"] == 0.0 and bands[-1]["x1"] == 1.0
+    # Slot edges are contiguous.
+    for a, b in zip(bands, bands[1:]):
+        assert a["x1"] == b["x0"]
+    # Timestamps map through the span.
+    assert bands[0]["t0"] == 0.0 and bands[-1]["t1"] == 60.0
+
+
+def test_heatmap_bands_single_point_and_empty():
+    assert db.heatmap_bands([]) == []
+    assert db.heatmap_bands(None) == []
+    one = db.heatmap_bands([80.0])
+    assert len(one) == 1 and one[0]["level"] == "poor"
+    assert one[0]["x0"] == 0.0 and one[0]["x1"] == 1.0
+    assert one[0]["t0"] is None            # no span given
+
+
+def test_heatmap_thresholds():
+    bands = db.heatmap_bands([95.0, 94.99, 85.0, 84.99])
+    assert [b["level"] for b in bands] == ["good", "ok", "poor"]
+
+
+def test_model_includes_heatmap():
+    rec = {"outcome": {"series": [96, 80], "series_span_s": 10.0}}
+    m = db.build_dashboard_model(rec)
+    assert [b["level"] for b in m["heatmap"]] == ["good", "poor"]

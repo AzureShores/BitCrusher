@@ -64,6 +64,51 @@ def worst_window_marker(series, min_window_at=None, series_span_s=None) -> dict 
             "value": round(vals[idx], 2)}
 
 
+HEATMAP_GOOD = 95.0
+HEATMAP_OK = 85.0
+
+
+def _heat_level(v: float) -> str:
+    if v >= HEATMAP_GOOD:
+        return "good"
+    if v >= HEATMAP_OK:
+        return "ok"
+    return "poor"
+
+
+def heatmap_bands(series, series_span_s=None) -> list[dict]:
+    """Time-quality bands for the scene heatmap strip under the sparkline.
+
+    Consecutive samples on the same semantic level merge into one band:
+    {"x0", "x1" (0..1 fractions), "level" ("good"|"ok"|"poor"),
+     "t0", "t1" (seconds, None when the span is unknown)}. The GUI maps
+    levels to theme colors - no color decisions here.
+    """
+    vals = [v for v in (_f(s) for s in (series or [])) if v is not None]
+    n = len(vals)
+    if n == 0:
+        return []
+    span = _f(series_span_s)
+    span = span if span and span > 0 else None
+
+    def _mk(i0, i1, level):
+        # Sample i covers slot [i/n, (i+1)/n) - slot edges, not point centers.
+        x0, x1 = i0 / n, (i1 + 1) / n
+        return {"x0": round(x0, 4), "x1": round(x1, 4), "level": level,
+                "t0": round(x0 * span, 2) if span else None,
+                "t1": round(x1 * span, 2) if span else None}
+
+    bands = []
+    run_start, run_level = 0, _heat_level(vals[0])
+    for i in range(1, n):
+        lvl = _heat_level(vals[i])
+        if lvl != run_level:
+            bands.append(_mk(run_start, i - 1, run_level))
+            run_start, run_level = i, lvl
+    bands.append(_mk(run_start, n - 1, run_level))
+    return bands
+
+
 def scoreboard(race: dict | None, winner: str | None = None) -> list[dict]:
     """Codec race scoreboard rows, sorted best-first. `race` is the ledger's
     race field: {"scores": {family: vmaf}, ...} (or a bare {family: vmaf} map).
@@ -133,6 +178,7 @@ def build_dashboard_model(record: dict) -> dict:
         "mean": mean,
         "worst": worst,
         "worst_marker": marker,
+        "heatmap": heatmap_bands(series, outc.get("series_span_s")),
         "band": quality_band(worst),
         "spread": outc.get("spread"),
         "encoder": winner,

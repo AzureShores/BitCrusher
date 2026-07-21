@@ -277,6 +277,88 @@ def derive_palette(accent: str, app_bg: str) -> dict:
             "WARN": warn, "TITLE": title}
 
 
+_PALETTE_KEYS = ("APP_BG", "CARD_BG", "FG", "FG_SUB",
+                 "ACCENT", "ACCENT_2", "ERROR", "WARN", "TITLE")
+
+_AA_TARGET = {"FG": "APP_BG", "FG_SUB": "CARD_BG", "TITLE": "APP_BG",
+              "ACCENT": "APP_BG", "ACCENT_2": "APP_BG",
+              "ERROR": "CARD_BG", "WARN": "CARD_BG"}
+_AA_MIN = {"FG": 7.0, "FG_SUB": 4.5, "TITLE": 4.5}   # others: 3.0 (large/UI)
+
+
+def autofix_contrast(palette: dict) -> dict:
+    """Nudge each foreground colour's lightness until it clears WCAG AA
+    against its reference, preserving hue. Pure and deterministic."""
+    out = dict(palette or {})
+    bg_light = _is_light_hex(out.get("APP_BG", "#000000"))
+    for key, ref in _AA_TARGET.items():
+        if key not in out or ref not in out:
+            continue
+        target = _AA_MIN.get(key, 3.0)
+        c = _hex_norm(out[key])
+        against = _hex_norm(out[ref])
+        for _ in range(30):
+            if _wcag_ratio(c, against) >= target:
+                break
+            # Push away from the background: darker on light bg, lighter on dark.
+            c = _hsl(c, l_mul=(0.90 if bg_light else 1.12))
+            if c in ("#000000", "#ffffff"):
+                break
+        out[key] = c
+    return out
+
+
+def pair_light_dark(palette: dict) -> dict:
+    """Generate the opposite-mode counterpart of a palette from its accent
+    and an inverted background, via derive_palette."""
+    accent = _hex_norm((palette or {}).get("ACCENT", "#4caf7d"))
+    src_bg = _hex_norm((palette or {}).get("APP_BG", "#14161a"))
+    new_bg = "#f4f5f7" if not _is_light_hex(src_bg) else "#14161a"
+    out = derive_palette(accent, new_bg)
+    # Carry non-colour layout knobs across unchanged.
+    for k in ("_PADDING_SCALE", "_BORDER_WIDTH", "_RADIUS"):
+        if k in (palette or {}):
+            out[k] = palette[k]
+    return out
+
+
+def theme_to_share_string(palette: dict) -> str:
+    """Compact, copy-pasteable share code: 'BCTHEME1:' + base64(JSON)."""
+    import base64
+    import json
+    data = {k: _hex_norm(v) for k, v in (palette or {}).items()
+            if k in _PALETTE_KEYS}
+    for k in ("_PADDING_SCALE", "_BORDER_WIDTH", "_RADIUS"):
+        if k in (palette or {}):
+            data[k] = palette[k]
+    raw = json.dumps(data, separators=(",", ":")).encode("utf-8")
+    return "BCTHEME1:" + base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def theme_from_share_string(text: str) -> dict | None:
+    """Parse a share code back into a palette dict, or None if invalid."""
+    import base64
+    import json
+    try:
+        s = str(text or "").strip()
+        if not s.startswith("BCTHEME1:"):
+            return None
+        raw = base64.urlsafe_b64decode(s[len("BCTHEME1:"):].encode("ascii"))
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            return None
+        out = {}
+        for k in _PALETTE_KEYS:
+            if k in data:
+                out[k] = _hex_norm(str(data[k]))
+        for k in ("_PADDING_SCALE", "_BORDER_WIDTH", "_RADIUS"):
+            if k in data:
+                out[k] = data[k]
+        return out or None
+    except Exception:
+        return None
+
+
 def _build_wheel_image(d: int = 220):
     """HSV colour wheel as a PIL image, vectorised with numpy (the old lab
     built it pixel-by-pixel in Python and froze the UI for seconds)."""
@@ -339,6 +421,12 @@ class ThemeLab(Toplevel):
         self.draft["_PADDING_SCALE"] = float(base.get("_PADDING_SCALE", 1.00))
         self.draft["_BORDER_WIDTH"] = int(base.get("_BORDER_WIDTH", 1))
         self._adjust_base = {k: self.draft[k] for k in _THEMELAB_KEYS}
+        from collections import deque
+        self._undo = deque(maxlen=25)   # palette snapshots for Ctrl+Z
+        try:
+            self.bind("<Control-z>", self._undo_last)
+        except Exception:
+            pass
 
         # --- layout: left notebook / right always-visible preview ------------
         body = ttk.Frame(self)
@@ -375,6 +463,14 @@ class ThemeLab(Toplevel):
         cb.bind("<<ComboboxSelected>>", lambda _e: self._start_from(self._start_var.get()))
         ttk.Button(bar, text="Generate from Accent+BG", style="Ghost.TButton",
                    command=self._generate).pack(side="left", padx=4)
+        ttk.Button(bar, text="Fix contrast", style="Ghost.TButton",
+                   command=self._autofix_contrast).pack(side="left", padx=4)
+        ttk.Button(bar, text="Light/Dark pair", style="Ghost.TButton",
+                   command=self._make_pair).pack(side="left", padx=4)
+        ttk.Button(bar, text="Copy code", style="Ghost.TButton",
+                   command=self._copy_share).pack(side="left", padx=4)
+        ttk.Button(bar, text="Paste code", style="Ghost.TButton",
+                   command=self._paste_share).pack(side="left", padx=4)
         ttk.Button(bar, text="Import...", style="Ghost.TButton",
                    command=self._import_json).pack(side="left", padx=4)
         ttk.Button(bar, text="Export...", style="Ghost.TButton",
@@ -795,9 +891,9 @@ class ThemeLab(Toplevel):
                 pass
         self._draft_changed()
 
-    def _generate(self):
-        pal = derive_palette(self.draft["ACCENT"], self.draft["APP_BG"])
-        self.draft.update(pal)
+    def _apply_palette_to_draft(self, pal: dict):
+        """Merge a generated/parsed palette into the draft + refresh UI."""
+        self.draft.update({k: v for k, v in pal.items()})
         self._refresh_vars_from_draft()
         for k in _THEMELAB_KEYS:
             try:
@@ -805,6 +901,67 @@ class ThemeLab(Toplevel):
             except Exception:
                 pass
         self._draft_changed()
+
+    def _generate(self):
+        self._push_undo()
+        self._apply_palette_to_draft(
+            derive_palette(self.draft["ACCENT"], self.draft["APP_BG"]))
+
+    def _autofix_contrast(self):
+        self._push_undo()
+        self._apply_palette_to_draft(autofix_contrast(self.draft))
+        self._snack("Contrast nudged to WCAG AA")
+
+    def _make_pair(self):
+        self._push_undo()
+        self._apply_palette_to_draft(pair_light_dark(self.draft))
+        self._snack("Generated the opposite-mode counterpart")
+
+    def _copy_share(self):
+        try:
+            code = theme_to_share_string(self.draft)
+            self.clipboard_clear()
+            self.clipboard_append(code)
+            self._snack("Theme code copied to clipboard")
+        except Exception:
+            self._snack("Copy failed", kind="error")
+
+    def _paste_share(self):
+        try:
+            pal = theme_from_share_string(self.clipboard_get())
+        except Exception:
+            pal = None
+        if not pal:
+            self._snack("Clipboard has no valid theme code", kind="error")
+            return
+        self._push_undo()
+        self._apply_palette_to_draft(pal)
+        self._snack("Theme code applied")
+
+    def _snack(self, msg, kind="info"):
+        snack = _get(self.host, "snackbar", _noop)
+        try:
+            snack(self.host.root, msg, 1500, kind)
+        except Exception:
+            pass
+
+    # --- undo history (bounded snapshots, Ctrl+Z) -------------------------
+    def _push_undo(self):
+        try:
+            self._undo.append(dict(self.draft))
+        except Exception:
+            pass
+
+    def _undo_last(self, _e=None):
+        try:
+            if not self._undo:
+                self._snack("Nothing to undo")
+                return
+            prev = self._undo.pop()
+            self._apply_palette_to_draft(prev)
+            self._snack("Undo")
+        except Exception:
+            pass
 
     def _revert(self):
         self._start_from(self._entry_theme)
