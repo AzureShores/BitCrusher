@@ -93,7 +93,7 @@ from encode.ai_advisor import (choose_bitrates_advised as choose_bitrates,
                         cache_lookup_advised as cache_lookup,
                         advisor_preview_for_gui)
 from encode.ml_heuristics import analyze_and_advise, extract_media_features
-from encode.size_controller import SizeController
+from encode.size_controller import SizeController, next_relaxed_target
 from encode.encoder_profiles import select_profile
 from encode.planner import PlanInputs, plan as plan_encode
 from support.text_utils import _mojibake_score, _normalize_text, format_bytes
@@ -709,6 +709,12 @@ ADVANCED_DEFAULTS = {
     "target_tolerance_pct": 1.50,
     "target_tolerance_min_bytes": 120000,
     "max_target_attempts": 8,
+    # Quality-floor auto-relax (OPT-IN; default off keeps the ceiling sacred):
+    # when min_vmaf is unreachable within the cap, raise the cap in 1.25x
+    # steps up to qfloor_relax_max_mb and re-run. The relax max is the new
+    # hard ceiling.
+    "qfloor_autorelax": False,
+    "qfloor_relax_max_mb": 0,
     "pdf_force_rasterize": True,
     "pdf_tolerance": 0.10,
     "pdf_min_dpi": 90,
@@ -3249,6 +3255,27 @@ def compress_video(input_path: str, save_path: str, status_cb,
                     except Exception: pass
                     status_cb("[Quality] Boost pass overshot the ceiling; keeping previous output.", "INFO")
         if vmaf_result and _min_vmaf > 0.0 and _cur_floor is not None and _cur_floor < _min_vmaf:
+            # Opt-in auto-relax: when the floor is unreachable in-budget, raise
+            # the cap one ladder step toward the user's relax maximum and
+            # re-run. Default OFF - the ceiling invariant is untouched unless
+            # the user explicitly trades size for the quality floor.
+            _relax_on = bool((advanced_options or {}).get("qfloor_autorelax", False))
+            try:
+                _relax_max = float((advanced_options or {}).get("qfloor_relax_max_mb") or 0.0)
+            except Exception:
+                _relax_max = 0.0
+            _cur_mb = float(hard_target_bytes) / (1024 * 1024)
+            _next_mb = next_relaxed_target(_cur_mb, _relax_max) if _relax_on else None
+            if _next_mb:
+                status_cb(f"[QualityFloor] Relaxing cap {_cur_mb:.1f} MB -> {_next_mb:.1f} MB "
+                          f"to honor the VMAF {_min_vmaf:.0f} floor.", "INFO")
+                return compress_video(input_path, save_path, status_cb, _next_mb,
+                                      webhook_url, dict(advanced_options or {}),
+                                      cancel_cb)
+            if _relax_on and _relax_max > 0:
+                status_cb(f"[QualityFloor] Relax ladder exhausted at {_cur_mb:.1f} MB "
+                          f"(max {_relax_max:.1f} MB); shipping best in-budget result.",
+                          "WARNING")
             status_cb(f"[Quality] Worst-scene VMAF {_cur_floor:.1f} (mean {vmaf_result['vmaf']:.1f}) is below "
                       f"the {_min_vmaf:.0f} floor — the size target doesn't leave room for higher quality.",
                       "WARNING")
@@ -10308,6 +10335,9 @@ def _build_adv_from_args(args) -> dict:
     if int(getattr(args, "min_vmaf", 0) or 0) > 0:
         adv["min_vmaf"] = int(args.min_vmaf)
         adv["measure_quality"] = True
+    if float(getattr(args, "min_vmaf_relax_max", 0) or 0) > 0:
+        adv["qfloor_autorelax"] = True
+        adv["qfloor_relax_max_mb"] = float(args.min_vmaf_relax_max)
 
     if getattr(args, "no_preproc", False):
         adv["smart_preproc"] = False
@@ -10424,6 +10454,10 @@ def build_arg_parser():
                         "No input files required.")
     p.add_argument("--min-vmaf", type=int, default=0,
                    help="Spend spare budget until output reaches this VMAF (0 = off)")
+    p.add_argument("--min-vmaf-relax-max", type=float, default=0, metavar="MB",
+                   help="If the --min-vmaf floor is unreachable within the target, "
+                        "allow the cap to grow in 1.25x steps up to this many MB "
+                        "(0 = never exceed the target)")
     p.add_argument("--no-measure", action="store_true",
                    help="Skip the VMAF quality measurement of the final output")
     p.add_argument("--vmaf-model", default=None,

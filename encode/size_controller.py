@@ -319,3 +319,27 @@ class SizeController:
         self._pending_v_bps = int(max(self.min_v_bitrate, next_v))
         return int(next_v), int(self.audio_bps)
 
+
+def next_relaxed_target(current_mb: float, max_mb: float,
+                        step: float = 1.25) -> float | None:
+    """Quality-floor auto-relax ladder (opt-in feature).
+
+    When the min-VMAF floor is unreachable within the size cap, the caller
+    may raise the cap multiplicatively toward a user-set maximum. Returns
+    the next cap in MB, or None when the ladder is exhausted (current
+    already at/above max). The user-set max is the new hard ceiling - the
+    default-off behavior of "never exceed the target" is unchanged.
+    """
+    try:
+        cur = float(current_mb)
+        cap = float(max_mb)
+        s = float(step)
+    except Exception:
+        return None
+    if cur <= 0 or cap <= 0 or s <= 1.0:
+        return None
+    if cur >= cap:
+        return None
+    nxt = cur * s
+    return round(min(nxt, cap), 3)
+
