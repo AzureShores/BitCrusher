@@ -33,5 +33,11 @@ tools/HandBrakeCLI
 
 # Local tooling / state
 .claude/
+CLAUDE.md
 _bmad/
 _bmad-output/
+
+# Private dev/testing material (never ship in the public repo)
+Comparison_testing/
+TESTING_DATA/
+test_pipeline/*.json
