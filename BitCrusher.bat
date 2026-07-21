@@ -2,19 +2,19 @@
 setlocal
 cd /d "%~dp0"
 
-where py >nul 2>nul
-if %errorlevel%==0 (
-    set "PY_CMD=py -3"
-) else (
-    where python >nul 2>nul
-    if %errorlevel%==0 (
-        set "PY_CMD=python"
-    ) else (
-        echo Python 3 not found. Install it from https://www.python.org/downloads/
-        echo and make sure "Add python.exe to PATH" is checked during setup.
-        pause
-        exit /b 1
-    )
+REM Detect Python without nesting %errorlevel% inside a block: %errorlevel%
+REM expands at PARSE time there, so a nested check reads a stale value. Use
+REM && on `where` (runtime) and `if not defined` guards instead.
+set "PY_CMD="
+where py >nul 2>nul && set "PY_CMD=py -3"
+if not defined PY_CMD (
+    where python >nul 2>nul && set "PY_CMD=python"
+)
+if not defined PY_CMD (
+    echo Python 3 not found. Install it from https://www.python.org/downloads/
+    echo and make sure "Add python.exe to PATH" is checked during setup.
+    pause
+    exit /b 1
 )
 
 if not exist "%~dp0.deps_installed" (

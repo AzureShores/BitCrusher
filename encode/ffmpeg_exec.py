@@ -146,6 +146,15 @@ def _run_logged(cmd, *args, **kwargs):
     try:
         res = _orig_run(cmd, *args, **kwargs)
 
+    except FileNotFoundError as e:
+        # Not a failure worth ERROR-level noise: the executable simply isn't at
+        # this path. This fires during tool discovery, when a bare name (e.g.
+        # "ffmpeg.exe") is probed on PATH before falling back to the bundled
+        # tools/ binary. A genuinely-missing required tool is surfaced by the
+        # startup banner WARNING and check_dependencies. Callers still catch the
+        # re-raised error and handle the fallback.
+        LOG.debug("subprocess.run: executable not found for: %s (%r)", _render_cmd(cmd), e)
+        raise
     except Exception as e:
         LOG.error("subprocess.run raised exception for: %s\n%s", _render_cmd(cmd), repr(e))
         raise

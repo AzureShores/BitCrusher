@@ -643,7 +643,7 @@ PRESETS = {
 }
 
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 
 ADVANCED_DEFAULTS = {
     "auto_retry": True,
