@@ -40,6 +40,11 @@ def _build_output_path(kind: str, input_path: str, out_dir: str, adv: dict, defa
     stem = Path(input_path).stem
     prefix = str(adv.get("output_prefix", "") or "")
     suffix = str(adv.get("output_suffix", "") or "")
+    # Two-target export: tag secondary outputs (e.g. "_25MB") so both exports
+    # of one source are distinguishable instead of colliding into _dup names.
+    size_tag = str(adv.get("size_tag", "") or "")
+    if size_tag:
+        suffix = f"{suffix}_{size_tag}"
     ext = default_ext.lstrip(".")
     candidate = os.path.join(out_dir, f"{prefix}{stem}{suffix}.{ext}")
 

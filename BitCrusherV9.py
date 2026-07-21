@@ -741,11 +741,34 @@ def _normalize_drop_path(p: str) -> str:
 
     try:
         s = str(p).strip()
-        if (s.startswith("{") and s.endswith("}")) or (s.startswith()) or (s.startswith()):
+        if ((s.startswith("{") and s.endswith("}"))
+                or (s.startswith('"') and s.endswith('"'))
+                or (s.startswith("'") and s.endswith("'"))):
             s = s[1:-1]
         return os.path.normpath(s)
     except Exception:
         return str(p)
+
+
+def _parse_also_targets(val) -> list:
+    """Parse the two-target-export option into a list of MB floats.
+
+    Accepts a list/tuple of numbers or a string like "25" / "25, 50".
+    Invalid entries are dropped; result is deduped, positive, ascending.
+    """
+    out = []
+    try:
+        items = val if isinstance(val, (list, tuple)) else str(val or "").split(",")
+        for it in items:
+            try:
+                mb = float(str(it).strip())
+                if mb > 0:
+                    out.append(mb)
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return sorted(set(out))
 
 
 def install_drop_highlight(frame):
@@ -5020,6 +5043,7 @@ class CompressorGUI:
         self.queue_menu.add_command(label=self._t("qmenu.trim", "Trim / clip range for this file..."), command=lambda: self._queue_set_trim())
         self.queue_menu.add_command(label=self._t("qmenu.suggest_trim", "Suggest trim ranges (audio peaks)..."), command=lambda: self._queue_suggest_trim())
         self.queue_menu.add_command(label=self._t("qmenu.spotlight", "Spotlight quality range for this file..."), command=lambda: self._queue_set_spotlight())
+        self.queue_menu.add_command(label=self._t("qmenu.also_targets", "Also export at size(s) MB (e.g. 25 or 8,25)..."), command=lambda: self._queue_set("also_targets"))
         self.queue_menu.add_separator()
         self.queue_menu.add_command(label=self._t("qmenu.reset_overrides", "Reset per-file overrides"), command=lambda: self._queue_reset_overrides())
         self.queue_menu.add_command(label=self._t("qmenu.reset_status", "Reset status (re-encode)"), command=lambda: self._queue_reset_status())
@@ -9894,6 +9918,38 @@ class CompressorGUI:
                     res["output_path"] = _out_path
                     _dedup_canonical_outputs[path] = {"output_path": _out_path, "target": _file_target,
                                                       "adv": {k: adv.get(k) for k in _DEDUP_SETTINGS_KEYS}}
+                # Two-target export: after the primary lands, encode the same
+                # source again at each extra cap. Content analysis is disk-
+                # cached (ml_heuristics), so the repeat run skips the probes.
+                _also = _parse_also_targets(adv.get("also_targets"))
+                if ok and _also:
+                    for _mb in _also:
+                        if self.compression_cancelled:
+                            break
+                        _tag = (f"{_mb:g}MB")
+                        self.update_status(f"[MultiTarget] Also exporting "
+                                           f"{os.path.basename(path)} at {_mb:g} MB...",
+                                           level="INFO")
+                        adv2 = {k: v for k, v in adv.items() if k != "also_targets"}
+                        adv2["size_tag"] = _tag
+                        try:
+                            st2 = self.compress_file_task(
+                                filepath=path, output_folder=out_dir,
+                                target_size=float(_mb) * 1024 * 1024,
+                                webhook=webhook, adv_options=adv2) or {}
+                            if st2.get("compressed_size"):
+                                self.update_status(
+                                    f"[MultiTarget] {_mb:g} MB export done: "
+                                    f"{format_bytes(int(st2['compressed_size']))}.",
+                                    level="INFO")
+                            else:
+                                self.update_status(
+                                    f"[MultiTarget] {_mb:g} MB export produced no "
+                                    f"output.", level="WARNING")
+                        except Exception as _me:
+                            self.update_status(
+                                f"[MultiTarget] {_mb:g} MB export failed: {_me}",
+                                level="ERROR")
             except Exception as e:
                 res = {"path": path, "ok": False, "in_bytes": 0, "out_bytes": 0,
                        "vmaf": None, "encoder": None,
@@ -10335,6 +10391,10 @@ def build_arg_parser():
     p.add_argument("-o", "--output", help="Output directory (default: alongside first input)")
     p.add_argument("-t", "--target-size", type=float, default=10.0,
                    help="Target size in MB (applies to each item)")
+    p.add_argument("--also-target", type=float, action="append", default=None,
+                   metavar="MB",
+                   help="Also export each item at this extra size cap (MB); "
+                        "repeatable, e.g. -t 8 --also-target 25 --also-target 50")
     p.add_argument("--encoder", choices=["x264","x265","av1","svt-av1","aom-av1","vp9","vvc",
                                          "h264_nvenc","hevc_nvenc","av1_nvenc",
                                          "h264_qsv","hevc_qsv","av1_qsv",
@@ -10782,6 +10842,33 @@ def cli_main():
                     _cli_status(f"Copied to clipboard: {os.path.basename(outp)}")
         except Exception:
             pass
+        # Two-target export (--also-target): re-encode at each extra cap.
+        _also = _parse_also_targets(getattr(args, "also_target", None))
+        if _also and s.get("compressed_size"):
+            for _mb in _also:
+                if _cli_cancel():
+                    break
+                _cli_status(f"[MultiTarget] Also exporting {name} at {_mb:g} MB...")
+                adv2 = {k: v for k, v in job_adv.items() if k != "also_targets"}
+                adv2["size_tag"] = f"{_mb:g}MB"
+                try:
+                    s2 = auto_compress(
+                        input_path=src, save_path=out_dir,
+                        status_callback=status_cb,
+                        target_size_mb=float(_mb),
+                        webhook_url=(args.webhook or ""),
+                        advanced_options=adv2,
+                        cancel_callback=_cli_cancel,
+                    ) or {}
+                    if s2.get("compressed_size"):
+                        _cli_status(f"[MultiTarget] {_mb:g} MB export done: "
+                                    f"{int(s2['compressed_size'])} bytes.")
+                    else:
+                        _cli_status(f"[MultiTarget] {_mb:g} MB export produced no "
+                                    f"output.", level="WARN")
+                except Exception as _me:
+                    _cli_status(f"[MultiTarget] {_mb:g} MB export failed: {_me}",
+                                level="ERROR")
         return s
 
     jobs = max(1, int(getattr(args, "jobs", 1) or 1))
