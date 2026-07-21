@@ -5341,6 +5341,8 @@ class CompressorGUI:
                    command=getattr(self, "remove_selected", lambda: None)).pack(side="left", padx=(0, 6))
         ttk.Button(qbtns, text=self._t("btn.clear","Clear"), style="Ghost.TButton",
                    command=getattr(self, "clear_queue", lambda: None)).pack(side="left", padx=(0, 6))
+        ttk.Button(qbtns, text=self._t("btn.sort_eta","Sort: fastest first"), style="Ghost.TButton",
+                   command=getattr(self, "sort_queue_by_eta", lambda: None)).pack(side="left", padx=(0, 6))
         ttk.Button(qbtns, text="▼", width=3, style="Ghost.TButton",
                    command=lambda: getattr(self, "move_selection", lambda *_: None)(+1)).pack(side="right", padx=(6, 0))
         ttk.Button(qbtns, text="▲", width=3, style="Ghost.TButton",
@@ -8621,6 +8623,51 @@ class CompressorGUI:
             self.queue_box.delete(i)
             del self.file_list[i]
         self._save_queue()
+
+    def sort_queue_by_eta(self):
+        """Reorder the queue shortest-estimated-encode first.
+
+        Estimates come from ledger history (median video-sec/wall-sec per
+        encoder family, learning/eta.py); audio/images are treated as
+        near-instant. Estimates land in the ETA column as a preview.
+        """
+        if getattr(self, "compression_running", False):
+            self.update_status("[Queue] Cannot sort while a batch is running.",
+                               level="WARNING")
+            return
+        if len(getattr(self, "file_list", []) or []) < 2:
+            return
+        from learning.eta import estimate_encode_seconds
+        from learning.outcome_ledger import ledger_load
+        try:
+            rows = ledger_load(os.path.join(USER_SETTINGS_DIR, "stats"))
+        except Exception:
+            rows = []
+        enc = None
+        try:
+            enc = (self.gather_advanced_options() or {}).get("encoder")
+        except Exception:
+            pass
+        est = {}
+        for p in list(self.file_list):
+            try:
+                if get_media_type(p) == "video":
+                    d = float(extract_video_duration(p) or 0.0)
+                    est[p] = estimate_encode_seconds(d, rows, enc) or 60.0
+                else:
+                    est[p] = 5.0   # audio/image/pdf: seconds, not minutes
+            except Exception:
+                est[p] = 60.0
+        self.file_list.sort(key=lambda p: est.get(p, 60.0))
+        self.refresh_queue_box()
+        self._save_queue()
+        for p in self.file_list:
+            try:
+                self._job_update(p, eta=int(est[p]))
+            except Exception:
+                pass
+        self.update_status(f"[Queue] Sorted {len(self.file_list)} file(s) "
+                           f"shortest-estimated first.")
 
     def move_selection(self, delta):
         """Queue toolbar arrows: move selected rows up (-1) or down (+1),
