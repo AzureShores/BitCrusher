@@ -31,6 +31,28 @@ def _sync_host_globals(gui):
         g[k] = v
 
 
+def show_page(gui, name):
+    """Raise the named sidebar page and reflect the selection in the nav.
+
+    Nav highlight uses the Nav.TButton / NavActive.TButton ttk styles (defined
+    in apply_theme) so it survives runtime retheming without any baked hex.
+    """
+    pages = getattr(gui, "_pages", None) or {}
+    fr = pages.get(name)
+    if fr is None:
+        return
+    try:
+        fr.tkraise()
+    except Exception:
+        pass
+    gui._active_page = name
+    for n, btn in (getattr(gui, "_nav_buttons", None) or {}).items():
+        try:
+            btn.configure(style="NavActive.TButton" if n == name else "Nav.TButton")
+        except Exception:
+            pass
+
+
 def build_main_view(gui):
     _sync_host_globals(gui)
     gui.queue_box = None
@@ -130,7 +152,48 @@ def build_main_view(gui):
     content = tk.Frame(gui.root, bg=APP_BG)
     content.grid(row=1, column=0, sticky="nsew")
 
-    ctrl = tk.Frame(content, bg=APP_BG)
+    # C1 relayout: left sidebar nav + a stack of page frames raised via
+    # show_page(). Replaces the old 3-pane Panedwindow as the top structure.
+    # The page content frames keep the historical local names left/mid/right
+    # so the (verbatim) widget-building blocks below need no changes.
+    content.grid_columnconfigure(1, weight=1)
+    content.grid_rowconfigure(0, weight=1)
+
+    sidebar = tk.Frame(content, bg=APP_BG, width=168)
+    sidebar.grid(row=0, column=0, sticky="ns", padx=(10, 0), pady=8)
+    sidebar.grid_propagate(False)
+
+    pagehost = tk.Frame(content, bg=APP_BG)
+    pagehost.grid(row=0, column=1, sticky="nsew")
+    pagehost.grid_rowconfigure(0, weight=1)
+    pagehost.grid_columnconfigure(0, weight=1)
+
+    _nav_specs = [
+        ("Queue",    gui._t("nav.queue",    "Queue")),
+        ("Activity", gui._t("nav.activity", "Activity")),
+        ("Stats",    gui._t("nav.stats",    "Stats")),
+        ("Watcher",  gui._t("nav.watcher",  "Watcher")),
+        ("Settings", gui._t("nav.settings", "Settings")),
+    ]
+    gui._pages = {}
+    gui._nav_buttons = {}
+    for _name, _label in _nav_specs:
+        pg = tk.Frame(pagehost, bg=APP_BG)
+        pg.grid(row=0, column=0, sticky="nsew")
+        gui._pages[_name] = pg
+        btn = ttk.Button(sidebar, text=_label, style="Nav.TButton",
+                         command=lambda n=_name: show_page(gui, n))
+        btn.pack(fill="x", pady=(0, 2))
+        gui._nav_buttons[_name] = btn
+
+    # Page content frames reuse the historical pane names.
+    left  = gui._pages["Queue"]
+    mid   = gui._pages["Activity"]
+    right = gui._pages["Stats"]
+    watcher_page  = gui._pages["Watcher"]
+    settings_page = gui._pages["Settings"]
+
+    ctrl = tk.Frame(left, bg=APP_BG)
     ctrl.pack(fill="x", padx=16, pady=(6, 8))
 
     ttk.Label(ctrl, text=gui._t("lbl.preset", "Preset:")).pack(side="left")
@@ -172,13 +235,6 @@ def build_main_view(gui):
     gui.save_entry.pack(side="left", padx=6, fill="x", expand=True)
     ttk.Button(ctrl, text=gui._t("btn.browse", "Browse…"), style="Ghost.TButton",
                command=gui.select_output_dir).pack(side="left", padx=(4, 0))
-
-    paned = ttk.Panedwindow(content, orient="horizontal")
-    paned.pack(fill="both", expand=True, padx=10, pady=(4, 10))
-
-    left  = tk.Frame(paned, bg=APP_BG)
-    mid   = tk.Frame(paned, bg=APP_BG)
-    right = tk.Frame(paned, bg=APP_BG)
 
     tk.Label(right, text=gui._t("lbl.display", "Display"), bg=APP_BG, fg=FG, anchor="w").pack(fill="x", padx=12, pady=(12, 0))
 
@@ -248,30 +304,9 @@ def build_main_view(gui):
 
     gui._rebuild_display_panel = _rebuild_display_panel
 
-    paned.add(left,  weight=3)
-    paned.add(mid,   weight=4)
-    paned.add(right, weight=3)
-
-    gui.paned = paned
-    gui.root.after(0, gui._set_default_layout)
-
+    # No Panedwindow anymore; pages are stacked and raised by show_page().
+    gui.paned = None
     gui.root.update_idletasks()
-    try:
-
-        paned.paneconfigure(left,  stretch="always")
-        paned.paneconfigure(mid,   stretch="always")
-        paned.paneconfigure(right, stretch="always")
-
-        paned.paneconfigure(left,  minsize=480)
-        paned.paneconfigure(mid,   minsize=340)
-        paned.paneconfigure(right, minsize=300)
-
-        total = paned.winfo_width() or content.winfo_width() or gui.root.winfo_width() or 1400
-
-        paned.sashpos(0, max(480, int(total * 0.42)))
-        paned.sashpos(1, max(paned.sashpos(0) + 340, int(total * 0.72)))
-    except Exception:
-        pass
 
     tk.Label(left, text=gui._t("lbl.queue","Queue"), bg=APP_BG, fg=FG, anchor="w").pack(fill="x", padx=12, pady=(12, 0))
 
@@ -651,13 +686,13 @@ def build_main_view(gui):
     except Exception:
         pass
 
-    wb = ttk.LabelFrame(right, text=gui._t("panel.webhook","Webhook"), style="Card.TLabelframe")
+    wb = ttk.LabelFrame(settings_page, text=gui._t("panel.webhook","Webhook"), style="Card.TLabelframe")
     wb.pack(fill="x", padx=12, pady=(12, 10))
     ttk.Label(wb, text=gui._t("lbl.webhook_url","Discord/Webhook URL"), style="Sub.TLabel").pack(anchor="w", padx=10, pady=(8, 0))
     ttk.Entry(wb, textvariable=gui.webhook_var, style="Dark.TEntry").pack(fill="x", padx=10, pady=(4, 10))
 
-    wf = ttk.LabelFrame(right, text=gui._t("panel.watcher","Folder Watcher"), style="Card.TLabelframe")
-    wf.pack(fill="x", padx=12, pady=(0, 10))
+    wf = ttk.LabelFrame(watcher_page, text=gui._t("panel.watcher","Folder Watcher"), style="Card.TLabelframe")
+    wf.pack(fill="x", padx=12, pady=(12, 10))
     gui.watch_chk = ttk.Checkbutton(
         wf, text=gui._t("lbl.enable_watcher","Enable watcher"), variable=gui.watch_var,
         onvalue=True, offvalue=False,
@@ -676,7 +711,7 @@ def build_main_view(gui):
         command=lambda: gui.settings.__setitem__("pipeline_mode", bool(gui.pipeline_var.get())))
     gui.pipeline_chk.pack(anchor="w", padx=10, pady=(0, 10))
 
-    pf = ttk.LabelFrame(right, text=gui._t("panel.profiles","Profiles"), style="Card.TLabelframe")
+    pf = ttk.LabelFrame(settings_page, text=gui._t("panel.profiles","Profiles"), style="Card.TLabelframe")
     pf.pack(fill="x", padx=12, pady=(0, 10))
     ttk.Entry(pf, textvariable=gui.profile_var, style="Dark.TEntry").pack(fill="x", padx=10, pady=(8, 4))
     prow = tk.Frame(pf, bg=APP_BG); prow.pack(fill="x", padx=10, pady=(0, 10))
@@ -685,7 +720,7 @@ def build_main_view(gui):
     ttk.Button(prow, text=gui._t("btn.load","Load"), style="Ghost.TButton",
                command=getattr(gui, "load_profile", lambda: None)).pack(side="left", padx=6)
 
-    ttk.Button(right, text=gui._t("btn.open_save", "Open Save Folder"), style="Ghost.TButton",
+    ttk.Button(settings_page, text=gui._t("btn.open_save", "Open Save Folder"), style="Ghost.TButton",
                command=getattr(gui, "open_save_folder", lambda: None)).pack(fill="x", padx=12, pady=(0, 12))
 
     if getattr(gui, "queue_box", None) is not None and gui.queue_box.size() == 0:
@@ -732,6 +767,18 @@ def build_main_view(gui):
             gui.refresh_queue_box()
         else:
             gui._load_queue()
+    except Exception:
+        pass
+
+    # Expose the shell hook and restore the nav selection. _rebuild_ui_for_language
+    # destroys + rebuilds the whole view via setup_ui, so honour the page the user
+    # was on before the rebuild (default to Queue on first build).
+    gui.show_page = lambda name: show_page(gui, name)
+    try:
+        _restore = getattr(gui, "_active_page", None)
+        if _restore not in getattr(gui, "_pages", {}):
+            _restore = "Queue"
+        show_page(gui, _restore)
     except Exception:
         pass
 

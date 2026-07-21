@@ -66,6 +66,7 @@ LANG_BUILTIN = {
         "lbl.quality":"Quality:","lbl.display":"Display","lbl.mode":"Mode:","lbl.activity":"Activity",
         "qmode.fast":"Fast","qmode.balanced":"Balanced","qmode.max":"Max",
         "tab.progress":"Progress","tab.details":"Details","tab.stats":"Stats",
+        "nav.queue":"Queue","nav.activity":"Activity","nav.stats":"Stats","nav.watcher":"Watcher","nav.settings":"Settings",
         "msg.compare_hint":"Compare the last output with the source.",
 
         "qmenu.set_encoder":"Set encoder for this file...","qmenu.set_container":"Set container/format for this file...",

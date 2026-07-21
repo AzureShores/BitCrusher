@@ -953,6 +953,22 @@ def apply_theme(style: ttk.Style, theme_name: str="Dark"):
     style.map("Ghost.TButton",
         background=[("active", hover_card)])
 
+    # Sidebar navigation buttons (C1 relayout). Defined here so the runtime
+    # retheme walk re-derives their colours from the live palette on every
+    # theme switch instead of leaving stale hex baked into the widgets.
+    style.configure("Nav.TButton",
+        font=("Segoe UI", 11), padding=(int(14*PAD), int(10*PAD)), borderwidth=0,
+        background=APP_BG, foreground=FG_SUB, anchor="w", relief="flat", focuscolor=APP_BG)
+    style.map("Nav.TButton",
+        background=[("active", hover_card)],
+        foreground=[("active", FG)])
+    style.configure("NavActive.TButton",
+        font=("Segoe UI", 11, "bold"), padding=(int(14*PAD), int(10*PAD)), borderwidth=0,
+        background=_hsl_shift(ACCENT, l_mul=0.88), foreground=btn_fg, anchor="w",
+        relief="flat", focuscolor=btn_fg)
+    style.map("NavActive.TButton",
+        background=[("active", ACCENT), ("pressed", _hsl_shift(ACCENT, l_mul=0.78))])
+
     entry_bg    = _hsl_shift(CARD_BG, l_mul=(0.98 if light_mode else 1.06))
     entry_bg_ro = _hsl_shift(CARD_BG, l_mul=(0.97 if light_mode else 1.02))
     entry_fg_dis= disabled_fg
