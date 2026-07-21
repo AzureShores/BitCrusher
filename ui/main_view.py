@@ -75,6 +75,13 @@ def build_main_view(gui):
     gui.theme_var = tk.StringVar(value=saved_theme)
 
     apply_theme(gui.style, gui.theme_var.get())
+    # apply_theme just populated the host module's live palette globals
+    # (APP_BG / CARD_BG / ACCENT / ...). On a truly-first run (no settings.json)
+    # those were still None when _sync_host_globals ran at the top of this
+    # function, so refresh our module-level copies now. Without this, later
+    # _hsl_shift(CARD_BG) calls (e.g. the DinoRunner) get None and the whole
+    # GUI fails to launch on a fresh install.
+    _sync_host_globals(gui)
     try:
         retheme_runtime(gui, gui.style, gui.theme_var.get())
     except Exception:

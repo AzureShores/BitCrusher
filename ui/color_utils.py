@@ -4,6 +4,10 @@ import colorsys
 
 
 def _hsl_shift(hex_color: str, h_delta=0.0, s_mul=1.0, l_mul=1.0) -> str:
+    # Defensive: a missing/None colour (e.g. an unset palette global on a
+    # first-run race) must not crash the whole GUI. Fall back to neutral grey.
+    if not isinstance(hex_color, str) or not hex_color.strip():
+        hex_color = "#808080"
     hex_color = hex_color.lstrip('#')
     r = int(hex_color[0:2], 16) / 255.0
     g = int(hex_color[2:4], 16) / 255.0
