@@ -715,6 +715,8 @@ ADVANCED_DEFAULTS = {
     # hard ceiling.
     "qfloor_autorelax": False,
     "qfloor_relax_max_mb": 0,
+    # Save a 4x4 frame grid (<output>_sheet.jpg) beside each video output.
+    "contact_sheet": False,
     "pdf_force_rasterize": True,
     "pdf_tolerance": 0.10,
     "pdf_min_dpi": 90,
@@ -4271,9 +4273,30 @@ def auto_compress(input_path: str, save_path: str, status_callback,
                         level="DEBUG")
 
     try:
-        return _auto_compress_dispatch(
+        _ac_stats = _auto_compress_dispatch(
             media_type, input_path, _orig_input, save_path, status_callback,
             _target_mb, webhook_url, advanced_options, cancel_callback)
+        # Opt-in contact sheet: single chokepoint so GUI and CLI both get it.
+        # WARN-only - a sheet failure never fails the encode.
+        try:
+            if (media_type == "video"
+                    and bool((advanced_options or {}).get("contact_sheet"))
+                    and isinstance(_ac_stats, dict)
+                    and _ac_stats.get("compressed_size")):
+                _cs_out = _ac_stats.get("output_path")
+                if _cs_out and os.path.isfile(_cs_out):
+                    from encode.thumbnails import make_contact_sheet
+                    _cs_dur = float(extract_video_duration(_cs_out) or 0.0)
+                    _sheet = os.path.splitext(_cs_out)[0] + "_sheet.jpg"
+                    if make_contact_sheet(_cs_out, _sheet, duration_s=_cs_dur):
+                        status_callback(f"[Sheet] Contact sheet saved: "
+                                        f"{os.path.basename(_sheet)}", level="INFO")
+                    else:
+                        status_callback("[Sheet] Contact sheet failed (encode "
+                                        "unaffected).", level="WARNING")
+        except Exception:
+            pass
+        return _ac_stats
     finally:
         _rmtree_quiet(_trim_dir)
 
@@ -5867,6 +5890,7 @@ class CompressorGUI:
         self.adv_discord_compat  = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("discord_compat", False) else 0)
         self.adv_embed_lyrics    = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("embed_lyrics", True) else 0)
         self.adv_copy_clipboard  = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("copy_to_clipboard", False) else 0)
+        self.adv_contact_sheet   = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("contact_sheet", False) else 0)
         self.adv_audio_track_mode = tk.StringVar(value=str(ADVANCED_DEFAULTS.get("audio_track_mode", "keepfirst")))
         _qm_def = str(ADVANCED_DEFAULTS.get("quality_mode", "max") or "max").strip().lower()
         self.adv_quality_mode   = tk.StringVar(value=("max" if _qm_def in ("quality_first", "max") else
@@ -5971,6 +5995,7 @@ class CompressorGUI:
         self.adv_ceiling_downscale.set(1 if adv.get("ceiling_downscale_retry", True) else 0)
         self.adv_embed_lyrics.set(1 if adv.get("embed_lyrics", True) else 0)
         self.adv_copy_clipboard.set(1 if adv.get("copy_to_clipboard", False) else 0)
+        self.adv_contact_sheet.set(1 if adv.get("contact_sheet", False) else 0)
         self.adv_audio_track_mode.set(str(adv.get("audio_track_mode", "keepfirst") or "keepfirst").strip().lower())
         _qm_loaded = str(adv.get("quality_mode", "max") or "max").strip().lower()
         self.adv_quality_mode.set(_qm_loaded if _qm_loaded in ("fast", "balanced", "max") else "max")
@@ -7641,6 +7666,8 @@ class CompressorGUI:
         except Exception: pass
         try: self.adv_copy_clipboard.set(1 if adv.get("copy_to_clipboard", False) else 0)
         except Exception: pass
+        try: self.adv_contact_sheet.set(1 if adv.get("contact_sheet", False) else 0)
+        except Exception: pass
         try:
             _atm = str(adv.get("audio_track_mode", "keepfirst") or "keepfirst").strip().lower()
             self.adv_audio_track_mode.set(_atm if _atm in ("keepfirst", "mix") else "keepfirst")
@@ -7732,6 +7759,7 @@ class CompressorGUI:
                 "ceiling_downscale_retry": bool(self.adv_ceiling_downscale.get()) if hasattr(self, "adv_ceiling_downscale") else True,
                 "embed_lyrics":        bool(self.adv_embed_lyrics.get())      if hasattr(self, "adv_embed_lyrics")      else True,
                 "copy_to_clipboard":   bool(self.adv_copy_clipboard.get())    if hasattr(self, "adv_copy_clipboard")    else False,
+                "contact_sheet":       bool(self.adv_contact_sheet.get())     if hasattr(self, "adv_contact_sheet")     else False,
                 "audio_track_mode":    (str(self.adv_audio_track_mode.get() or "keepfirst").strip().lower()
                                         if hasattr(self, "adv_audio_track_mode") else "keepfirst"),
                 "quality_mode":        (str(self.adv_quality_mode.get() or "max").strip().lower()
@@ -7888,6 +7916,14 @@ class CompressorGUI:
                                                    ADVANCED_DEFAULTS.get("copy_to_clipboard", False))))
         except Exception:
             opts["copy_to_clipboard"] = bool(ADVANCED_DEFAULTS.get("copy_to_clipboard", False))
+
+        try:
+            opts["contact_sheet"] = (bool(self.adv_contact_sheet.get())
+                                     if hasattr(self, "adv_contact_sheet")
+                                     else bool(self.settings.get("contact_sheet",
+                                               ADVANCED_DEFAULTS.get("contact_sheet", False))))
+        except Exception:
+            opts["contact_sheet"] = bool(ADVANCED_DEFAULTS.get("contact_sheet", False))
 
         return opts
 
@@ -9730,6 +9766,10 @@ class CompressorGUI:
             self.adv_copy_clipboard = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("copy_to_clipboard", False) else 0)
         ttk.Checkbutton(output, text=self._t("adv.clipboard", "Copy result to clipboard (Ctrl+V into Discord)"),
                         variable=self.adv_copy_clipboard).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=4)
+        if not hasattr(self, "adv_contact_sheet"):
+            self.adv_contact_sheet = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("contact_sheet", False) else 0)
+        ttk.Checkbutton(output, text=self._t("adv.contact_sheet", "Save contact sheet (4x4 frame grid) next to output"),
+                        variable=self.adv_contact_sheet).grid(row=3, column=0, columnspan=2, sticky="w", padx=6, pady=4)
 
         ttk.Label(images, text=self._t("adv.image_format", "Image Format")).grid(row=0, column=0, sticky="e", padx=6, pady=4)
         img_values = ["jpg", "png", "webp"]
@@ -10427,6 +10467,8 @@ def _build_adv_from_args(args) -> dict:
         adv["qfloor_relax_max_mb"] = float(args.min_vmaf_relax_max)
     if getattr(args, "export_format", None):
         adv["export_format"] = str(args.export_format)
+    if getattr(args, "contact_sheet", False):
+        adv["contact_sheet"] = True
 
     if getattr(args, "no_preproc", False):
         adv["smart_preproc"] = False
@@ -10517,6 +10559,9 @@ def build_arg_parser():
     p.add_argument("--export-format", choices=["gif", "webp"], default=None,
                    help="Export video sources as animated GIF / WebP instead of "
                         "an encoded video (size-targeted quality ladder)")
+    p.add_argument("--contact-sheet", action="store_true",
+                   help="Save a 4x4 frame-grid JPEG (<output>_sheet.jpg) beside "
+                        "each video output")
     p.add_argument("--encoder", choices=["x264","x265","av1","svt-av1","aom-av1","vp9","vvc",
                                          "h264_nvenc","hevc_nvenc","av1_nvenc",
                                          "h264_qsv","hevc_qsv","av1_qsv",
