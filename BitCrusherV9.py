@@ -4278,9 +4278,48 @@ def auto_compress(input_path: str, save_path: str, status_callback,
         _rmtree_quiet(_trim_dir)
 
 
+def _export_animated_entry(input_path, _orig_input, save_path, status_callback,
+                           _target_mb, advanced_options, cancel_callback) -> dict:
+    """Route a video/animated source to GIF / animated-WebP export."""
+    from encode.gif_export import export_animated
+    fmt = str((advanced_options or {}).get("export_format") or "").lower()
+    out_file = _build_output_path("video", _orig_input, save_path,
+                                  advanced_options or {}, default_ext=fmt)
+    dur, w = 0.0, 0
+    try:
+        dur = float(extract_video_duration(input_path) or 0.0)
+        meta = get_video_metadata(input_path) or {}
+        w = int(meta.get("width") or 0)
+    except Exception:
+        pass
+    # Trim range already produced a stream-copy intermediate upstream, so
+    # start/end here are only for the untrimmed direct path.
+    res = export_animated(
+        input_path, out_file, fmt,
+        duration_s=dur, src_w=w,
+        target_mb=(float(_target_mb) if _target_mb else None),
+        cancel_cb=cancel_callback, status_cb=status_callback)
+    if not res.get("ok"):
+        return {}
+    try:
+        original = os.path.getsize(_orig_input)
+    except Exception:
+        original = 0
+    return {"original_size": original,
+            "compressed_size": res["final_size"],
+            "output_path": res["output_path"],
+            "ceiling_exceeded": not res.get("fit", True),
+            "export_format": fmt}
+
+
 def _auto_compress_dispatch(media_type, input_path, _orig_input, save_path,
                             status_callback, _target_mb, webhook_url,
                             advanced_options, cancel_callback) -> dict:
+    _exp_fmt = str((advanced_options or {}).get("export_format") or "").lower()
+    if _exp_fmt in ("gif", "webp") and media_type in ("video", "image"):
+        return _export_animated_entry(input_path, _orig_input, save_path,
+                                      status_callback, _target_mb,
+                                      advanced_options, cancel_callback)
     if media_type == "video":
         return compress_video(input_path, save_path, status_callback,
                               _target_mb, webhook_url,
@@ -5071,6 +5110,7 @@ class CompressorGUI:
         self.queue_menu.add_command(label=self._t("qmenu.suggest_trim", "Suggest trim ranges (audio peaks)..."), command=lambda: self._queue_suggest_trim())
         self.queue_menu.add_command(label=self._t("qmenu.spotlight", "Spotlight quality range for this file..."), command=lambda: self._queue_set_spotlight())
         self.queue_menu.add_command(label=self._t("qmenu.also_targets", "Also export at size(s) MB (e.g. 25 or 8,25)..."), command=lambda: self._queue_set("also_targets"))
+        self.queue_menu.add_command(label=self._t("qmenu.export_format", "Export as GIF/WebP (gif, webp, or blank)..."), command=lambda: self._queue_set("export_format"))
         self.queue_menu.add_separator()
         self.queue_menu.add_command(label=self._t("qmenu.reset_overrides", "Reset per-file overrides"), command=lambda: self._queue_reset_overrides())
         self.queue_menu.add_command(label=self._t("qmenu.reset_status", "Reset status (re-encode)"), command=lambda: self._queue_reset_status())
@@ -10385,6 +10425,8 @@ def _build_adv_from_args(args) -> dict:
     if float(getattr(args, "min_vmaf_relax_max", 0) or 0) > 0:
         adv["qfloor_autorelax"] = True
         adv["qfloor_relax_max_mb"] = float(args.min_vmaf_relax_max)
+    if getattr(args, "export_format", None):
+        adv["export_format"] = str(args.export_format)
 
     if getattr(args, "no_preproc", False):
         adv["smart_preproc"] = False
@@ -10472,6 +10514,9 @@ def build_arg_parser():
                    metavar="MB",
                    help="Also export each item at this extra size cap (MB); "
                         "repeatable, e.g. -t 8 --also-target 25 --also-target 50")
+    p.add_argument("--export-format", choices=["gif", "webp"], default=None,
+                   help="Export video sources as animated GIF / WebP instead of "
+                        "an encoded video (size-targeted quality ladder)")
     p.add_argument("--encoder", choices=["x264","x265","av1","svt-av1","aom-av1","vp9","vvc",
                                          "h264_nvenc","hevc_nvenc","av1_nvenc",
                                          "h264_qsv","hevc_qsv","av1_qsv",
