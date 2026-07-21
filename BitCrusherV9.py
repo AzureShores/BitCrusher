@@ -120,6 +120,7 @@ from encode.feature_helpers import (set_clipboard_files,
 from support.sendto_ipc import (_BC_IPC_HOST, _BC_IPC_PORT, _BC_STARTUP_FILES,
                         _bc_ipc_send, _sendto_launch_target, IpcServer,
                         register_send_to, unregister_send_to)
+from support.queue_store import dump_queue, load_queue
 from encode.media_math import (bytes_from_value_unit, apply_target_size_margin, human_bytes,
                         next_lower_std_width,
                         determine_tune_profile, determine_frame_rate, determine_resolution,
@@ -5021,6 +5022,7 @@ class CompressorGUI:
         self.queue_menu.add_command(label=self._t("qmenu.spotlight", "Spotlight quality range for this file..."), command=lambda: self._queue_set_spotlight())
         self.queue_menu.add_separator()
         self.queue_menu.add_command(label=self._t("qmenu.reset_overrides", "Reset per-file overrides"), command=lambda: self._queue_reset_overrides())
+        self.queue_menu.add_command(label=self._t("qmenu.reset_status", "Reset status (re-encode)"), command=lambda: self._queue_reset_status())
         self.queue_menu.add_command(label=self._t("qmenu.open_output", "Open Output Folder"), command=self.open_save_folder)
         self.queue_menu.add_command(label=self._t("qmenu.remove", "Remove from Queue"),  command=self.remove_selected)
         def _on_queue_context(event):
@@ -5081,6 +5083,21 @@ class CompressorGUI:
                 self._save_queue()
             except Exception:
                 pass
+
+        def _queue_reset_status():
+            sel = list(self.queue_box.curselection())
+            if not sel:
+                return
+            for i in sel:
+                try:
+                    path = self.file_list[i]
+                    self._record_job_state(path, "pending")
+                    self._job_update(path, status="pending", progress=None,
+                                     eta="", size=None, vmaf=None)
+                    self.update_status(f"Status reset (will re-encode): "
+                                       f"{os.path.basename(path)}")
+                except Exception:
+                    pass
 
         def _queue_set_trim():
             from tkinter import simpledialog, messagebox
@@ -5237,6 +5254,7 @@ class CompressorGUI:
         self._queue_set_spotlight = _queue_set_spotlight
         self._queue_suggest_trim = _queue_suggest_trim
         self._queue_reset_overrides = _queue_reset_overrides
+        self._queue_reset_status = _queue_reset_status
 
         self.queue_box.bind("<Button-3>", self._on_queue_context)
         self.queue_box.pack(fill="both", expand=True, padx=6, pady=6)
@@ -5665,6 +5683,9 @@ class CompressorGUI:
         # every encode step via the compression_cancelled property / cancel_cb.
         self.cancel_event    = threading.Event()
         self.file_list       = []
+        # Per-job persisted state (queue.json v2): path -> {status, output,
+        # finished_at}. Done jobs survive restarts and are skipped by Start.
+        self.job_states      = {}
         self.stats_list      = []
         self.save_path       = tk.StringVar(value=str(Path.home()))
         self.target_size_var = tk.StringVar(value=str(MAX_SIZE_MB_DEFAULT))
@@ -8542,6 +8563,10 @@ class CompressorGUI:
     def remove_selected(self):
         indices = list(self.queue_box.curselection())
         for i in reversed(indices):
+            try:
+                self.job_states.pop(_normalize_drop_path(self.file_list[i]), None)
+            except Exception:
+                pass
             self.queue_box.delete(i)
             del self.file_list[i]
         self._save_queue()
@@ -8585,6 +8610,7 @@ class CompressorGUI:
         self.file_list.clear()
         self.queue_box.delete(0, "end")
         self.job_rows = {}
+        self.job_states = {}
         self._save_queue()
 
     def refresh_queue_box(self):
@@ -9070,11 +9096,11 @@ class CompressorGUI:
 
     def _save_queue(self):
         try:
-            data = {
-                "version": 1,
-                "files": list(getattr(self, "file_list", []) or []),
-                "per_file_opts": dict(getattr(self, "per_file_opts", {}) or {}),
-            }
+            data = dump_queue(
+                getattr(self, "file_list", []) or [],
+                dict(getattr(self, "per_file_opts", {}) or {}),
+                dict(getattr(self, "job_states", {}) or {}),
+            )
             p = self._queue_json_path()
             tmp = p + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -9090,24 +9116,52 @@ class CompressorGUI:
                 return
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            files = [str(x) for x in (data.get("files") or []) if isinstance(x, str)]
-            files = [x for x in files if os.path.isfile(x)]
-            if not files:
+            jobs = load_queue(data)
+            if not jobs:
                 return
-            opts = data.get("per_file_opts") or {}
-            self.per_file_opts = {k: v for k, v in opts.items()
-                                  if isinstance(v, dict) and k in files}
             if not hasattr(self, "file_list") or self.file_list is None:
                 self.file_list = []
-            for x in files:
+            if not isinstance(getattr(self, "per_file_opts", None), dict):
+                self.per_file_opts = {}
+            for job in jobs:
+                x = job["path"]
                 if x not in self.file_list:
                     self.file_list.append(x)
+                if job.get("opts"):
+                    self.per_file_opts[x] = dict(job["opts"])
+                if job["status"] != "pending":
+                    self.job_states[x] = {"status": job["status"],
+                                          "output": job.get("output"),
+                                          "finished_at": job.get("finished_at")}
             self.refresh_queue_box()
+            # Badge restored non-pending jobs in the queue view.
+            for x, st in (self.job_states or {}).items():
+                try:
+                    self._job_update(x, status=st.get("status"))
+                except Exception:
+                    pass
+            done_n = sum(1 for st in self.job_states.values()
+                         if st.get("status") == "done")
             if not getattr(self, "_queue_restore_announced", False):
-                self.update_status(f"Restored {len(files)} queued file(s) from last session.")
+                extra = f" ({done_n} already done, will be skipped)" if done_n else ""
+                self.update_status(
+                    f"Restored {len(jobs)} queued file(s) from last session.{extra}")
                 self._queue_restore_announced = True
         except Exception:
             LOG.debug("Queue restore failed", exc_info=True)
+
+    def _record_job_state(self, path, status, output=None):
+        """Persist one job's outcome (main thread; called after each file)."""
+        try:
+            _norm = _normalize_drop_path(str(path))
+            if status == "pending":
+                self.job_states.pop(_norm, None)
+            else:
+                self.job_states[_norm] = {"status": status, "output": output,
+                                          "finished_at": time.time()}
+            self._save_queue()
+        except Exception:
+            LOG.debug("Job-state record failed", exc_info=True)
 
 
 
@@ -9643,6 +9697,16 @@ class CompressorGUI:
         files = list(getattr(self, "_thread_file_list", []) or [])
         files = [_normalize_drop_path(p) for p in files if isinstance(p, str)]
         files = [p for p in files if os.path.isfile(p)]
+        # Skip jobs already completed in a previous session (queue.json v2).
+        _done = {p for p, st in (getattr(self, "job_states", {}) or {}).items()
+                 if st.get("status") == "done"}
+        if _done:
+            skipped = [p for p in files if p in _done]
+            files = [p for p in files if p not in _done]
+            if skipped:
+                self.update_status(
+                    f"[Queue] Skipping {len(skipped)} already-done file(s); "
+                    f"right-click > Reset status to re-encode.", level="INFO")
         # Confirmed dedup duplicates must dispatch after their canonical so
         # _dedup_canonical_outputs already has an entry by the time _run_one()
         # looks it up (sequential/single-worker case; under concurrent workers
@@ -9840,9 +9904,11 @@ class CompressorGUI:
                 self._ui(self._job_update, path, status="done", progress=100, eta="",
                          size=(res["out_bytes"] or None),
                          vmaf=(res["vmaf"] if isinstance(res["vmaf"], (int, float)) else None))
+                self._ui(self._record_job_state, path, "done", res.get("output_path"))
             else:
                 _st = "cancelled" if self.compression_cancelled else "failed"
                 self._ui(self._job_update, path, status=_st, eta="")
+                self._ui(self._record_job_state, path, _st)
             return res
 
         results = []
