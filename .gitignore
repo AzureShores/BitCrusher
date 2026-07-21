@@ -31,6 +31,9 @@ tools/ffmpeg
 tools/ffprobe
 tools/HandBrakeCLI
 
+# Release bundle build output (per-OS zips from build_bundle.py)
+dist/
+
 # Local tooling / state
 .claude/
 CLAUDE.md
