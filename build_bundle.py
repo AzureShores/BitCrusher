@@ -15,10 +15,20 @@ Binary sources mirror support/tool_installer.py:
 Windows binaries default to the already-vetted copies in ./tools; pass
 --fresh-win to download them instead. Linux/macOS binaries are always fetched.
 
+--portable additionally builds BitCrusher-<ver>-win64-portable.zip: the win64
+bundle plus an embedded Python runtime (official python.org embeddable build,
+with tkinter grafted in from a full local install) and all pip dependencies
+pre-installed. Double-click BitCrusher-Portable.bat, no Python install, no pip
+install, no internet needed on the target machine. This exists instead of a
+PyInstaller/Nuitka exe because packed exes routinely get flagged as malware by
+Windows Defender/SmartScreen; a plain python.org-signed interpreter running an
+unpacked .py file does not trip those heuristics.
+
 Usage:
   python build_bundle.py --os all          # win64 + linux64 + macos
   python build_bundle.py --os win          # just the local machine's target
   python build_bundle.py --version 1.2.0 --os linux
+  python build_bundle.py --os win --portable   # + win64-portable.zip
 """
 from __future__ import annotations
 
@@ -47,6 +57,15 @@ FF_MAC = "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip"
 FP_MAC = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip"
 
 OS_SLUG = {"win": "win64", "linux": "linux64", "mac": "macos"}
+
+# Embeddable Python for --portable. Must match the donor interpreter's
+# major.minor (tkinter/_tkinter.pyd are ABI-specific) - donor is located at
+# build time via `py -X.Y-64`, so this only needs to exist on the dev box.
+PY_EMBED_VER = "3.12.10"
+PY_EMBED_TAG = "3.12-64"
+PY_EMBED_URL = (f"https://www.python.org/ftp/python/{PY_EMBED_VER}/"
+                 f"python-{PY_EMBED_VER}-embed-amd64.zip")
+GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
 
 def log(msg: str) -> None:
@@ -133,6 +152,104 @@ def place_win(tools: Path, fresh: bool, tmp: Path) -> None:
     extract_from_zip(hb, "HandBrakeCLI.exe", tools / "HandBrakeCLI.exe")
 
 
+def find_tkinter_donor() -> Path:
+    """Locate a full local CPython matching PY_EMBED_TAG's major.minor that has
+    tkinter (the embeddable build ships without it - _tkinter.pyd/tcl/tk have
+    to be grafted in from a real install of the same ABI)."""
+    try:
+        out = subprocess.run(
+            ["py", f"-{PY_EMBED_TAG}", "-c",
+             "import sys, tkinter; print(sys.exec_prefix)"],
+            capture_output=True, text=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise SystemExit(
+            f"[bundle] no local Python {PY_EMBED_TAG} with tkinter found "
+            f"(needed as a donor for the portable build): {exc}")
+    return Path(out.stdout.strip())
+
+
+def embed_python(runtime: Path, tmp: Path) -> None:
+    """Assemble a self-contained Python runtime: python.org embeddable build
+    + tkinter grafted in from a local donor + pip + requirements.txt deps."""
+    runtime.mkdir(parents=True, exist_ok=True)
+    zf = tmp / "py_embed.zip"
+    download(PY_EMBED_URL, zf)
+    with zipfile.ZipFile(zf) as z:
+        z.extractall(runtime)
+
+    pth = next(runtime.glob("python3*._pth"))
+    lines = pth.read_text().splitlines()
+    lines = ["import site" if line.strip() == "#import site" else line
+             for line in lines]
+    # ".." = the bundle root (one level above runtime/, where BitCrusherV9.py
+    # and its flat sibling modules live). The embeddable build's isolated
+    # ._pth mode does NOT auto-add the launched script's directory to
+    # sys.path the way a normal python.exe install does, so `import encode`
+    # etc. fail without this - discovered by actually running the bundle.
+    for extra in ("..", "Lib", "Lib\\site-packages"):
+        if extra not in lines:
+            lines.append(extra)
+    pth.write_text("\n".join(lines) + "\n")
+
+    log(f"graft tkinter from donor ({PY_EMBED_TAG})")
+    donor = find_tkinter_donor()
+    for dll in ("_tkinter.pyd", "tcl86t.dll", "tk86t.dll", "zlib1.dll"):
+        src = donor / "DLLs" / dll
+        if src.is_file():
+            shutil.copy2(src, runtime / dll)
+    shutil.copytree(donor / "tcl", runtime / "tcl")
+    shutil.copytree(donor / "Lib" / "tkinter", runtime / "Lib" / "tkinter")
+
+    python_exe = runtime / "python.exe"
+    log("bootstrap pip")
+    getpip = tmp / "get-pip.py"
+    download(GET_PIP_URL, getpip)
+    subprocess.run([str(python_exe), str(getpip), "--no-warn-script-location", "-q"],
+                    check=True)
+
+    log("pip install requirements.txt into runtime (this takes a while)")
+    subprocess.run([str(python_exe), "-m", "pip", "install",
+                     "--no-warn-script-location", "-q",
+                     "-r", str(ROOT / "requirements.txt")], check=True)
+
+    log("sanity-check runtime imports")
+    check_mods = ("tkinter", "numpy", "scipy", "sklearn", "cv2", "PIL",
+                  "psutil", "requests", "watchdog", "yt_dlp",
+                  "tkinterdnd2", "pystray", "plyer")
+    subprocess.run([str(python_exe), "-c",
+                     "import " + ", ".join(check_mods)], check=True)
+
+
+PORTABLE_LAUNCHER = """@echo off
+setlocal
+cd /d "%~dp0"
+runtime\\python.exe BitCrusherV9.py %*
+if errorlevel 1 pause
+endlocal
+"""
+
+
+def build_portable_win(version: str) -> Path:
+    log("=== building win64-portable ===")
+    workroot = DIST / "stage-win64-portable"
+    if workroot.exists():
+        shutil.rmtree(workroot)
+    stage = workroot / f"BitCrusher-{version}-portable"
+    stage_source(stage)
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        place_win(stage / "tools", False, tmp)
+        embed_python(stage / "runtime", tmp)
+    (stage / "BitCrusher-Portable.bat").write_text(PORTABLE_LAUNCHER)
+    out_zip = DIST / f"BitCrusher-{version}-win64-portable.zip"
+    out_zip.unlink(missing_ok=True)
+    zip_bundle(stage, out_zip)
+    shutil.rmtree(workroot, ignore_errors=True)
+    mb = out_zip.stat().st_size / (1024 * 1024)
+    log(f"done {out_zip.name} ({mb:.0f} MB)")
+    return out_zip
+
+
 def place_linux(tools: Path, tmp: Path) -> None:
     tx = tmp / "ff_linux.tar.xz"
     download(FF_LINUX, tx)
@@ -192,6 +309,9 @@ def main() -> int:
     ap.add_argument("--version", default=None, help="override APP_VERSION")
     ap.add_argument("--fresh-win", action="store_true",
                     help="download Windows ffmpeg instead of copying ./tools")
+    ap.add_argument("--portable", action="store_true",
+                    help="also build BitCrusher-<ver>-win64-portable.zip "
+                         "(embedded Python runtime, no install required)")
     args = ap.parse_args()
 
     version = args.version or read_version()
@@ -204,8 +324,14 @@ def main() -> int:
             built.append(build_one(t, version, args.fresh_win))
         except Exception as exc:  # keep going; report at the end
             log(f"FAILED {t}: {exc}")
+    total = len(targets) + (1 if args.portable else 0)
+    if args.portable:
+        try:
+            built.append(build_portable_win(version))
+        except Exception as exc:
+            log(f"FAILED portable: {exc}")
     log("built: " + ", ".join(p.name for p in built) if built else "nothing built")
-    return 0 if len(built) == len(targets) else 1
+    return 0 if len(built) == total else 1
 
 
 if __name__ == "__main__":
