@@ -48,3 +48,7 @@ _bmad-output/
 Comparison_testing/
 TESTING_DATA/
 test_pipeline/*.json
+
+# Dev-only planning/design docs — ALWAYS untracked (standing rule). User-facing
+# docs (USER_GUIDE.md etc.) live directly in docs/, not here.
+docs/dev/

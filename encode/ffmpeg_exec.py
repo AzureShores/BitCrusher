@@ -428,6 +428,18 @@ def _ffmpeg_run_with_progress(cmd: list, duration_s: float, pass_label: str, cwd
     except ValueError:
         pass  # no -i found; run as-is
 
+    # Concurrency rework: when N jobs run in parallel (each its own process -
+    # see docs/CONCURRENCY_REWORK.md), every ffmpeg defaulting to all cores would
+    # oversubscribe the CPU and thrash. The dispatcher sets BC_THREAD_BUDGET per
+    # worker process; single-job runs never set it, so behavior is unchanged.
+    try:
+        _budget = int(os.environ.get("BC_THREAD_BUDGET") or 0)
+        if _budget > 0 and "-threads" not in prog_cmd:
+            i_idx = prog_cmd.index("-i")
+            prog_cmd = prog_cmd[:i_idx] + ["-threads", str(_budget)] + prog_cmd[i_idx:]
+    except (ValueError, TypeError):
+        pass
+
     _log.info("FFmpeg two-pass %s: %s", pass_label, " ".join(prog_cmd))
     try:
         proc = subprocess.Popen(

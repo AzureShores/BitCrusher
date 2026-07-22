@@ -67,6 +67,62 @@ _PLANNING_LOCK = threading.Lock()
 _STATS_LOCK = threading.Lock()
 
 
+def _bc_json_safe(value) -> bool:
+    """True if value survives a JSON round-trip unchanged in kind (used to filter
+    advanced_options before handing them to a worker subprocess as spec JSON -
+    the only known offender is the progress_cb callable, but this is a defensive
+    catch-all so an unexpected non-serializable value degrades gracefully
+    (silently dropped) instead of crashing spec-file creation for the whole job)."""
+    try:
+        json.dumps(value)
+        return True
+    except Exception:
+        return False
+
+
+def _auto_worker_count(files, cores: int) -> int:
+    """Auto parallel-job count. Concurrency pays off for many SMALL clips (each
+    file carries fixed probe/startup/measure overhead that serialises badly), not
+    for a few big files where the encoder already saturates the CPU. Pure."""
+    n_files = len(files)
+    if n_files <= 1 or cores <= 2:
+        return 1
+    SMALL = 50 * 1024 * 1024  # 50 MB
+    try:
+        small = sum(1 for f in files if os.path.getsize(f) < SMALL)
+    except Exception:
+        small = 0
+    if small >= max(2, int(n_files * 0.6)):
+        return min(4, max(2, cores // 2))   # lots of small files -> parallelise
+    return min(2, max(1, cores // 4))       # bigger files -> at most 2
+
+
+def _decide_workers(files, adv, cpu_count=None):
+    """Return (workers, threads_per_job) for a batch. Pure/testable.
+
+    Process-based concurrency: each worker is its own OS process, so N workers
+    must SHARE the CPU -> each gets ~cores/N encoder threads (no oversubscription).
+    Override via adv["concurrent_jobs"] = "auto" | 1..8 (1 = off); the legacy
+    boolean adv["concurrent"] maps to "auto"."""
+    cores = int(cpu_count or os.cpu_count() or 4)
+    n_files = len(files)
+    ov = adv.get("concurrent_jobs")
+    if ov is None:
+        ov = "auto" if adv.get("concurrent") else 1
+    if isinstance(ov, str):
+        ov = ov.strip().lower()
+        if ov.isdigit():
+            ov = int(ov)
+    if ov in (1, "1", "off", "none", "no", ""):
+        return 1, cores
+    if isinstance(ov, int) and ov >= 2:
+        n = ov
+    else:  # "auto" (or anything unrecognised -> safe auto)
+        n = _auto_worker_count(files, cores)
+    n = max(1, min(int(n), n_files or 1, 8))
+    return n, max(1, cores // n)
+
+
 import sys, os, traceback
 
 _BOOT_PHASE = True  # only show popup during true startup failures
@@ -521,7 +577,16 @@ SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 
 HEURISTICS_DIR    = os.path.join(SCRIPT_DIR, "heuristics")
-USER_SETTINGS_DIR = os.path.join(SCRIPT_DIR, "user_settings")
+# BC_USER_SETTINGS_DIR lets a spawned worker subprocess (concurrency rework -
+# see docs/CONCURRENCY_REWORK.md) redirect its ENTIRE settings/stats/ledger
+# footprint to an isolated temp directory. This sidesteps the "jsonl files
+# interleave on Windows" hazard (_STATS_LOCK only ever protected threads
+# within one process, never separate processes) by construction: each worker
+# writes to its own directory, so there is nothing shared to interleave. The
+# dispatcher merges each worker's ledger.jsonl into the real one afterward,
+# single-writer, from the parent process. Unset in every normal run (GUI,
+# single-file CLI) -> identical path to before, zero behavior change.
+USER_SETTINGS_DIR = os.environ.get("BC_USER_SETTINGS_DIR") or os.path.join(SCRIPT_DIR, "user_settings")
 os.makedirs(HEURISTICS_DIR, exist_ok=True)
 os.makedirs(USER_SETTINGS_DIR, exist_ok=True)
 
@@ -9297,10 +9362,21 @@ class CompressorGUI:
         webhook = (self.webhook_url.get()
                    if hasattr(self, "webhook_url") and self.use_webhook.get() else "")
 
-        workers = 1
-        if adv_base.get("concurrent"):
-            workers = max(1, min(3, (os.cpu_count() or 8) // 8))
+        # Concurrency rework (see docs/CONCURRENCY_REWORK.md): the old in-process
+        # ThreadPool ran the actual ENCODE in-thread, and encoding communicates
+        # through process-global BC_* env vars, so parallel threads corrupted
+        # each other's params + poisoned ledger attribution. The ThreadPoolExecutor
+        # below is kept (bounded concurrency/ordering/cancel semantics are still
+        # useful) - what changed is that _run_one's actual encode step now runs
+        # in its OWN OS process (support.concurrent_pool.run_worker_subprocess)
+        # whenever workers > 1, so parallel threads never share mutable env.
+        workers, thread_budget = _decide_workers(files, adv_base)
         self._active_workers = workers
+        if workers > 1:
+            self.update_status(
+                f"[~] Concurrent mode: encoding up to {workers} file(s) at once "
+                f"({thread_budget} encoder thread(s) each, isolated processes).",
+                level="INFO")
 
         # Throttle progress-only row updates to ~4 Hz per job.
         _last_row_update: dict = {}
@@ -9432,53 +9508,80 @@ class CompressorGUI:
             self.update_status(f"[>] Processing {os.path.basename(path)} ({idx}/{total})", level="INFO")
             t0 = time.time()
             try:
-                stats = self.compress_file_task(
-                    filepath=path, output_folder=out_dir,
-                    target_size=_file_target, webhook=webhook, adv_options=adv) or {}
-                ok = bool(stats.get("compressed_size"))
-                res = {"path": path, "ok": ok,
-                       "in_bytes": int(stats.get("original_size") or 0),
-                       "out_bytes": int(stats.get("compressed_size") or 0),
-                       "vmaf": stats.get("vmaf"),
-                       "encoder": stats.get("encoder"),
-                       "secs": time.time() - t0, "error": None if ok else "no output"}
-                _out_path = stats.get("output_path") or stats.get("out_path") or stats.get("output")
-                if ok and _out_path:
-                    res["output_path"] = _out_path
-                    _dedup_canonical_outputs[path] = {"output_path": _out_path, "target": _file_target,
-                                                      "adv": {k: adv.get(k) for k in _DEDUP_SETTINGS_KEYS}}
-                # Two-target export: after the primary lands, encode the same
-                # source again at each extra cap. Content analysis is disk-
-                # cached (ml_heuristics), so the repeat run skips the probes.
-                _also = _parse_also_targets(adv.get("also_targets"))
-                if ok and _also:
-                    for _mb in _also:
-                        if self.compression_cancelled:
-                            break
-                        _tag = (f"{_mb:g}MB")
-                        self.update_status(f"[MultiTarget] Also exporting "
-                                           f"{os.path.basename(path)} at {_mb:g} MB...",
-                                           level="INFO")
-                        adv2 = {k: v for k, v in adv.items() if k != "also_targets"}
-                        adv2["size_tag"] = _tag
-                        try:
-                            st2 = self.compress_file_task(
-                                filepath=path, output_folder=out_dir,
-                                target_size=float(_mb) * 1024 * 1024,
-                                webhook=webhook, adv_options=adv2) or {}
-                            if st2.get("compressed_size"):
+                if workers > 1:
+                    # Process-isolated: also_targets is handled INSIDE the worker
+                    # subprocess (see _run_bc_worker) so it isn't repeated here.
+                    from support.concurrent_pool import run_worker_subprocess
+                    spec_adv = {k: v for k, v in adv.items()
+                                if k != "progress_cb" and _bc_json_safe(v)}
+                    spec = {"input": path, "out_dir": out_dir,
+                            "target_bytes": int(_file_target),
+                            "webhook": webhook, "adv": spec_adv}
+                    w = run_worker_subprocess(
+                        spec, script_path=os.path.abspath(__file__),
+                        real_settings_dir=USER_SETTINGS_DIR,
+                        thread_budget=thread_budget, stats_lock=_STATS_LOCK,
+                        cancel_event=self.cancel_event)
+                    ok = bool(w.get("ok"))
+                    res = {"path": path, "ok": ok,
+                           "in_bytes": int(w.get("in_bytes") or 0),
+                           "out_bytes": int(w.get("out_bytes") or 0),
+                           "vmaf": w.get("vmaf"), "encoder": w.get("encoder"),
+                           "secs": w.get("secs") or (time.time() - t0),
+                           "error": None if ok else (w.get("error") or "no output")}
+                    _out_path = w.get("output_path")
+                    if ok and _out_path:
+                        res["output_path"] = _out_path
+                        _dedup_canonical_outputs[path] = {"output_path": _out_path, "target": _file_target,
+                                                          "adv": {k: adv.get(k) for k in _DEDUP_SETTINGS_KEYS}}
+                else:
+                    stats = self.compress_file_task(
+                        filepath=path, output_folder=out_dir,
+                        target_size=_file_target, webhook=webhook, adv_options=adv) or {}
+                    ok = bool(stats.get("compressed_size"))
+                    res = {"path": path, "ok": ok,
+                           "in_bytes": int(stats.get("original_size") or 0),
+                           "out_bytes": int(stats.get("compressed_size") or 0),
+                           "vmaf": stats.get("vmaf"),
+                           "encoder": stats.get("encoder"),
+                           "secs": time.time() - t0, "error": None if ok else "no output"}
+                    _out_path = stats.get("output_path") or stats.get("out_path") or stats.get("output")
+                    if ok and _out_path:
+                        res["output_path"] = _out_path
+                        _dedup_canonical_outputs[path] = {"output_path": _out_path, "target": _file_target,
+                                                          "adv": {k: adv.get(k) for k in _DEDUP_SETTINGS_KEYS}}
+                    # Two-target export: after the primary lands, encode the same
+                    # source again at each extra cap. Content analysis is disk-
+                    # cached (ml_heuristics), so the repeat run skips the probes.
+                    _also = _parse_also_targets(adv.get("also_targets"))
+                    if ok and _also:
+                        for _mb in _also:
+                            if self.compression_cancelled:
+                                break
+                            _tag = (f"{_mb:g}MB")
+                            self.update_status(f"[MultiTarget] Also exporting "
+                                               f"{os.path.basename(path)} at {_mb:g} MB...",
+                                               level="INFO")
+                            adv2 = {k: v for k, v in adv.items() if k != "also_targets"}
+                            adv2["size_tag"] = _tag
+                            try:
+                                st2 = self.compress_file_task(
+                                    filepath=path, output_folder=out_dir,
+                                    target_size=float(_mb) * 1024 * 1024,
+                                    webhook=webhook, adv_options=adv2) or {}
+                                if st2.get("compressed_size"):
+                                    self.update_status(
+                                        f"[MultiTarget] {_mb:g} MB export done: "
+                                        f"{format_bytes(int(st2['compressed_size']))}.",
+                                        level="INFO")
+                                else:
+                                    self.update_status(
+                                        f"[MultiTarget] {_mb:g} MB export produced no "
+                                        f"output.", level="WARNING")
+                            except Exception as _me:
                                 self.update_status(
-                                    f"[MultiTarget] {_mb:g} MB export done: "
-                                    f"{format_bytes(int(st2['compressed_size']))}.",
-                                    level="INFO")
-                            else:
-                                self.update_status(
-                                    f"[MultiTarget] {_mb:g} MB export produced no "
-                                    f"output.", level="WARNING")
-                        except Exception as _me:
-                            self.update_status(
-                                f"[MultiTarget] {_mb:g} MB export failed: {_me}",
-                                level="ERROR")
+                                    f"[MultiTarget] {_mb:g} MB export failed: {_me}",
+                                    level="ERROR")
             except Exception as e:
                 res = {"path": path, "ok": False, "in_bytes": 0, "out_bytes": 0,
                        "vmaf": None, "encoder": None,
@@ -10046,7 +10149,95 @@ def build_arg_parser():
     p.add_argument("--version", action="store_true", help="Print version info and exit")
     return p
 
+def _run_bc_worker(spec_path: str, result_path: str) -> int:
+    """Hidden worker entrypoint for the process-based concurrency engine (see
+    docs/CONCURRENCY_REWORK.md). Spawned by support.concurrent_pool.run_pool as
+    its own OS process (env-isolated via BC_USER_SETTINGS_DIR) so parallel jobs
+    never share the BC_* planning/encode env or the ledger file. Runs exactly
+    one file through the same core path the GUI/CLI use, then writes a plain
+    result dict to result_path for the parent to collect. Not a documented CLI
+    flag - internal only, spec/result are private JSON contracts.
+    """
+    import json as _json
+    try:
+        with open(spec_path, "r", encoding="utf-8") as f:
+            spec = _json.load(f)
+    except Exception as e:
+        try:
+            with open(result_path, "w", encoding="utf-8") as f:
+                _json.dump({"ok": False, "error": f"bad spec: {e}"}, f)
+        except Exception:
+            pass
+        return 1
+
+    adv = dict(spec.get("adv") or {})
+    adv["_target_is_bytes"] = True
+    adv["job_id"] = spec.get("input")
+
+    def _status(msg, level="INFO"):
+        print(f"[{level}] {msg}", flush=True)
+
+    t0 = time.time()
+    try:
+        stats = auto_compress(
+            input_path=spec["input"], save_path=spec.get("out_dir") or "",
+            status_callback=_status,
+            target_size_mb=spec.get("target_bytes") or 0,
+            webhook_url=spec.get("webhook") or "",
+            advanced_options=adv,
+            cancel_callback=lambda: False,  # cancellation = the parent kills this process
+        ) or {}
+        ok = bool(stats.get("compressed_size"))
+        outp = stats.get("output_path") or stats.get("out_path") or stats.get("output")
+        result = {
+            "ok": ok,
+            "in_bytes": int(stats.get("original_size") or 0),
+            "out_bytes": int(stats.get("compressed_size") or 0),
+            "vmaf": stats.get("vmaf"),
+            "encoder": stats.get("encoder"),
+            "output_path": outp,
+            "secs": time.time() - t0,
+            "error": None if ok else (stats.get("error") or "no output"),
+        }
+        # Two-target export: mirrors _run_one's in-process behavior. Runs inside
+        # this same isolated worker, so it's just as env-safe as the primary.
+        _also = _parse_also_targets(adv.get("also_targets"))
+        if ok and _also:
+            for _mb in _also:
+                # Drop _target_is_bytes: _mb is a small MB float here (e.g. 25.0),
+                # not raw bytes - inheriting the flag would make auto_compress
+                # treat it as 25 BYTES instead of 25 MB.
+                adv2 = {k: v for k, v in adv.items()
+                        if k not in ("also_targets", "_target_is_bytes")}
+                adv2["size_tag"] = f"{_mb:g}MB"
+                try:
+                    auto_compress(
+                        input_path=spec["input"], save_path=spec.get("out_dir") or "",
+                        status_callback=_status, target_size_mb=float(_mb),
+                        webhook_url=spec.get("webhook") or "",
+                        advanced_options=adv2, cancel_callback=lambda: False,
+                    )
+                except Exception as _me:
+                    _status(f"[MultiTarget] {_mb:g} MB export failed: {_me}", level="ERROR")
+    except Exception as e:
+        result = {"ok": False, "in_bytes": 0, "out_bytes": 0, "vmaf": None,
+                  "encoder": None, "secs": time.time() - t0, "error": str(e)}
+
+    try:
+        with open(result_path, "w", encoding="utf-8") as f:
+            _json.dump(result, f)
+    except Exception:
+        pass
+    return 0 if result.get("ok") else 1
+
+
 def cli_main():
+    # Hidden internal mode for the concurrency engine's worker subprocesses -
+    # checked before argparse so it never interacts with the documented flag
+    # surface (build_arg_parser/CLI_COMMANDS.md are untouched).
+    if len(sys.argv) >= 4 and sys.argv[1] == "--bc-worker":
+        return _run_bc_worker(sys.argv[2], sys.argv[3])
+
     parser = build_arg_parser()
     args = parser.parse_args()
 
@@ -10358,6 +10549,42 @@ def cli_main():
         job_adv = dict(adv)
         job_adv["job_id"] = src
         job_adv["progress_cb"] = _make_progress_cb(name)
+        _cli_jobs = max(1, int(getattr(args, "jobs", 1) or 1))
+        if _cli_jobs > 1:
+            # Process-isolated (see docs/CONCURRENCY_REWORK.md): -j>1 used to run
+            # the ThreadPoolExecutor's encodes in-thread, sharing the BC_* env
+            # across parallel jobs. Each job now runs as its own OS process;
+            # also_targets is handled inside the worker, so it's skipped below.
+            from support.concurrent_pool import run_worker_subprocess
+            spec_adv = {k: v for k, v in job_adv.items()
+                       if k != "progress_cb" and _bc_json_safe(v)}
+            spec = {"input": src, "out_dir": out_dir,
+                    "target_bytes": int(target_mb) * 1024 * 1024,
+                    "webhook": args.webhook or "", "adv": spec_adv}
+            w = run_worker_subprocess(
+                spec, script_path=os.path.abspath(__file__),
+                real_settings_dir=USER_SETTINGS_DIR,
+                thread_budget=max(1, (os.cpu_count() or 4) // _cli_jobs),
+                stats_lock=_STATS_LOCK, cancel_event=_CLI_CANCEL_EVENT)
+            s = {"compressed_size": w.get("out_bytes") if w.get("ok") else None,
+                 "original_size": w.get("in_bytes"), "vmaf": w.get("vmaf"),
+                 "encoder": w.get("encoder"), "output_path": w.get("output_path"),
+                 "error": w.get("error")}
+            s.setdefault("filename", name)
+            try:
+                s.setdefault("original_size", os.path.getsize(src))
+            except Exception:
+                pass
+            outp = s.get("output_path")
+            if outp:
+                _dedup_canonical_outputs[src] = outp
+            try:
+                if bool(job_adv.get("copy_to_clipboard")) and outp and os.path.isfile(outp):
+                    if set_clipboard_files([outp]):
+                        _cli_status(f"Copied to clipboard: {os.path.basename(outp)}")
+            except Exception:
+                pass
+            return s
         s = auto_compress(
             input_path=src,
             save_path=out_dir,
