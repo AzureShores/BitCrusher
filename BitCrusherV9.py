@@ -123,6 +123,53 @@ def _decide_workers(files, adv, cpu_count=None):
     return n, max(1, cores // n)
 
 
+def _jobs_to_display(val):
+    """adv['concurrent_jobs'] value ("auto"/1..4) -> spinner display string."""
+    s = str(val).strip().lower()
+    return "Auto" if s in ("auto", "", "none") else s
+
+
+def _jobs_from_display(display):
+    """Spinner display string -> adv['concurrent_jobs'] stored value."""
+    s = str(display).strip().lower()
+    return "auto" if s == "auto" else s
+
+
+def _self_check_report(output_dir, min_free_bytes=200 * 1024 * 1024):
+    """Startup diagnostics: tool resolution, output-folder writability, free
+    disk space. Pure/testable - returns [{key, label, ok, detail, fix}, ...].
+    `fix` is one of "install:ffmpeg" / "install:ffprobe" / "pick_folder" / None."""
+    results = []
+
+    ffmpeg_path = shutil.which(FFMPEG)
+    results.append({"key": "ffmpeg", "label": "ffmpeg", "ok": bool(ffmpeg_path),
+                     "detail": ffmpeg_path or f"Not found ({FFMPEG})",
+                     "fix": None if ffmpeg_path else "install:ffmpeg"})
+
+    ffprobe_path = shutil.which(FFPROBE)
+    results.append({"key": "ffprobe", "label": "ffprobe", "ok": bool(ffprobe_path),
+                     "detail": ffprobe_path or f"Not found ({FFPROBE})",
+                     "fix": None if ffprobe_path else "install:ffprobe"})
+
+    out_dir = str(output_dir or "")
+    check_dir = out_dir if os.path.isdir(out_dir) else (os.path.dirname(out_dir) or out_dir)
+    writable = bool(check_dir) and os.path.isdir(check_dir) and os.access(check_dir, os.W_OK)
+    results.append({"key": "output_dir", "label": "Output folder writable", "ok": writable,
+                     "detail": out_dir or "(not set)",
+                     "fix": None if writable else "pick_folder"})
+
+    try:
+        free = shutil.disk_usage(check_dir or ".").free
+    except Exception:
+        free = None
+    space_ok = free is None or free >= min_free_bytes
+    results.append({"key": "disk_space", "label": "Free disk space", "ok": space_ok,
+                     "detail": (f"{free / (1024 * 1024):.0f} MB free" if free is not None else "Unknown"),
+                     "fix": None})
+
+    return results
+
+
 import sys, os, traceback
 
 _BOOT_PHASE = True  # only show popup during true startup failures
@@ -170,7 +217,7 @@ from encode.trim import (_parse_trim_range,
                   suggest_trim_ranges)
 from encode.spotlight import (_SPOTLIGHT_BOOST,
                        _spotlight_zone_params)
-from encode.feature_helpers import (set_clipboard_files,
+from encode.feature_helpers import (set_clipboard_files, get_clipboard_media_paths,
                              _audio_track_plan, _audio_map_ffmpeg_args,
                              _read_sibling_lrc, _embed_lyrics_into)
 from support.sendto_ipc import (_BC_IPC_HOST, _BC_IPC_PORT, _BC_STARTUP_FILES,
@@ -728,6 +775,7 @@ ADVANCED_DEFAULTS = {
     "audio_format": "auto",
     "image_format": "jpg",
     "concurrent": False,
+    "concurrent_jobs": "auto",
     "auto_output_folder": False,
     "guetzli": False,
     "pngopt": False,
@@ -5255,6 +5303,7 @@ class CompressorGUI:
             self.adv_output_suffix.trace_add("write", lambda *args: _a2b_suffix())
 
         self.adv_concurrent     = tk.IntVar(value=1 if ADVANCED_DEFAULTS["concurrent"] else 0)
+        self.adv_concurrent_jobs = tk.StringVar(value=_jobs_to_display(ADVANCED_DEFAULTS.get("concurrent_jobs", "auto")))
         self.adv_auto_output    = tk.IntVar(value=1 if ADVANCED_DEFAULTS["auto_output_folder"] else 0)
         self.adv_guetzli        = tk.IntVar(value=1 if ADVANCED_DEFAULTS["guetzli"] else 0)
         self.adv_pngopt         = tk.IntVar(value=1 if ADVANCED_DEFAULTS["pngopt"] else 0)
@@ -5357,6 +5406,7 @@ class CompressorGUI:
         self.adv_audio_format.set(adv.get("audio_format", "aac"))
         self.adv_image_format.set(adv.get("image_format", "jpg"))
         self.adv_concurrent.set(1 if adv.get("concurrent") else 0)
+        self.adv_concurrent_jobs.set(_jobs_to_display(adv.get("concurrent_jobs", "auto")))
         self.adv_auto_output.set(1 if adv.get("auto_output_folder") else 0)
         self.adv_guetzli.set(1 if adv.get("guetzli") else 0)
         self.adv_pngopt.set(1 if adv.get("pngopt") else 0)
@@ -5437,6 +5487,7 @@ class CompressorGUI:
             pass
         self.setup_menu()
         self.check_dependencies()
+        self.root.after(300, lambda: self.run_self_check(auto=True))
 
         self.tray_icon = None
         self._tray_icon_ready = False
@@ -5849,6 +5900,8 @@ class CompressorGUI:
                 self.adv_quality_mode = tk.StringVar(value=(_qm if _qm in ("fast", "balanced", "max") else "max"))
             except Exception:
                 self.adv_quality_mode = tk.StringVar(value="max")
+        if not hasattr(self, "adv_concurrent_jobs"):
+            self.adv_concurrent_jobs = tk.StringVar(value=_jobs_to_display(adv.get("concurrent_jobs", "auto")))
         # Back-compat aliases from older variable names.
         if hasattr(self, "adv_audio_fmt") and not hasattr(self, "adv_audio_format"):
             self.adv_audio_format = self.adv_audio_fmt
@@ -6600,6 +6653,7 @@ class CompressorGUI:
         settings_menu.add_command(label=self._t("menu.load_profile","Load Profile"), command=self.load_profile)
         settings_menu.add_command(label=self._t("menu.advanced_options", "Advanced Options..."), command=self.open_advanced)
         settings_menu.add_command(label=self._t("menu.check_updates", "Check for Updates..."), command=lambda: self.check_for_updates(silent=False))
+        settings_menu.add_command(label=self._t("menu.self_check", "Run Self-Check..."), command=lambda: self.run_self_check(auto=False))
         settings_menu.add_separator()
         settings_menu.add_command(label=self._t("menu.add_sendto", "Add 'Send to BitCrusher' (right-click menu)"),
                                   command=self.register_send_to_menu)
@@ -7087,6 +7141,8 @@ class CompressorGUI:
         except Exception: pass
         try: self.adv_concurrent.set(1 if adv.get("concurrent") else 0)
         except Exception: pass
+        try: self.adv_concurrent_jobs.set(_jobs_to_display(adv.get("concurrent_jobs", "auto")))
+        except Exception: pass
         try: self.adv_auto_output.set(1 if adv.get("auto_output_folder") else 0)
         except Exception: pass
         try: self.adv_guetzli.set(1 if adv.get("guetzli") else 0)
@@ -7193,6 +7249,7 @@ class CompressorGUI:
                 "audio_format":        str(self.adv_audio_format.get())       if hasattr(self, "adv_audio_format")      else "aac",
                 "image_format":        str(self.adv_image_format.get())       if hasattr(self, "adv_image_format")      else "jpg",
                 "concurrent":          bool(self.adv_concurrent.get())        if hasattr(self, "adv_concurrent")        else False,
+                "concurrent_jobs":     _jobs_from_display(self.adv_concurrent_jobs.get()) if hasattr(self, "adv_concurrent_jobs") else "auto",
                 "auto_output_folder":  bool(self.adv_auto_output.get())       if hasattr(self, "adv_auto_output")       else False,
                 "guetzli":             bool(self.adv_guetzli.get())           if hasattr(self, "adv_guetzli")           else False,
                 "pngopt":              bool(self.adv_pngopt.get())            if hasattr(self, "adv_pngopt")            else False,
@@ -7942,6 +7999,61 @@ class CompressorGUI:
                 self._ui(_done)
             threading.Thread(target=_worker, daemon=True).start()
 
+    def run_self_check(self, auto=False):
+        """Startup self-check: ffmpeg/ffprobe resolve, output folder writable,
+        disk space. `auto=True` (called at launch) stays silent when everything
+        is green; the Settings-menu entry always shows the panel."""
+        out_dir = self.save_path.get() if hasattr(self, "save_path") and hasattr(self.save_path, "get") else str(Path.home())
+        results = _self_check_report(out_dir)
+        if auto and all(r["ok"] for r in results):
+            return
+        self._show_self_check_panel(results)
+
+    def _show_self_check_panel(self, results):
+        import tkinter as tk
+        from tkinter import ttk
+
+        win = tk.Toplevel(self.root)
+        win.title(self._t("dlg.self_check", "Startup Self-Check"))
+        win.resizable(False, False)
+        try:
+            win.transient(self.root)
+        except Exception:
+            pass
+
+        body = ttk.Frame(win, padding=10)
+        body.pack(fill="both", expand=True)
+
+        def _redo():
+            win.destroy()
+            self.run_self_check(auto=False)
+
+        for i, r in enumerate(results):
+            row = ttk.Frame(body)
+            row.grid(row=i, column=0, sticky="ew", pady=3)
+            status_text = self._t("self_check.ok", "OK") if r["ok"] else self._t("self_check.fail", "FAIL")
+            status_lbl = tk.Label(row, text=status_text, width=5,
+                                   fg=("#2e7d32" if r["ok"] else "#c62828"))
+            status_lbl.pack(side="left")
+            ttk.Label(row, text=r["label"], width=24).pack(side="left", padx=(6, 0))
+            ttk.Label(row, text=r["detail"], style="Sub.TLabel").pack(side="left", padx=(6, 0))
+            if r["fix"] == "pick_folder":
+                def _fix_folder():
+                    d = filedialog.askdirectory(title="Choose a writable output folder")
+                    if d:
+                        self.save_path.set(d)
+                        _redo()
+                ttk.Button(row, text=self._t("self_check.fix", "Fix..."), command=_fix_folder).pack(side="left", padx=(10, 0))
+            elif isinstance(r["fix"], str) and r["fix"].startswith("install:"):
+                tool_name = r["fix"].split(":", 1)[1]
+                def _fix_install(name=tool_name):
+                    win.destroy()
+                    threading.Thread(target=lambda: (self.install_tool(name), self._ui(lambda: self.run_self_check(auto=False))),
+                                      daemon=True).start()
+                ttk.Button(row, text=self._t("self_check.install", "Install..."), command=_fix_install).pack(side="left", padx=(10, 0))
+
+        ttk.Button(body, text=self._t("self_check.recheck", "Re-check"), command=_redo).grid(
+            row=len(results), column=0, sticky="e", pady=(10, 0))
 
     def stop_compression(self):
         """Stop button: cancel the running batch and kill active encoders.
@@ -8061,8 +8173,36 @@ class CompressorGUI:
 
 
 
+    def paste_from_clipboard(self):
+        """Ctrl+V / Paste button: queue a file copied in Explorer/Discord, or a
+        raw bitmap (screenshot) saved to a temp PNG first."""
+        try:
+            paths = get_clipboard_media_paths()
+        except Exception:
+            paths = []
+        if not paths:
+            self.update_status("[Clipboard] No image or file found on clipboard.", level="INFO")
+            return
+        added = 0
+        for path in paths:
+            if not os.path.isfile(path):
+                continue
+            _norm = _normalize_drop_path(path)
+            if not hasattr(self, "file_list"):
+                self.file_list = []
+            if _norm in self.file_list:
+                continue
+            self.file_list.append(_norm)
+            self.queue_box.insert("end", _norm)
+            added += 1
+        if added:
+            self._save_queue()
+            self.update_status(f"[Clipboard] Added {added} file(s) from clipboard to the queue.", level="INFO")
+        else:
+            self.update_status("[Clipboard] Clipboard file(s) already in the queue.", level="INFO")
+
     def add_files(self):
-        paths = filedialog.askopenfilenames(filetypes=[("Media files", 
+        paths = filedialog.askopenfilenames(filetypes=[("Media files",
             "*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm *.m4v *.3gp *.3g2 *.mpeg *.mpg "
             "*.mp3 *.wav *.aac *.ogg *.flac *.wma *.m4a *.opus *.alac *.aiff *.aif "
             "*.jpg *.jpeg *.jfif *.png *.webp *.gif *.bmp *.tiff *.tif *.heic *.heif *.jxl *.raw *.avif "
@@ -9021,6 +9161,7 @@ class CompressorGUI:
             if not hasattr(self, "adv_audio_format"):    self.adv_audio_format = tk.StringVar(value=str(ADVANCED_DEFAULTS.get("audio_format", "aac")))
             if not hasattr(self, "adv_image_format"):    self.adv_image_format = tk.StringVar(value=str(ADVANCED_DEFAULTS.get("image_format", "jpg")))
             if not hasattr(self, "adv_concurrent"):      self.adv_concurrent = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("concurrent", False) else 0)
+            if not hasattr(self, "adv_concurrent_jobs"): self.adv_concurrent_jobs = tk.StringVar(value=_jobs_to_display(ADVANCED_DEFAULTS.get("concurrent_jobs", "auto")))
             if not hasattr(self, "adv_auto_output"):     self.adv_auto_output = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("auto_output_folder", False) else 0)
             if not hasattr(self, "adv_guetzli"):         self.adv_guetzli = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("guetzli", False) else 0)
             if not hasattr(self, "adv_pngopt"):          self.adv_pngopt = tk.IntVar(value=1 if ADVANCED_DEFAULTS.get("pngopt", False) else 0)
@@ -9218,6 +9359,10 @@ class CompressorGUI:
         ttk.Checkbutton(images, text=self._t("adv.auto_jpeg", "Auto JPEG"), variable=self.adv_auto_jpeg).grid(row=1, column=1, sticky="w", padx=6, pady=4)
 
         ttk.Checkbutton(misc, text=self._t("adv.concurrent", "Concurrent Compression"), variable=self.adv_concurrent).grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        _jobs_row = ttk.Frame(misc); _jobs_row.grid(row=0, column=2, sticky="w", padx=6, pady=4)
+        ttk.Label(_jobs_row, text=self._t("adv.parallel_jobs", "Parallel jobs:")).pack(side="left")
+        ttk.Combobox(_jobs_row, textvariable=self.adv_concurrent_jobs, values=["Auto", "1", "2", "3", "4"],
+                     state="readonly", width=6).pack(side="left", padx=(4, 0))
         ttk.Checkbutton(misc, text=self._t("adv.auto_output", "Auto Create Output Folder"), variable=self.adv_auto_output).grid(row=0, column=1, sticky="w", padx=6, pady=4)
         if hasattr(self, "adv_grain_filter"):
             ttk.Checkbutton(misc, text=self._t("adv.grain_filter", "Grain-aware denoise filter"), variable=self.adv_grain_filter).grid(row=1, column=0, sticky="w", padx=6, pady=4)

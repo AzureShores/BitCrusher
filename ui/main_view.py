@@ -243,6 +243,19 @@ def build_main_view(gui):
     ttk.Button(ctrl, text=gui._t("btn.browse", "Browse…"), style="Ghost.TButton",
                command=gui.select_output_dir).pack(side="left", padx=(4, 0))
 
+    quick_row = tk.Frame(left, bg=APP_BG)
+    quick_row.pack(fill="x", padx=16, pady=(0, 8))
+    ttk.Label(quick_row, text=gui._t("lbl.discord_quick", "Discord:")).pack(side="left")
+    for _preset_key, _mb_label in (
+        ("Discord — Free (10 MB)", "10 MB"),
+        ("Discord — Nitro Basic (50 MB)", "50 MB"),
+        ("Discord — Nitro (500 MB)", "500 MB"),
+    ):
+        ttk.Button(
+            quick_row, text=_mb_label, style="Ghost.TButton",
+            command=lambda k=_preset_key: getattr(gui, "set_preset", lambda *_a, **_k: None)(k)
+        ).pack(side="left", padx=(6, 0))
+
     tk.Label(right, text=gui._t("lbl.display", "Display"), bg=APP_BG, fg=FG, anchor="w").pack(fill="x", padx=12, pady=(12, 0))
 
     gui.display_mode_var = tk.StringVar(value="Quality Metrics")
@@ -577,6 +590,7 @@ def build_main_view(gui):
     gui._rebuild_display_panel()
     gui.queue_box.bind("<<TreeviewSelect>>", lambda e: gui._schedule_display_refresh())
     gui.queue_box.bind("<Double-Button-1>", lambda e: gui._schedule_display_refresh())
+    gui.queue_box.bind("<Control-v>", lambda e: getattr(gui, "paste_from_clipboard", lambda: None)())
 
 
     # Primary action row: big Start, Stop beside it.
@@ -602,6 +616,8 @@ def build_main_view(gui):
 
     ttk.Button(qbtns, text="+ " + gui._t("btn.add_files","Add Files…"), style="Ghost.TButton",
                command=getattr(gui, "add_files", lambda: None)).pack(side="left", padx=(0, 6))
+    ttk.Button(qbtns, text=gui._t("btn.paste_clipboard", "Paste"), style="Ghost.TButton",
+               command=getattr(gui, "paste_from_clipboard", lambda: None)).pack(side="left", padx=(0, 6))
     ttk.Button(qbtns, text=gui._t("btn.remove_selected","Remove"), style="Ghost.TButton",
                command=getattr(gui, "remove_selected", lambda: None)).pack(side="left", padx=(0, 6))
     ttk.Button(qbtns, text=gui._t("btn.clear","Clear"), style="Ghost.TButton",

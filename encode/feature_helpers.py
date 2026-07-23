@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
+import time
 
 import encode.ffmpeg_exec as ffmpeg_exec
 from encode.ffmpeg_exec import si, NO_WIN, _sp_run, _sp_check_output
@@ -86,6 +88,36 @@ def set_clipboard_files(paths) -> bool:
         return True
     except Exception:
         return False
+
+
+def get_clipboard_media_paths(temp_dir=None) -> list:
+    """
+    Read the clipboard for either a file list (copied in Explorer/Discord) or a
+    raw bitmap (e.g. a screenshot) so it can be dropped straight into the queue.
+    A raw bitmap is saved as a PNG under temp_dir (or the system temp dir) since
+    the encode pipeline needs a real file. Returns [] if the clipboard holds
+    neither. Uses PIL (already a dependency); offline, no-op on any failure.
+    """
+    try:
+        from PIL import ImageGrab
+    except Exception:
+        return []
+    try:
+        data = ImageGrab.grabclipboard()
+    except Exception:
+        return []
+    if data is None:
+        return []
+    if isinstance(data, list):
+        return [p for p in data if isinstance(p, str) and os.path.isfile(p)]
+    try:
+        d = temp_dir or tempfile.gettempdir()
+        os.makedirs(d, exist_ok=True)
+        out_path = os.path.join(d, f"bc_clipboard_{int(time.time() * 1000)}.png")
+        data.save(out_path, "PNG")
+        return [out_path]
+    except Exception:
+        return []
 
 
 def _count_audio_streams(input_path: str) -> int:
