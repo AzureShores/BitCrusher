@@ -618,13 +618,19 @@ def _ffmpeg_two_pass_encode(
     # Pixel format: prefer 10-bit for HDR sources when codec supports it; else standard 8-bit.
     vpix   = (["-pix_fmt", hdr_pf] if hdr_pf else ["-pix_fmt", "yuv420p"])
 
-    # Multi-audio-track mapping (keep-first / mix). amix can't stream-copy, so a
-    # "mix" plan forces an audio re-encode. Pass 1 stays -an; only pass 2 carries
-    # the audio map/filter.
+    # Explicit stream mapping (video + audio). Always computed, not just for
+    # multi-audio-track sources - without an explicit -map, ffmpeg's default
+    # "best stream" picker can select the WRONG video stream on sources with an
+    # extra embedded picture track (e.g. Roblox/Bento4-muxed clips carry a
+    # single-frame MJPEG "cover" stream that isn't flagged attached_pic=1; at
+    # 1920x1080 it edges out a real 1920x1072 60fps track by raw pixel count,
+    # silently encoding one static frame instead of the actual footage).
+    # Pass 1 stays -an; only pass 2 carries the audio map/filter.
     _atplan = (advanced_options or {}).get("_audio_track_plan") or {}
     _acopy_ref = {"audio_copy": bool(audio_copy)}
-    _amap = feature_helpers._audio_map_ffmpeg_args(_atplan, _acopy_ref) if _atplan.get("multi") else []
+    _amap = feature_helpers._audio_map_ffmpeg_args(_atplan, _acopy_ref)
     _audio_copy_eff = _acopy_ref["audio_copy"]
+    _vmap1 = ["-map", "0:v:0?"]  # pass 1 has no _amap (always -an); map video explicitly
 
     # Audio settings for the 2nd pass
     if _audio_copy_eff:
@@ -711,7 +717,7 @@ def _ffmpeg_two_pass_encode(
             # SVT rejects -maxrate/-bufsize with -b:v (VBR); target bitrate only.
             rc_svt = ["-b:v", str(int(bitrate))]
             cmd1 = base + _svt_v + vscale + vfps + rc_svt \
-                + ["-pass", "1", "-passlogfile", passlog, "-an", "-f", "null", null_dev]
+                + _vmap1 + ["-pass", "1", "-passlogfile", passlog, "-an", "-f", "null", null_dev]
             cmd2 = base + _svt_v + vscale + vfps + rc_svt \
                 + ["-pass", "2", "-passlogfile", passlog] + _amap + a2 + ["-movflags", "+faststart", output_path]
         elif vcodec == "libx265":
@@ -726,7 +732,7 @@ def _ffmpeg_two_pass_encode(
             x265p2 = f"pass=2:stats={passlog_name}:{_x265_base}"
 
             cmd1 = base + ["-c:v", vcodec, "-preset", preset_p1] + (["-tune", safe_tune] if safe_tune else []) \
-                  + vscale + vfps + vpix + rc + ["-x265-params", x265p1, "-an", "-f", "null", null_dev]
+                  + vscale + vfps + vpix + rc + _vmap1 + ["-x265-params", x265p1, "-an", "-f", "null", null_dev]
             cmd2 = base + ["-c:v", vcodec, "-preset", preset] + (["-tune", safe_tune] if safe_tune else []) \
                   + vscale + vfps + vpix + rc + ["-x265-params", x265p2] + _amap + a2 + ["-movflags", "+faststart", output_path]
         elif vcodec == "libvpx-vp9":
@@ -737,7 +743,7 @@ def _ffmpeg_two_pass_encode(
                           "-row-mt", "1", "-tile-columns", "1", "-frame-parallel", "0",
                           "-lag-in-frames", "25", "-auto-alt-ref", "1"] + vp9_prof
             vp9_p1 = (["-cpu-used", "4"] if turbo else [])  # last flag wins in ffmpeg
-            cmd1 = base + vp9_common + vp9_p1 + vscale + vfps + vpix + rc + ["-pass", "1", "-passlogfile", passlog, "-an", "-f", "null", null_dev]
+            cmd1 = base + vp9_common + vp9_p1 + vscale + vfps + vpix + rc + _vmap1 + ["-pass", "1", "-passlogfile", passlog, "-an", "-f", "null", null_dev]
             cmd2 = base + vp9_common + vscale + vfps + vpix + rc + ["-pass", "2", "-passlogfile", passlog] + _amap + a2 + ["-movflags", "+faststart", output_path]
         else:
             # libx264 honors global -pass / -passlogfile. x264 is 8-bit only; vpix falls back to yuv420p.
@@ -746,7 +752,7 @@ def _ffmpeg_two_pass_encode(
             if not _x264_params:
                 _x264_params = "aq-mode=3:aq-strength=1.00:mbtree=1:deblock=-1,-1:psy-rd=1.10,0.15:rc-lookahead=80:qcomp=0.70:ipratio=1.30:pbratio=1.20:trellis=2:bframes=8:ref=5"
             cmd1 = base + ["-c:v", vcodec, "-preset", preset_p1] + (["-tune", safe_tune] if safe_tune else []) \
-                  + vscale + vfps + vpix + rc + (["-x264-params", _x264_params] if _x264_params else []) + ["-pass", "1", "-passlogfile", passlog, "-an", "-f", "null", null_dev]
+                  + vscale + vfps + vpix + rc + (["-x264-params", _x264_params] if _x264_params else []) + _vmap1 + ["-pass", "1", "-passlogfile", passlog, "-an", "-f", "null", null_dev]
             cmd2 = base + ["-c:v", vcodec, "-preset", preset] + (["-tune", safe_tune] if safe_tune else []) \
                   + vscale + vfps + vpix + rc + (["-x264-params", _x264_params] if _x264_params else []) + ["-pass", "2", "-passlogfile", passlog] + _amap + a2 + ["-movflags", "+faststart", output_path]
 
@@ -1054,11 +1060,14 @@ def compress_with_handbrake(
     out_ext = os.path.splitext(output_path)[1].lower()
     mp4_like = out_ext in (".mp4", ".m4v", ".mov", "")
 
-    # Multi-audio-track mapping (keep-first / mix). amix can't stream-copy, so a
-    # "mix" plan forces an audio re-encode regardless of the audio_copy request.
+    # Explicit stream mapping (video + audio). Always computed, not just for
+    # multi-audio-track sources - see the matching comment in
+    # _ffmpeg_two_pass_encode for why an explicit -map is required even for a
+    # single-track source (ffmpeg's default "best stream" picker can grab a
+    # mislabeled embedded picture track instead of the real video).
     _atplan = (advanced_options or {}).get("_audio_track_plan") or {}
     _acopy_ref = {"audio_copy": bool(audio_copy)}
-    audio_map_args = feature_helpers._audio_map_ffmpeg_args(_atplan, _acopy_ref) if _atplan.get("multi") else []
+    audio_map_args = feature_helpers._audio_map_ffmpeg_args(_atplan, _acopy_ref)
     audio_copy = _acopy_ref["audio_copy"]
 
     a_args: list[str] = []
