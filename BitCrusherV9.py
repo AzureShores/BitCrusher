@@ -755,7 +755,7 @@ PRESETS = {
 }
 
 
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 
 ADVANCED_DEFAULTS = {
     "auto_retry": True,
@@ -4542,7 +4542,7 @@ class QueueTree(ttk.Treeview):
             ("status", "Status", 108, 72, "w", False),
             ("progress", "%", 40, 36, "e", False),
             ("eta", "ETA", 52, 44, "e", False),
-            ("size", "Size", 72, 56, "e", False),
+            ("size", "Size", 108, 56, "e", False),
             ("vmaf", "VMAF", 54, 44, "e", False),
         ):
             self.heading(col, text=txt)
@@ -4656,7 +4656,7 @@ class QueueTree(ttk.Treeview):
 
     # ---- Rich-row updates ----------------------------------------------
     def job_update(self, path: str, *, status=None, progress=None, eta=None,
-                   size=None, vmaf=None):
+                   size=None, vmaf=None, orig_size=None):
         iid = str(path)
         if not self.exists(iid):
             return
@@ -4676,7 +4676,11 @@ class QueueTree(ttk.Treeview):
         if eta is not None:
             self.set(iid, "eta", (f"~{int(eta)}s" if isinstance(eta, (int, float)) and eta > 0 else str(eta)))
         if size is not None:
-            self.set(iid, "size", (human_bytes(int(size)) if isinstance(size, (int, float)) and size else str(size)))
+            _size_txt = (human_bytes(int(size)) if isinstance(size, (int, float)) and size else str(size))
+            if (isinstance(size, (int, float)) and size and isinstance(orig_size, (int, float)) and orig_size > 0):
+                _pct = (1.0 - float(size) / float(orig_size)) * 100.0
+                _size_txt += f" (-{_pct:.0f}%)" if _pct >= 0 else f" (+{-_pct:.0f}%)"
+            self.set(iid, "size", _size_txt)
         if vmaf is not None:
             self.set(iid, "vmaf", (f"{float(vmaf):.1f}" if isinstance(vmaf, (int, float)) else str(vmaf)))
 
@@ -5488,6 +5492,19 @@ class CompressorGUI:
         self.setup_menu()
         self.check_dependencies()
         self.root.after(300, lambda: self.run_self_check(auto=True))
+
+        # Keyboard shortcuts. Ctrl+O/Ctrl+Enter/Esc are global (bind_all) -
+        # unlikely to collide with text entry defaults. Delete is scoped to the
+        # queue tree only (queue_box.bind, not bind_all) so it removes a queue
+        # row only when the queue has focus, never while editing a text field.
+        try:
+            self.root.bind_all("<Control-o>", lambda e: self.add_files())
+            self.root.bind_all("<Control-Return>", lambda e: self.start_compression())
+            self.root.bind_all("<Escape>", lambda e: self.stop_compression())
+            if hasattr(self, "queue_box"):
+                self.queue_box.bind("<Delete>", lambda e: self.remove_selected())
+        except Exception:
+            pass
 
         self.tray_icon = None
         self._tray_icon_ready = False
@@ -7299,6 +7316,10 @@ class CompressorGUI:
                                  else bool((getattr(self, "settings", {}) or {}).get("dino_game", False))),
                 "pipeline_mode": (bool(self.pipeline_var.get()) if hasattr(self, "pipeline_var")
                                   else bool((getattr(self, "settings", {}) or {}).get("pipeline_mode", False))),
+                "notify_on_complete": (bool(int(self.notify_on_complete_var.get())) if hasattr(self, "notify_on_complete_var")
+                                       else bool((getattr(self, "settings", {}) or {}).get("notify_on_complete", True))),
+                "auto_open_output": (bool(int(self.auto_open_output_var.get())) if hasattr(self, "auto_open_output_var")
+                                     else bool((getattr(self, "settings", {}) or {}).get("auto_open_output", False))),
                 "watch_rules":  dict((getattr(self, "settings", {}) or {}).get("watch_rules", {}) or {}),
                 "update_check_consent": (getattr(self, "settings", {}) or {}).get("update_check_consent", None),
                 "last_update_check_ts": (getattr(self, "settings", {}) or {}).get("last_update_check_ts", 0),
@@ -8231,6 +8252,32 @@ class CompressorGUI:
             del self.file_list[i]
         self._save_queue()
 
+    def retry_failed(self):
+        """Reset every failed/cancelled queue row back to pending so the next
+        Start pass retries just them. Already-done rows are untouched (Start
+        already skips "done" - see compress_all) - this only clears the
+        failed/cancelled badge so it's obvious what will re-run."""
+        if getattr(self, "compression_running", False):
+            self.update_status("[Queue] Cannot retry while a batch is running.", level="WARNING")
+            return
+        n = 0
+        for p in list(getattr(self, "file_list", []) or []):
+            try:
+                _norm = _normalize_drop_path(p)
+            except Exception:
+                _norm = p
+            st = (self.job_states.get(_norm) or {}).get("status") if hasattr(self, "job_states") else None
+            if st in ("failed", "cancelled"):
+                self.job_states.pop(_norm, None)
+                self._job_update(p, status="pending", progress=0, eta="")
+                n += 1
+        if n:
+            self._save_queue()
+            self.update_status(f"[Queue] Reset {n} failed/cancelled file(s) to pending - press Start to retry.",
+                               level="INFO")
+        else:
+            self.update_status("[Queue] No failed/cancelled files to retry.", level="INFO")
+
     def sort_queue_by_eta(self):
         """Reorder the queue shortest-estimated-encode first.
 
@@ -8340,7 +8387,7 @@ class CompressorGUI:
 
     # ---- Rich queue-row updates (main thread only) ----------------------
     def _job_update(self, path, *, status=None, progress=None, eta=None,
-                    size=None, vmaf=None):
+                    size=None, vmaf=None, orig_size=None):
         """Update one queue row's status columns; remembers state in job_rows."""
         try:
             _norm = _normalize_drop_path(str(path))
@@ -8348,12 +8395,12 @@ class CompressorGUI:
             _norm = str(path)
         row = self.job_rows.setdefault(_norm, {}) if hasattr(self, "job_rows") else {}
         for k, v in (("status", status), ("progress", progress), ("eta", eta),
-                     ("size", size), ("vmaf", vmaf)):
+                     ("size", size), ("vmaf", vmaf), ("orig_size", orig_size)):
             if v is not None:
                 row[k] = v
         try:
             self.queue_box.job_update(_norm, status=status, progress=progress,
-                                      eta=eta, size=size, vmaf=vmaf)
+                                      eta=eta, size=size, vmaf=vmaf, orig_size=orig_size)
         except Exception:
             pass
 
@@ -9370,6 +9417,14 @@ class CompressorGUI:
             self.dino_game_var = tk.IntVar(value=1 if (getattr(self, "settings", {}) or {}).get("dino_game", False) else 0)
         ttk.Checkbutton(misc, text=self._t("adv.dino", "Hidden dino runner (Activity area)"), variable=self.dino_game_var,
                         command=self._toggle_dino).grid(row=1, column=1, sticky="w", padx=6, pady=4)
+        if not hasattr(self, "notify_on_complete_var"):
+            self.notify_on_complete_var = tk.IntVar(value=1 if (getattr(self, "settings", {}) or {}).get("notify_on_complete", True) else 0)
+        ttk.Checkbutton(misc, text=self._t("adv.notify_complete", "Notify when the batch finishes"),
+                        variable=self.notify_on_complete_var).grid(row=2, column=0, sticky="w", padx=6, pady=4)
+        if not hasattr(self, "auto_open_output_var"):
+            self.auto_open_output_var = tk.IntVar(value=1 if (getattr(self, "settings", {}) or {}).get("auto_open_output", False) else 0)
+        ttk.Checkbutton(misc, text=self._t("adv.auto_open_output", "Open output folder when the batch finishes"),
+                        variable=self.auto_open_output_var).grid(row=2, column=1, sticky="w", padx=6, pady=4)
 
         # --- Watcher Rules -------------------------------------------------
         # Optional conditions applied only to files the folder watcher / Send-To
@@ -9736,7 +9791,8 @@ class CompressorGUI:
             if res["ok"]:
                 self._ui(self._job_update, path, status="done", progress=100, eta="",
                          size=(res["out_bytes"] or None),
-                         vmaf=(res["vmaf"] if isinstance(res["vmaf"], (int, float)) else None))
+                         vmaf=(res["vmaf"] if isinstance(res["vmaf"], (int, float)) else None),
+                         orig_size=(res["in_bytes"] or None))
                 self._ui(self._record_job_state, path, "done", res.get("output_path"))
             else:
                 _st = "cancelled" if self.compression_cancelled else "failed"
@@ -9805,6 +9861,21 @@ class CompressorGUI:
                     pass
                 try:
                     self.refresh_lifetime_stats()
+                except Exception:
+                    pass
+                try:
+                    if bool(int(getattr(self, "notify_on_complete_var", None).get())) if hasattr(self, "notify_on_complete_var") else True:
+                        notification.notify(
+                            title="BitCrusher - Batch Complete",
+                            message=f"{processed}/{total} file(s) done, {errors} error(s) in {dt:.1f}s.",
+                            timeout=5)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, "auto_open_output_var") and bool(int(self.auto_open_output_var.get())):
+                        _od = self.save_path.get() if hasattr(self.save_path, "get") else str(self.save_path)
+                        if _od and os.path.isdir(_od):
+                            _open_folder(_od)
                 except Exception:
                     pass
             else:

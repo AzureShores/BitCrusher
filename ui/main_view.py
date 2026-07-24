@@ -624,6 +624,8 @@ def build_main_view(gui):
                command=getattr(gui, "clear_queue", lambda: None)).pack(side="left", padx=(0, 6))
     ttk.Button(qbtns, text=gui._t("btn.sort_eta","Sort: fastest first"), style="Ghost.TButton",
                command=getattr(gui, "sort_queue_by_eta", lambda: None)).pack(side="left", padx=(0, 6))
+    ttk.Button(qbtns, text=gui._t("btn.retry_failed", "Retry Failed"), style="Ghost.TButton",
+               command=getattr(gui, "retry_failed", lambda: None)).pack(side="left", padx=(0, 6))
     ttk.Button(qbtns, text="▼", width=3, style="Ghost.TButton",
                command=lambda: getattr(gui, "move_selection", lambda *_: None)(+1)).pack(side="right", padx=(6, 0))
     ttk.Button(qbtns, text="▲", width=3, style="Ghost.TButton",
