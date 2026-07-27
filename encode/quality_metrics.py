@@ -238,7 +238,7 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
 
     # Reference resolution + frame rate (VMAF needs both streams at the same size).
     ref_w = ref_h = 0
-    ref_fps = 30.0
+    ref_fps = ref_rfps = 30.0
     try:
         _vst_ref = probe_video_stream_dims(reference_path)
         ref_w = int(_vst_ref.get("width") or 0)
@@ -247,18 +247,75 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
             ref_fps = float(Fraction(_vst_ref.get("avg_frame_rate") or "30/1"))
         except Exception:
             ref_fps = 30.0
+        try:
+            ref_rfps = float(Fraction(_vst_ref.get("r_frame_rate") or "30/1"))
+        except Exception:
+            ref_rfps = ref_fps
     except Exception:
         return None
     if ref_w <= 0 or ref_h <= 0:
         return None
+    dist_fps = ref_fps
+    try:
+        _vst_dist = probe_video_stream_dims(distorted_path)
+        _df = float(Fraction(_vst_dist.get("avg_frame_rate") or "30/1"))
+        if _df > 0:
+            dist_fps = _df
+    except Exception:
+        pass
 
     n_threads = max(1, min(16, (os.cpu_count() or 4)))
     fps = max(1.0, float(sample_fps))
     # Rebase both streams to t=0 (PTS-STARTPTS) before sampling: a start-PTS
     # offset from re-muxing otherwise misaligns libvmaf's framesync by one
-    # frame, tanking VMAF 20-30pts on rapid-cut content. Then resample both to
-    # the same fixed fps so VFR sources compare identical wall-clock frames.
-    _sync = f"setpts=PTS-STARTPTS,fps={fps:g}"
+    # frame, tanking VMAF 20-30pts on rapid-cut content.
+    #
+    # libvmaf (like psnr/ssim) is framesync-based, but framesync here pairs
+    # frames POSITIONALLY (i-th output of stream A vs i-th of stream B) — it
+    # does NOT re-sync by timestamp when the two streams' frame counts drift
+    # apart (confirmed empirically: identical content fed through mismatched
+    # decimation strides scored ~30-50 instead of ~100). So any decimation
+    # scheme is only as good as its ability to produce the SAME frame count,
+    # in the SAME real-time order, for both streams.
+    #
+    # Normal (CFR) sources: independently resampling both streams to the same
+    # nominal sample_fps (fps=) already guarantees matching counts (both grids
+    # are the same rate over the same duration) and is fast. Verified no
+    # regression vs. native measurement (94.19 vs 94.28 mean VMAF on a CFR
+    # source, zero_frac 0 either way).
+    #
+    # Genuinely variable-frame-rate references (confirmed on a Roblox capture:
+    # container tagged 60fps, avg_frame_rate ~29.9fps) break that guarantee:
+    # BitCrusher's own encoder resamples such sources to CFR using ITS OWN
+    # internal nearest-frame decisions, which can disagree by one frame with
+    # libvmaf's independent fps= resample of the reference at ambiguous
+    # points — a mismatch that compounds over the clip once introduced
+    # (repro: 33% of frames scored ~0 VMAF with the old fps=sample_fps-for-
+    # both approach). The fix is to not introduce a second independent
+    # resampling decision at all: resample the REFERENCE onto the DISTORTED
+    # stream's own exact (measured) frame rate, and leave the distorted
+    # stream at its native rate/timing entirely. That collapses the "two
+    # independent decisions" problem to one, and empirically cut the repro's
+    # zero_frac from 33% to ~12% with zero regression on a mismatched-rate
+    # synthetic control (0% either way). An index-based decimation (select=
+    # not(mod(n,K)), keeping every Kth frame while preserving true PTS) was
+    # tried first and rejected: verified experimentally that it desyncs
+    # catastrophically (positional pairing off by increasing amounts) after
+    # any single frame-count irregularity in either stream, since libvmaf's
+    # framesync pairs strictly positionally, not by nearest timestamp.
+    #
+    # This costs the fps=sample_fps speedup on VFR sources only (native-rate
+    # measurement is several times slower) — acceptable since the old
+    # behavior was a silent, undetected wrong answer on exactly this content.
+    _is_vfr_ref = (ref_rfps > 0 and abs(ref_fps - ref_rfps) / ref_rfps > 0.08)
+    if _is_vfr_ref:
+        _sync_dist = "setpts=PTS-STARTPTS"
+        _sync_ref = f"setpts=PTS-STARTPTS,fps={dist_fps:.6f}"
+        _eff_fps = max(1.0, dist_fps)
+    else:
+        _sync_dist = f"setpts=PTS-STARTPTS,fps={fps:g}"
+        _sync_ref = f"setpts=PTS-STARTPTS,fps={fps:g}"
+        _eff_fps = fps
     # Write the log to a bare filename inside a temp working dir: a full Windows
     # path like C:/... contains a colon that libvmaf's filter-option parser
     # treats as an option separator, so we run with cwd set to the temp dir.
@@ -269,8 +326,8 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
     dist_abs = os.path.abspath(distorted_path)
     # 0 = distorted (first input), 1 = reference (second input).
     lavfi = (
-        f"[0:v]scale={ref_w}:{ref_h}:flags=bicubic,{_sync},format=yuv420p[dist];"
-        f"[1:v]{_sync},format=yuv420p[ref];"
+        f"[0:v]scale={ref_w}:{ref_h}:flags=bicubic,{_sync_dist},format=yuv420p[dist];"
+        f"[1:v]{_sync_ref},format=yuv420p[ref];"
         f"[dist][ref]libvmaf={_vmaf_model_opt(ff, work_dir)}n_threads={n_threads}:log_fmt=json:log_path={log_name}"
     )
     cmd = [ff, "-hide_banner", "-loglevel", "error"]
@@ -339,15 +396,16 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
     p1 = p5 = min_window = None
     _mw_idx = None
     if vals:
-        win = max(4, int(round(2.0 * max(1.0, float(sample_fps)))))
+        win = max(4, int(round(2.0 * _eff_fps)))
         p1, p5, min_window, _mw_idx = _vmaf_low_metrics(vals, win)
     _spread = (round(float(mean) - float(min_window), 2)
                if (min_window is not None and mean is not None) else None)
-    # Locate the worst window in source time. compute_vmaf decimates to sample_fps,
-    # so output-frame index i maps back to source time ≈ i / sample_fps (the select
-    # keeps every step-th frame and setpts re-times to sample_fps). For sources
-    # capped at 120s the offset is still within the measured window.
-    _mw_at = (round(float(_mw_idx) / max(1.0, float(sample_fps)), 1)
+    # Locate the worst window in source time: output-frame index i maps back
+    # to source time ≈ i / _eff_fps, the distorted stream's actual sample rate
+    # (nominal sample_fps on the CFR fast path; the distorted stream's own
+    # native fps on the VFR path, where it isn't decimated at all). For
+    # sources capped at 120s the offset is still within the measured window.
+    _mw_at = (round(float(_mw_idx) / _eff_fps, 1)
               if _mw_idx is not None else None)
 
     # Downsampled VMAF-over-time series (<= 64 points) for the result-dashboard
@@ -357,7 +415,7 @@ def compute_vmaf(reference_path: str, distorted_path: str, *,
     # Time the series spans (source seconds of the measured region), so a
     # renderer can map min_window_at back onto the downsampled points regardless
     # of how many buckets survived.
-    _series_span = (round(len(vals) / max(1.0, float(sample_fps)), 3)
+    _series_span = (round(len(vals) / _eff_fps, 3)
                     if _series else None)
 
     return {"vmaf": round(float(mean), 2),
@@ -417,23 +475,50 @@ def compute_xpsnr(reference_path: str, distorted_path: str, *,
             return None
     except Exception:
         return None
+    ref_fps = ref_rfps = 30.0
     try:
         _vst = probe_video_stream_dims(reference_path)
         ref_w = int(_vst.get("width") or 0)
         ref_h = int(_vst.get("height") or 0)
+        try:
+            ref_fps = float(Fraction(_vst.get("avg_frame_rate") or "30/1"))
+        except Exception:
+            ref_fps = 30.0
+        try:
+            ref_rfps = float(Fraction(_vst.get("r_frame_rate") or "30/1"))
+        except Exception:
+            ref_rfps = ref_fps
     except Exception:
         return None
     if ref_w <= 0 or ref_h <= 0:
         return None
+    dist_fps = ref_fps
+    try:
+        _vst_dist = probe_video_stream_dims(distorted_path)
+        _df = float(Fraction(_vst_dist.get("avg_frame_rate") or "30/1"))
+        if _df > 0:
+            dist_fps = _df
+    except Exception:
+        pass
 
     fps = max(1.0, float(sample_fps))
-    _sync = f"setpts=PTS-STARTPTS,fps={fps:g}"
+    # See compute_vmaf's matching comment/rationale for the VFR branch: xpsnr
+    # is framesync-based the same way, so it needs the same fix.
+    _is_vfr_ref = (ref_rfps > 0 and abs(ref_fps - ref_rfps) / ref_rfps > 0.08)
+    if _is_vfr_ref:
+        _sync_dist = "setpts=PTS-STARTPTS"
+        _sync_ref = f"setpts=PTS-STARTPTS,fps={dist_fps:.6f}"
+        _eff_fps = max(1.0, dist_fps)
+    else:
+        _sync_dist = f"setpts=PTS-STARTPTS,fps={fps:g}"
+        _sync_ref = f"setpts=PTS-STARTPTS,fps={fps:g}"
+        _eff_fps = fps
     work = tempfile.mkdtemp(prefix="bc_xpsnr_")
     stats_name = "xpsnr.log"
     stats_path = os.path.join(work, stats_name)
     lavfi = (
-        f"[0:v]scale={ref_w}:{ref_h}:flags=bicubic,{_sync},format=yuv420p[d];"
-        f"[1:v]{_sync},format=yuv420p[r];"
+        f"[0:v]scale={ref_w}:{ref_h}:flags=bicubic,{_sync_dist},format=yuv420p[d];"
+        f"[1:v]{_sync_ref},format=yuv420p[r];"
         f"[d][r]xpsnr=stats_file={stats_name}"
     )
     _t_cap = (["-t", "120"] if (duration_s and duration_s > 180.0) else [])
@@ -467,14 +552,14 @@ def compute_xpsnr(reference_path: str, distorted_path: str, *,
     if not vals:
         return None
     mean = sum(vals) / len(vals)
-    win = max(4, int(round(2.0 * max(1.0, float(sample_fps)))))
+    win = max(4, int(round(2.0 * _eff_fps)))
     _p1, _p5, min_window, _mw_idx = _vmaf_low_metrics(vals, win)
     _spread = (round(float(mean) - float(min_window), 2)
                if min_window is not None else None)
-    _mw_at = (round(float(_mw_idx) / max(1.0, float(sample_fps)), 1)
+    _mw_at = (round(float(_mw_idx) / _eff_fps, 1)
               if _mw_idx is not None else None)
     _series = _downsample_series(vals, 64)
-    _series_span = round(len(vals) / max(1.0, float(sample_fps)), 3) if _series else None
+    _series_span = round(len(vals) / _eff_fps, 3) if _series else None
     # A block of ~0 dB frames is misalignment, same signature as the VMAF guard.
     _zero_frac = sum(1 for v in vals if v < 5.0) / len(vals)
     return {"xpsnr": round(float(mean), 2),

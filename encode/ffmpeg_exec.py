@@ -259,29 +259,52 @@ def set_ffprobe_path(path: str | None) -> None:
     FFPROBE = path
 
 
+_VSTREAM_CACHE: dict = {}
+_VSTREAM_CACHE_MAX = 32
+
+
 def probe_video_stream_dims(path: str) -> dict:
     """Minimal standalone ffprobe of a file's first video stream (width, height,
-    avg_frame_rate) for quality_metrics.py's reference-dimension needs.
+    avg_frame_rate, r_frame_rate) for quality_metrics.py's reference-dimension
+    and VFR-detection needs.
 
     Deliberately does NOT share BitCrusherV9.py's _probe_media_cached LRU cache:
     that cache is monkeypatched by name (tests bind fakes to BitCrusherV9's own
     module namespace), and _probe_video_stream calling it internally from a
     different module would silently resolve the real function instead of a
-    test's fake, defeating that isolation invisibly. This runs once per VMAF/
-    XPSNR measurement (not hot-path), so a redundant ffprobe call is cheap.
+    test's fake, defeating that isolation invisibly.
+
+    It does keep its own small cache, keyed on (path, size, mtime). Adding
+    VFR detection meant BOTH the reference and the distorted file get probed,
+    in compute_vmaf AND again in compute_xpsnr - four ffprobe spawns over the
+    same two files per measurement. The key includes size+mtime because the
+    distorted path is rewritten in place across size-controller retries, so a
+    path-only key would hand back a previous attempt's frame rate.
     """
     import json
     try:
+        st = os.stat(path)
+        key = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
+    except OSError:
+        key = None
+    if key is not None and key in _VSTREAM_CACHE:
+        return _VSTREAM_CACHE[key]
+    try:
         out = _sp_check_output(
             [FFPROBE, "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height,avg_frame_rate",
+             "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate",
              "-of", "json", path],
             text=True, startupinfo=si, creationflags=NO_WIN)
         data = json.loads(out or "{}") or {}
         streams = data.get("streams") or []
-        return streams[0] if streams else {}
+        result = streams[0] if streams else {}
     except Exception:
-        return {}
+        return {}   # not cached: a transient failure must not stick
+    if key is not None:
+        if len(_VSTREAM_CACHE) >= _VSTREAM_CACHE_MAX:
+            _VSTREAM_CACHE.clear()
+        _VSTREAM_CACHE[key] = result
+    return result
 
 
 HANDBRAKE_CLI = None
@@ -1044,10 +1067,11 @@ def compress_with_handbrake(
     except Exception:
         pass
 
-
-    if callable(globals().get("status_callback", None)):
-        try: status_callback(f"Using encoder={enc} -> ffmpeg -c:v {vcodec}", level="INFO")
-        except Exception: pass
+    # (A second, older copy of the line above used to sit here: it logged the
+    # same "Using encoder=... -> ffmpeg -c:v ..." message via a module-level
+    # `status_callback` global that this module never defines. Its
+    # `if callable(globals().get("status_callback"))` guard was therefore
+    # always False, so it was unreachable duplicate output -- removed.)
 
     _preset_default = "slow" if vcodec == "libx265" else "medium"
     preset = str((advanced_options or {}).get("preset", _preset_default))
