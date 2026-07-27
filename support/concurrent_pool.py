@@ -70,7 +70,8 @@ def merge_worker_ledger(worker_settings_dir: str, real_settings_dir: str, stats_
 def run_worker_subprocess(spec: dict, *, script_path: str, real_settings_dir: str,
                           python_exe: str | None = None, thread_budget: int | None = None,
                           stats_lock=None, cancel_event=None,
-                          poll_interval: float = 0.25) -> dict:
+                          poll_interval: float = 0.25,
+                          progress_cb=None, job_id=None, on_proc_start=None) -> dict:
     """Run ONE job as an isolated worker subprocess; block the calling thread
     until it finishes (or cancel_event fires, in which case the process tree is
     killed). Returns the worker's result dict (same shape _run_one/_one produce:
@@ -80,14 +81,36 @@ def run_worker_subprocess(spec: dict, *, script_path: str, real_settings_dir: st
     already provides bounded concurrency/ordering) - this function's only job is
     making that thread's actual encode step process-isolated instead of
     in-process.
+
+    Live progress: a worker subprocess can't call back into the parent's
+    progress_cb closure directly (it's a different process). Instead it writes
+    its progress events to a small JSON file (atomically, temp+replace) at the
+    "progress_path" this function puts in the spec; the poll loop below (which
+    already wakes every poll_interval to check for cancellation) also checks
+    that file for changes and forwards new events to `progress_cb(job_id, ev)`
+    - the same call signature the in-process path already used, so callers'
+    existing progress_cb closures work unchanged.
+
+    Single-file cancel: `on_proc_start(proc)`, if given, is called once with
+    the spawned Popen right after launch - so a caller can stash it (e.g.
+    keyed by path) and kill just THIS worker's process tree later without
+    touching the shared cancel_event (which stops the whole batch). Killing
+    it externally this way needs no cooperation from this function: the
+    `proc.wait()` below simply returns once the process dies, `killed` stays
+    False (only this function's own cancel_event path sets that), and the
+    missing result.json naturally produces the same "worker produced no
+    result" failure the crash/timeout paths already handle.
     """
     python_exe = python_exe or sys.executable
     work_dir = tempfile.mkdtemp(prefix="bc_job_")
     spec_path = os.path.join(work_dir, "spec.json")
     result_path = os.path.join(work_dir, "result.json")
+    progress_path = os.path.join(work_dir, "progress.json")
     worker_settings_dir = os.path.join(work_dir, "user_settings")
 
     try:
+        spec = dict(spec)
+        spec["progress_path"] = progress_path
         with open(spec_path, "w", encoding="utf-8") as f:
             json.dump(spec, f)
 
@@ -100,13 +123,43 @@ def run_worker_subprocess(spec: dict, *, script_path: str, real_settings_dir: st
         proc = subprocess.Popen(
             argv, env=env, cwd=os.path.dirname(os.path.abspath(script_path)) or ".",
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if callable(on_proc_start):
+            try:
+                on_proc_start(proc)
+            except Exception:
+                pass
+
+        _prog_mtime = 0.0
+
+        def _poll_progress():
+            if not callable(progress_cb):
+                return
+            nonlocal _prog_mtime
+            try:
+                mtime = os.path.getmtime(progress_path)
+            except OSError:
+                return
+            if mtime <= _prog_mtime:
+                return
+            _prog_mtime = mtime
+            try:
+                with open(progress_path, "r", encoding="utf-8") as f:
+                    ev = json.load(f)
+            except Exception:
+                return  # parent can race the worker's temp+replace; retry next poll
+            try:
+                progress_cb(job_id, ev)
+            except Exception:
+                pass
 
         killed = False
         while True:
             try:
                 proc.wait(timeout=poll_interval)
+                _poll_progress()
                 break
             except subprocess.TimeoutExpired:
+                _poll_progress()
                 if cancel_event is not None and cancel_event.is_set():
                     _kill_tree(proc.pid)
                     killed = True

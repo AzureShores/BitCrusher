@@ -230,7 +230,8 @@ from encode.media_math import (bytes_from_value_unit, apply_target_size_margin, 
                         determine_tune_profile, determine_frame_rate, determine_resolution,
                         get_media_type)
 from encode.output_paths import (_build_output_path,
-                          _bc_build_output_path, _dedup_safe_output_path)
+                          _bc_build_output_path, _dedup_safe_output_path,
+                          finalize_templated_name)
 from encode.remux import _privacy_args, _remux_smart
 from encode.encoder_caps import (_merge_params_string, _canonical_encoder,
                           best_av1_encoder)
@@ -444,12 +445,24 @@ def bridge_gui_logger_color(widget):
     
 
     try:
+        # DEBUG/DIV used to be fixed hex tuned for one specific dark palette
+        # (#7f8ea3 / #4a5163) - unreadable (near-invisible) against light
+        # themes or any other custom-saved theme's card background. FG_SUB
+        # is the theme's own already-contrast-checked muted foreground
+        # (Sub.TLabel uses the same global), so anchor to that instead of a
+        # constant - correct in light AND dark, and in any Theme Lab save.
+        _debug_fg = FG_SUB or FG
+        # Dividers should recede TOWARD the background, not away from it:
+        # lighter on a light bg, darker on a dark bg (l_mul the other
+        # direction reads as inverted - brighter dividers than the text
+        # they're supposed to sit quietly beneath).
+        _div_fg = _hsl_shift(_debug_fg, l_mul=(1.15 if _is_light_color(CARD_BG) else 0.65))
         widget.tag_configure("INFO",    foreground=FG)
-        widget.tag_configure("DEBUG",   foreground="#7f8ea3")   # muted, recedes
+        widget.tag_configure("DEBUG",   foreground=_debug_fg)
         widget.tag_configure("WARNING", foreground=WARN)
         widget.tag_configure("ERROR",   foreground=ERROR)
         widget.tag_configure("CRITICAL",foreground="#ffffff", background="#b00020")
-        widget.tag_configure("DIV",     foreground="#4a5163")   # section dividers
+        widget.tag_configure("DIV",     foreground=_div_fg)
         widget.configure(background=_hsl_shift(CARD_BG, l_mul=0.98), fg=FG, insertbackground=FG)
     except Exception:
         pass
@@ -673,19 +686,21 @@ def ffmpeg_build_version() -> str:
     return v
 
 def load_paths():
-    print(f"Looking for config.json at: {CONFIG_PATH}")
+    # Diagnostics, not data - stderr, so `--json`/piped-stdout CLI consumers
+    # (and anyone else redirecting stdout) never see this mixed into output.
+    print(f"Looking for config.json at: {CONFIG_PATH}", file=sys.stderr)
 
     if os.path.exists(CONFIG_PATH):
-        print("Found config.json, contents:")
+        print("Found config.json, contents:", file=sys.stderr)
         with open(CONFIG_PATH, "r") as f:
             cfg = json.load(f)
-        print(json.dumps(cfg, indent=2))
+        print(json.dumps(cfg, indent=2), file=sys.stderr)
         hb = cfg.get("handbrake") or default_handbrake()
         fp = cfg.get("ffprobe")   or default_ffprobe()
         ff = cfg.get("ffmpeg")    or default_ffmpeg()
         return hb, fp, ff
 
-    print("config.json not found; checking tools/ folder.")
+    print("config.json not found; checking tools/ folder.", file=sys.stderr)
     tools_dir = os.path.join(SCRIPT_DIR, "tools")
 
     hb_name = "HandBrakeCLI.exe" if platform.system() == "Windows" else "HandBrakeCLI"
@@ -700,9 +715,9 @@ def load_paths():
     fp = fp_path if os.path.isfile(fp_path) else default_ffprobe()
     ff = ff_path if os.path.isfile(ff_path) else default_ffmpeg()
 
-    print(f"Using HandBrakeCLI at: {hb}")
-    print(f"Using ffprobe    at: {fp}")
-    print(f"Using ffmpeg     at: {ff}")
+    print(f"Using HandBrakeCLI at: {hb}", file=sys.stderr)
+    print(f"Using ffprobe    at: {fp}", file=sys.stderr)
+    print(f"Using ffmpeg     at: {ff}", file=sys.stderr)
 
     return hb, fp, ff
 
@@ -755,7 +770,7 @@ PRESETS = {
 }
 
 
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 
 ADVANCED_DEFAULTS = {
     "auto_retry": True,
@@ -772,6 +787,9 @@ ADVANCED_DEFAULTS = {
     "manual_bitrate": "",
     "output_prefix": "",
     "output_suffix": "_discord_ready",
+    # Empty = use prefix/suffix. Set to e.g. "{name}_{codec}_{size}" to take
+    # over naming entirely. See encode.output_paths.SUPPORTED_TOKENS.
+    "output_template": "",
     "audio_format": "auto",
     "image_format": "jpg",
     "concurrent": False,
@@ -870,6 +888,23 @@ def _normalize_drop_path(p: str) -> str:
         return os.path.normpath(s)
     except Exception:
         return str(p)
+
+
+def _attach_job_rate_memory(adv: dict, also_targets) -> dict:
+    """Give a multi-target job one shared rate memory.
+
+    Only attached when extra targets exist, so a single-target encode behaves
+    exactly as before. Not JSON-safe by design: `_bc_json_safe` drops it at the
+    worker boundary and each worker builds its own.
+    """
+    try:
+        if not adv or not _parse_also_targets(also_targets):
+            return adv
+        from encode.rate_memory import RateMemory
+        adv["_job_rate_memory"] = RateMemory()
+    except Exception:
+        pass
+    return adv
 
 
 def _parse_also_targets(val) -> list:
@@ -1128,6 +1163,16 @@ def apply_theme(style: ttk.Style, theme_name: str="Dark"):
         troughcolor=CARD_BG, background=ACCENT, bordercolor=CARD_BG,
         lightcolor=ACCENT, darkcolor=_hsl_shift(ACCENT, l_mul=0.8))
 
+    # Progress colour by size-control state: the controller knows whether it is
+    # cruising, retrying to fit, or over the ceiling; these surface it.
+    # Lightened on light themes so the bar stays legible against a pale trough.
+    for _name, _col in (("Ok", "#1A7F37" if light_mode else "#3FB950"),
+                        ("Warn", "#9A6700" if light_mode else "#D29922"),
+                        ("Risk", "#CF222E" if light_mode else "#F85149")):
+        style.configure(f"{_name}.Horizontal.TProgressbar",
+            troughcolor=CARD_BG, background=_col, bordercolor=CARD_BG,
+            lightcolor=_col, darkcolor=_hsl_shift(_col, l_mul=0.8), thickness=10)
+
     style.configure("TCheckbutton", background=APP_BG, foreground=FG,
                     indicatorcolor=entry_bg, focuscolor=APP_BG)
     style.map("TCheckbutton",
@@ -1217,6 +1262,14 @@ def retheme_runtime(self, style: ttk.Style, theme_name: str):
             foreground=FG, insertbackground=FG,
             highlightthickness=0, borderwidth=0
         )
+        # log_message() tags every line by level (INFO/DEBUG/WARNING/...),
+        # and a tag's color always wins over the widget's own foreground -
+        # so reconfiguring the widget above does NOT retint already-tagged
+        # (or future) lines. Without this, switching themes leaves every
+        # log line rendered in whatever theme was active when the widget
+        # was first built, which can go straight to unreadable against the
+        # new background.
+        bridge_gui_logger_color(self.log_text)
     except Exception:
         pass
     try:
@@ -2512,6 +2565,45 @@ def compress_video(input_path: str, save_path: str, status_cb,
     except Exception:
         advanced_options["_ledger_shadow"] = None
 
+    # === Multi-target: reuse this job's measured rate->size behaviour ========
+    # Outranks the ledger seed above: that is an average over similar encodes,
+    # this is a direct measurement of this file at this operating point. Only
+    # the first attempt moves; the controller still enforces the ceiling.
+    _rate_mem = (advanced_options or {}).get("_job_rate_memory")
+    _rate_key = None
+    if _rate_mem is not None:
+        try:
+            from encode.rate_memory import make_key as _rm_key
+            _rate_key = _rm_key(
+                input_path, str(encoder), int(new_w or w or 0), int(new_h or h or 0),
+                flags={
+                    "fps": round(float(fps or fr or 0.0), 3),
+                    "film_grain": ((advanced_options or {}).get("_film_grain") or {}).get("level"),
+                    "preproc": (advanced_options or {}).get("_preproc_label"),
+                    "spotlight": bool((advanced_options or {}).get("_spotlight_secs")),
+                    "trim": (advanced_options or {}).get("trim"),
+                    "audio_copy": bool(audio_copy),
+                })
+            _rm_n = _rate_mem.count(_rate_key)
+            if _rm_n > 0 and not _manual_locked:
+                _rm_aud = (int((audio_meta or {}).get("bitrate") or 128_000)
+                           if audio_copy else int(audio_br or 128_000))
+                # Aim just under the ceiling, matching the controller's own
+                # under-bias, rather than at it.
+                _rm_bps = _rate_mem.suggest_v_bps(
+                    _rate_key, int(float(target_bytes) * 0.985), float(dur),
+                    _rm_aud, 1.02, min_v_bps=140_000)
+                if _rm_bps and _feasible_v_bps and _feasible_v_bps > 0:
+                    _rm_bps = min(int(_rm_bps), int(_feasible_v_bps))
+                if _rm_bps and int(_rm_bps) != int(target_bitrate):
+                    status_cb(f"[MultiTarget] First-attempt bitrate {target_bitrate} -> {_rm_bps} bps "
+                              f"(measured k={_rate_mem.k_estimate(_rate_key):.3f} from {_rm_n} "
+                              f"attempt(s) at this operating point earlier in this job).", "INFO")
+                    target_bitrate = int(_rm_bps)
+                    bitrate = int(target_bitrate)
+        except Exception:
+            _rate_key = None
+
     # Pre-flight guardrail (advisory only, never changes the encode itself):
     # ask the ledger how this content/codec has fared before, then warn on a
     # predicted quality collapse or size overshoot, and suggest a better
@@ -2725,6 +2817,9 @@ def compress_video(input_path: str, save_path: str, status_cb,
 
 
 
+    # Feed the {target}/{res} name-template tokens.
+    advanced_options["_target_bytes"] = int(target_bytes)
+    advanced_options["_out_width"] = int(new_w or w or 0) or None
     out_file = _build_output_path("video", input_path, save_path, advanced_options, default_ext="mp4")
     # Belt-and-suspenders: never move the fresh encode onto the source file.
     # _build_output_path already disambiguates, but any future caller that
@@ -2910,6 +3005,16 @@ def compress_video(input_path: str, save_path: str, status_cb,
             _k_high_ctl = min(1.80, _k_prior * 1.15)
         except Exception:
             _k_low_ctl, _k_high_ctl = 0.55, 1.25
+    # A k measured on this file beats the ledger average, so it replaces the
+    # bounds above. Still a window: k drifts with the operating point.
+    if _rate_mem is not None and _rate_key is not None:
+        try:
+            _k_job = _rate_mem.k_estimate(_rate_key)
+            if _k_job:
+                _k_low_ctl = max(0.35, float(_k_job) * 0.92)
+                _k_high_ctl = min(1.80, float(_k_job) * 1.08)
+        except Exception:
+            pass
 
     controller = SizeController(
         _k_low=_k_low_ctl, _k_high=_k_high_ctl,
@@ -2944,7 +3049,10 @@ def compress_video(input_path: str, save_path: str, status_cb,
             break
         attempt += 1
         new_v_bitrate, new_a_bitrate = controller.next(int(last_attempt_size))
-        _emit("retrying", attempt=attempt)
+        # over=True means the best file so far is still above the ceiling, so
+        # this retry is recovering from an overshoot rather than just tightening.
+        _emit("retrying", attempt=attempt,
+              over=bool(int(final_size) > int(hard_target_bytes)))
         status_cb(f"[Size] Best so far {final_size} vs ceiling {hard_target_bytes} "
                   f"(last attempt {last_attempt_size}). "
                   f"Retry {attempt}/{controller.max_iter} at {new_v_bitrate} bps.", "WARNING")
@@ -3280,6 +3388,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
 
     # === Perceptual quality measurement (VMAF) + optional quality floor ===
     vmaf_result = None
+    _vmaf_unreliable_reason = None
     _measure_quality = bool((advanced_options or {}).get("measure_quality", True))
     try:
         _min_vmaf = float((advanced_options or {}).get("min_vmaf") or 0.0)
@@ -3293,10 +3402,12 @@ def compress_video(input_path: str, save_path: str, status_cb,
             _emit("vmaf")
             vmaf_result = compute_vmaf(input_path, out_file, duration_s=float(dur or 0.0))
             if vmaf_result and vmaf_result.get("reliable") is False:
+                _vmaf_unreliable_reason = (
+                    f"{vmaf_result.get('zero_frac', 0) * 100:.0f}% of frames scored ~0 - "
+                    f"usually a source timestamp/frame-alignment quirk, not real quality")
                 status_cb(
                     f"[Quality] VMAF measurement looks UNRELIABLE "
-                    f"({vmaf_result.get('zero_frac', 0) * 100:.0f}% of frames scored ~0 — "
-                    f"usually a source timestamp/frame-alignment quirk, not real quality). "
+                    f"({_vmaf_unreliable_reason}). "
                     f"Ignoring this score (not used for gating or learning).", "WARNING")
                 vmaf_result = None
             if vmaf_result:
@@ -3449,6 +3560,15 @@ def compress_video(input_path: str, save_path: str, status_cb,
             status_cb("[Race] Kept the original - a re-encode would have inflated a source "
                       "that already fit under the target.", "INFO")
 
+    # Name templates using {size}/{vmaf}/{codec} can only resolve now. Rename
+    # before stats is built so every consumer sees the final path.
+    out_file = finalize_templated_name(
+        out_file, input_path, advanced_options,
+        {"compressed_size": final_size, "width": new_w,
+         "height": (int(round(h * new_w / w)) if w else h), "frame_rate": fr,
+         "encoder": str(encoder or ""),
+         "vmaf": (vmaf_result["vmaf"] if vmaf_result else None)})
+
     stats = {
         "original_size": os.path.getsize(input_path),
         "compressed_size": final_size,
@@ -3475,6 +3595,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
         "vmaf_min_window": (vmaf_result.get("min_window") if vmaf_result else None),
         "vmaf_min_window_at": (vmaf_result.get("min_window_at") if vmaf_result else None),
         "vmaf_spread": (vmaf_result.get("spread") if vmaf_result else None),
+        "vmaf_unreliable_reason": _vmaf_unreliable_reason,
         "xpsnr": (xpsnr_result.get("xpsnr") if xpsnr_result else None),
         "xpsnr_min_window": (xpsnr_result.get("min_window") if xpsnr_result else None),
         "vmaf_objective": _obj,
@@ -3485,6 +3606,26 @@ def compress_video(input_path: str, save_path: str, status_cb,
         "quality_mode": str((advanced_options or {}).get("quality_mode") or ""),
     }
     _jsonl_log("encode_end", {"type": "video", **stats})
+
+    # === Bank this target's rate observations for the next target ===========
+    # Its own block ahead of the ledger: that write is best-effort, and a
+    # multi-target job must not lose its measured k if the ledger fails.
+    if _rate_mem is not None and _rate_key is not None:
+        try:
+            _rm_aud_obs = (int((audio_meta or {}).get("bitrate") or 128_000)
+                           if audio_copy else int(audio_br or 128_000))
+            for _a_bps, _a_size, _a_ok, _a_reason in list(_ledger_attempts or []):
+                # Pack/downscale attempts ran at another resolution or
+                # constraint, so they do not describe k here. Rejected rate
+                # attempts do - they were measured, just the wrong size.
+                if str(_a_reason) in ("primary", "seed_calibration",
+                                      "refine", "refine_worse_than_best",
+                                      "retry", "retry_over_ceiling",
+                                      "retry_worse_than_best"):
+                    _rate_mem.observe(_rate_key, int(_a_bps), int(_a_size),
+                                      float(dur), _rm_aud_obs, 1.02)
+        except Exception:
+            pass
 
     # === Outcome ledger (learning stage 1) ==================================
     # One rich record per completed encode: features + full EFFECTIVE operating
@@ -3647,6 +3788,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
                      "spread": (vmaf_result or {}).get("spread"),
                      "series": (vmaf_result or {}).get("series"),
                      "series_span_s": (vmaf_result or {}).get("series_span_s"),
+                     "vmaf_unreliable_reason": _vmaf_unreliable_reason,
                      "xpsnr": (xpsnr_result or {}).get("xpsnr"),
                      "xpsnr_min_window": (xpsnr_result or {}).get("min_window"),
                      "encode_seconds": round(time.time() - t_start, 1),
@@ -4536,6 +4678,22 @@ class QueueTree(ttk.Treeview):
             kw.pop(_lb_only, None)
         super().__init__(parent, columns=self.COLS, show="tree headings",
                          selectmode="extended", **kw)
+        # Drag-to-reorder: on_reorder(new_ordered_iids) is set by the GUI
+        # after construction and fires once per drop with the tree's final
+        # row order (iid == normalized path) so it can resync file_list.
+        self.on_reorder = None
+        self._drag_iid = None
+        self._drag_start_y = 0
+        self._drag_active = False
+        self._drag_order0 = None
+        # Instance bindings run BEFORE the Treeview class bindings (bindtags
+        # order: widget, class, toplevel, all), so _on_drag_motion returning
+        # "break" is what stops the class-level extended-select drag from also
+        # running once a reorder is genuinely under way. Press/release must
+        # never break - plain click selection has to keep working.
+        self.bind("<ButtonPress-1>", self._on_drag_start, add="+")
+        self.bind("<B1-Motion>", self._on_drag_motion, add="+")
+        self.bind("<ButtonRelease-1>", self._on_drag_release, add="+")
         self.heading("#0", text="File")
         self.column("#0", width=150, minwidth=100, stretch=True)
         for col, txt, w, mw, anchor, stretch in (
@@ -4558,6 +4716,66 @@ class QueueTree(ttk.Treeview):
     # ---- Listbox-compatible facade -------------------------------------
     def _iids(self) -> list:
         return list(self.get_children(""))
+
+    # ---- Drag-to-reorder -------------------------------------------------
+    # A press on a row is ambiguous: it could start a reorder drag, a
+    # rubber-band multi-select drag (selectmode="extended"), or just be a
+    # plain click. The three guards below keep them apart:
+    #   * Shift/Control held  -> never a reorder, that's a multi-select gesture
+    #   * under _DRAG_THRESHOLD_PX of vertical travel -> not a drag yet, so
+    #     normal selection behavior is left completely alone
+    #   * order unchanged at release -> no on_reorder callback at all
+    # Without the last one, EVERY plain click on a queue row fired on_reorder
+    # and wrote queue.json to disk.
+    _DRAG_THRESHOLD_PX = 4
+
+    def _on_drag_start(self, event):
+        self._drag_active = False
+        self._drag_order0 = None
+        self._drag_iid = None
+        # 0x0001 = Shift, 0x0004 = Control. Both mean "extend the selection",
+        # so a drag beginning with either must stay a selection drag.
+        if event.state & 0x0005:
+            return
+        # identify_row returns "" for headings/empty space; only rows arm.
+        iid = self.identify_row(event.y)
+        if not iid:
+            return
+        self._drag_iid = iid
+        self._drag_start_y = event.y
+        self._drag_order0 = self._iids()
+
+    def _on_drag_motion(self, event):
+        if not self._drag_iid or not self.exists(self._drag_iid):
+            return None
+        if not self._drag_active:
+            if abs(event.y - self._drag_start_y) < self._DRAG_THRESHOLD_PX:
+                return None  # still a click, not a drag - leave Tk alone
+            self._drag_active = True
+        target = self.identify_row(event.y)
+        if target and target != self._drag_iid:
+            try:
+                self.move(self._drag_iid, "", self._iids().index(target))
+            except ValueError:
+                pass
+        # Suppress the class-level select-drag for the rest of this gesture,
+        # including the frames where the pointer is between rows.
+        return "break"
+
+    def _on_drag_release(self, event):
+        dragged, active, order0 = self._drag_iid, self._drag_active, self._drag_order0
+        self._drag_iid = None
+        self._drag_active = False
+        self._drag_order0 = None
+        if not (dragged and active and callable(self.on_reorder)):
+            return
+        order1 = self._iids()
+        if order1 == order0:
+            return  # dragged but landed back where it started - nothing to persist
+        try:
+            self.on_reorder(order1)
+        except Exception:
+            pass
 
     def insert(self, index="end", item=None, **kw):
         if item is None and kw:
@@ -5367,7 +5585,10 @@ class CompressorGUI:
         self.root.minsize(1180, 650)
         self.root.resizable(True, True)
         self.root.geometry("1200x800")
-        self.root.configure(bg="#2C2F33")
+        # setup_ui() (build_main_view) already applied the real theme's bg
+        # here via apply_theme()+configure(bg=APP_BG) - do not stomp it back
+        # to a hardcoded Discord-gray, or every non-default theme shows a
+        # mismatched root background behind the themed content.
 
         self.default_crf = DEFAULT_CRF
 
@@ -5493,14 +5714,19 @@ class CompressorGUI:
         self.check_dependencies()
         self.root.after(300, lambda: self.run_self_check(auto=True))
 
-        # Keyboard shortcuts. Ctrl+O/Ctrl+Enter/Esc are global (bind_all) -
-        # unlikely to collide with text entry defaults. Delete is scoped to the
-        # queue tree only (queue_box.bind, not bind_all) so it removes a queue
-        # row only when the queue has focus, never while editing a text field.
+        # Keyboard shortcuts, bound on the MAIN WINDOW (self.root), not
+        # bind_all. Key events bubble widget -> class -> toplevel -> all, so a
+        # root binding already reaches every widget in the main window while
+        # leaving other toplevels alone. bind_all fired these from inside every
+        # dialog too, which meant Esc pressed to dismiss the Advanced/Settings
+        # window silently aborted a running batch, and Ctrl+Enter in a dialog
+        # started one. Delete stays scoped tighter still (the queue tree only)
+        # so it removes a row only when the queue has focus, never while
+        # editing a text field.
         try:
-            self.root.bind_all("<Control-o>", lambda e: self.add_files())
-            self.root.bind_all("<Control-Return>", lambda e: self.start_compression())
-            self.root.bind_all("<Escape>", lambda e: self.stop_compression())
+            self.root.bind("<Control-o>", lambda e: self.add_files())
+            self.root.bind("<Control-Return>", lambda e: self.start_compression())
+            self.root.bind("<Escape>", self._on_escape)
             if hasattr(self, "queue_box"):
                 self.queue_box.bind("<Delete>", lambda e: self.remove_selected())
         except Exception:
@@ -6631,7 +6857,7 @@ class CompressorGUI:
 
 
     def queue_files(self, filepaths):
-        
+        added = []
         for filepath in filepaths:
             if (
                 os.path.isfile(filepath)
@@ -6647,6 +6873,91 @@ class CompressorGUI:
                 except Exception:
                     pass
                 self.queue_box.insert("end", _norm)
+                added.append(_norm)
+        self._track_recent_files(added)
+
+    _RECENT_CAP = 20
+
+    def _track_recent_files(self, paths):
+        """Push newly-added source paths onto the front of the persisted
+        "recent files" list (File > Recent Files), most-recent-first,
+        deduped, capped. No-op for an empty list so callers can pass their
+        "added" list unconditionally without an if-guard."""
+        if not paths:
+            return
+        self.settings = getattr(self, "settings", {}) or {}
+        recent = list(self.settings.get("recent_files", []))
+        for p in paths:
+            if p in recent:
+                recent.remove(p)
+            recent.insert(0, p)
+        self.settings["recent_files"] = recent[:self._RECENT_CAP]
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+
+    def _track_recent_output(self, path):
+        """Same as _track_recent_files but for File > Recent Outputs -
+        called once per successfully-completed job."""
+        if not path:
+            return
+        self.settings = getattr(self, "settings", {}) or {}
+        recent = list(self.settings.get("recent_outputs", []))
+        if path in recent:
+            recent.remove(path)
+        recent.insert(0, path)
+        self.settings["recent_outputs"] = recent[:self._RECENT_CAP]
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+
+    def _rebuild_recent_files_menu(self):
+        m = self._recent_files_menu
+        m.delete(0, "end")
+        recent = (getattr(self, "settings", {}) or {}).get("recent_files", [])
+        if not recent:
+            m.add_command(label="(none yet)", state="disabled")
+            return
+        for p in recent:
+            missing = not os.path.isfile(p)
+            label = os.path.basename(p) + (" (missing)" if missing else "")
+            m.add_command(label=label, state=("disabled" if missing else "normal"),
+                          command=lambda p=p: self.queue_files([p]))
+        m.add_separator()
+        m.add_command(label="Clear Recent Files", command=self._clear_recent_files)
+
+    def _rebuild_recent_outputs_menu(self):
+        m = self._recent_outputs_menu
+        m.delete(0, "end")
+        recent = (getattr(self, "settings", {}) or {}).get("recent_outputs", [])
+        if not recent:
+            m.add_command(label="(none yet)", state="disabled")
+            return
+        for p in recent:
+            missing = not os.path.isfile(p)
+            label = os.path.basename(p) + (" (missing)" if missing else "")
+            m.add_command(label=label, state=("disabled" if missing else "normal"),
+                          command=lambda p=p: _open_folder(os.path.dirname(p)))
+        m.add_separator()
+        m.add_command(label="Clear Recent Outputs", command=self._clear_recent_outputs)
+
+    def _clear_recent_files(self):
+        self.settings = getattr(self, "settings", {}) or {}
+        self.settings["recent_files"] = []
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+
+    def _clear_recent_outputs(self):
+        self.settings = getattr(self, "settings", {}) or {}
+        self.settings["recent_outputs"] = []
+        try:
+            self.save_settings()
+        except Exception:
+            pass
 
 
 
@@ -6661,6 +6972,15 @@ class CompressorGUI:
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label=self._t("menu.clear_queue","Clear Queue"), command=self.clear_queue)
         file_menu.add_command(label=self._t("menu.scan_dupes", "Scan Queue for Duplicates..."), command=self.scan_for_duplicates)
+        file_menu.add_separator()
+        file_menu.add_command(label=self._t("menu.save_queue_as", "Save Queue As..."), command=self.save_queue_as)
+        file_menu.add_command(label=self._t("menu.load_saved_queue", "Load Saved Queue..."), command=self.load_saved_queue_dialog)
+        file_menu.add_separator()
+        self._recent_files_menu = tk.Menu(file_menu, tearoff=0, postcommand=self._rebuild_recent_files_menu)
+        file_menu.add_cascade(label=self._t("menu.recent_files", "Recent Files"), menu=self._recent_files_menu)
+        self._recent_outputs_menu = tk.Menu(file_menu, tearoff=0, postcommand=self._rebuild_recent_outputs_menu)
+        file_menu.add_cascade(label=self._t("menu.recent_outputs", "Recent Outputs"), menu=self._recent_outputs_menu)
+        file_menu.add_separator()
         file_menu.add_command(label=self._t("menu.exit","Exit"), command=self.on_exit)
         menubar.add_cascade(label=self._t("menu.file","File"), menu=file_menu)
 
@@ -6668,7 +6988,7 @@ class CompressorGUI:
         settings_menu.add_command(label=self._t("menu.configure_paths","Configure Paths"), command=self.open_settings_dialog)
         settings_menu.add_command(label=self._t("menu.save_profile","Save Profile"), command=self.save_profile)
         settings_menu.add_command(label=self._t("menu.load_profile","Load Profile"), command=self.load_profile)
-        settings_menu.add_command(label=self._t("menu.advanced_options", "Advanced Options..."), command=self.open_advanced)
+        settings_menu.add_command(label=self._t("menu.advanced_options", "Settings..."), command=self.open_advanced)
         settings_menu.add_command(label=self._t("menu.check_updates", "Check for Updates..."), command=lambda: self.check_for_updates(silent=False))
         settings_menu.add_command(label=self._t("menu.self_check", "Run Self-Check..."), command=lambda: self.run_self_check(auto=False))
         settings_menu.add_separator()
@@ -6683,6 +7003,14 @@ class CompressorGUI:
         menubar.add_cascade(label=self._t("menu.settings","Settings"), menu=settings_menu)
 
         themes_menu = tk.Menu(menubar, tearoff=0)
+        if not hasattr(self, "follow_system_theme_var"):
+            self.follow_system_theme_var = tk.IntVar(
+                value=1 if (getattr(self, "settings", {}) or {}).get("follow_system_theme") else 0)
+        themes_menu.add_checkbutton(
+            label=self._t("menu.follow_system_theme", "Follow system theme"),
+            variable=self.follow_system_theme_var,
+            command=self._toggle_follow_system_theme)
+        themes_menu.add_separator()
         for name in list(THEMES.keys()):
             themes_menu.add_radiobutton(
                 label=name,
@@ -6741,8 +7069,12 @@ class CompressorGUI:
         win.title(self._t("dlg.language_manager", "Language Manager"))
         win.geometry("720x420")
         win.transient(self.root)
+        try:
+            win.configure(bg=APP_BG)
+        except Exception:
+            pass
 
-        frame = tk.Frame(win)
+        frame = tk.Frame(win, bg=APP_BG)
         frame.pack(fill="both", expand=True, padx=12, pady=12)
 
         cols = ("code", "name", "coverage", "source")
@@ -6762,10 +7094,11 @@ class CompressorGUI:
             text="Coverage is relative to English base keys. Edit user_settings/i18n/<code>.json and click Reload.",
             anchor="w",
             justify="left",
+            bg=APP_BG, fg=FG_SUB,
         )
         hint.pack(fill="x", pady=(8, 4))
 
-        btns = tk.Frame(frame)
+        btns = tk.Frame(frame, bg=APP_BG)
         btns.pack(fill="x", pady=(4, 0))
 
         def _refresh_rows():
@@ -7022,8 +7355,50 @@ class CompressorGUI:
 
 
     def _on_theme_select(self, name: str):
-        
+        # Explicitly picking a theme is an override - turn off "Follow
+        # system theme" so it doesn't get silently reverted on the next poll.
+        if getattr(self, "follow_system_theme_var", None) is not None:
+            self.follow_system_theme_var.set(0)
+        self._remember_theme_for_mode(name)
+        self._apply_theme_by_name(name)
 
+    @staticmethod
+    def _theme_is_light(name: str) -> bool:
+        """Is this theme a light theme? Judged from its own APP_BG rather than
+        its name, so Theme Lab saves and any future preset classify correctly
+        without needing a hardcoded list."""
+        try:
+            return _is_light_color((THEMES.get(name) or {}).get("APP_BG") or "#000000")
+        except Exception:
+            return False
+
+    def _remember_theme_for_mode(self, name: str):
+        """Record an explicit pick as THE theme for its light/dark mode.
+
+        "Follow system theme" used to snap to the literal "Light"/"Dark"
+        presets, so a user on OLED, Nord, or a Theme Lab save lost it the
+        moment the OS flipped - effectively making the toggle unusable for
+        anyone not on the two default themes. Remembering the user's own pick
+        per mode means following the system switches between THEIR two themes.
+        """
+        if name not in THEMES:
+            return
+        self.settings = getattr(self, "settings", {}) or {}
+        key = "light_theme_name" if self._theme_is_light(name) else "dark_theme_name"
+        self.settings[key] = name
+
+    def _theme_for_mode(self, mode: str) -> str:
+        """Map an OS mode ("Light"/"Dark") to the theme to actually apply."""
+        s = getattr(self, "settings", {}) or {}
+        key = "light_theme_name" if mode == "Light" else "dark_theme_name"
+        name = s.get(key)
+        return name if name in THEMES else mode
+
+    def _apply_theme_by_name(self, name: str):
+        """Retheme + persist, without touching follow_system_theme_var - the
+        shared bit both _on_theme_select (explicit pick, clears the follow
+        flag itself first) and the system-theme poll (must NOT clear it,
+        that would defeat "follow") need."""
         self.theme_var.set(name)
 
         try:
@@ -7041,13 +7416,69 @@ class CompressorGUI:
             self.save_settings()
         except Exception:
             pass
-
+        # ui.json is the pre-settings.json theme store that the startup path
+        # still reads; keep it in sync or a relaunch reverts the theme. This
+        # call belongs to THIS method - it was previously stranded below
+        # _system_theme_poll (where `name` is undefined and the NameError was
+        # swallowed), which silently stopped ui.json from ever updating.
         try:
             _save_theme_choice(name)
         except Exception:
             pass
 
-        from pathlib import Path
+    def _toggle_follow_system_theme(self):
+        # save_settings() reads follow_system_theme_var directly (see its
+        # payload dict), so setting the var is all persistence needs here.
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+        if self.follow_system_theme_var.get():
+            self._apply_system_theme_now()
+            self._start_system_theme_poll()
+
+    def _apply_system_theme_now(self):
+        try:
+            from support.system_theme import detect_system_theme
+            mode = detect_system_theme()   # "Light" / "Dark" / None
+        except Exception:
+            mode = None
+        if not mode:
+            return
+        name = self._theme_for_mode(mode)
+        if name in THEMES and name != getattr(self.theme_var, "get", lambda: None)():
+            self._apply_theme_by_name(name)
+
+    def _system_theme_poll(self):
+        # Re-checks the OS light/dark setting periodically while "Follow
+        # system theme" is on, so a live OS theme switch (not just app
+        # startup) gets picked up. Stops rescheduling itself the moment the
+        # toggle is off - no orphaned after() loop running forever.
+        #
+        # Cancels any previously-scheduled tick first: this is called from
+        # _toggle_follow_system_theme AND from load_settings, and toggling
+        # off-then-on left the earlier chain pending, so the polls multiplied
+        # (each surviving tick scheduling another).
+        self._theme_poll_id = None
+        if not getattr(self, "follow_system_theme_var", None) or not self.follow_system_theme_var.get():
+            return
+        self._apply_system_theme_now()
+        try:
+            self._theme_poll_id = self.root.after(20000, self._system_theme_poll)
+        except Exception:
+            pass
+
+    def _start_system_theme_poll(self):
+        """Single entry point for (re)arming the poll, so callers can't stack
+        overlapping after() chains."""
+        try:
+            _pending = getattr(self, "_theme_poll_id", None)
+            if _pending:
+                self.root.after_cancel(_pending)
+        except Exception:
+            pass
+        self._theme_poll_id = None
+        self._system_theme_poll()
 
     def load_settings(self) -> dict:
         
@@ -7320,6 +7751,15 @@ class CompressorGUI:
                                        else bool((getattr(self, "settings", {}) or {}).get("notify_on_complete", True))),
                 "auto_open_output": (bool(int(self.auto_open_output_var.get())) if hasattr(self, "auto_open_output_var")
                                      else bool((getattr(self, "settings", {}) or {}).get("auto_open_output", False))),
+                "follow_system_theme": (bool(self.follow_system_theme_var.get()) if hasattr(self, "follow_system_theme_var")
+                                        else bool((getattr(self, "settings", {}) or {}).get("follow_system_theme", False))),
+                # Which theme "Follow system theme" uses for each OS mode -
+                # set from the user's own explicit picks, so following the
+                # system switches between THEIR themes, not the two defaults.
+                "light_theme_name": (getattr(self, "settings", {}) or {}).get("light_theme_name", "Light"),
+                "dark_theme_name":  (getattr(self, "settings", {}) or {}).get("dark_theme_name", "Dark"),
+                "recent_files":   list((getattr(self, "settings", {}) or {}).get("recent_files", [])),
+                "recent_outputs": list((getattr(self, "settings", {}) or {}).get("recent_outputs", [])),
                 "watch_rules":  dict((getattr(self, "settings", {}) or {}).get("watch_rules", {}) or {}),
                 "update_check_consent": (getattr(self, "settings", {}) or {}).get("update_check_consent", None),
                 "last_update_check_ts": (getattr(self, "settings", {}) or {}).get("last_update_check_ts", 0),
@@ -7450,6 +7890,27 @@ class CompressorGUI:
         except Exception:
             opts["contact_sheet"] = bool(ADVANCED_DEFAULTS.get("contact_sheet", False))
 
+        # Concurrent-batch controls (checkbox + Auto/1-4 spinner). Missing here
+        # previously meant _decide_workers() always saw adv.get("concurrent_jobs")
+        # as None and silently fell back to sequential (workers=1), regardless
+        # of what the UI showed - this is the only place start_compression's
+        # live dispatch actually reads these from.
+        try:
+            opts["concurrent"] = (bool(self.adv_concurrent.get())
+                                  if hasattr(self, "adv_concurrent")
+                                  else bool(self.settings.get("concurrent",
+                                            ADVANCED_DEFAULTS.get("concurrent", False))))
+        except Exception:
+            opts["concurrent"] = bool(ADVANCED_DEFAULTS.get("concurrent", False))
+
+        try:
+            opts["concurrent_jobs"] = (_jobs_from_display(self.adv_concurrent_jobs.get())
+                                       if hasattr(self, "adv_concurrent_jobs")
+                                       else self.settings.get("concurrent_jobs",
+                                                 ADVANCED_DEFAULTS.get("concurrent_jobs", "auto")))
+        except Exception:
+            opts["concurrent_jobs"] = ADVANCED_DEFAULTS.get("concurrent_jobs", "auto")
+
         return opts
 
     def _profiles_file(self) -> str:
@@ -7569,6 +8030,15 @@ class CompressorGUI:
                     self.save_path.set(self.settings.get("output_dir", self.save_path.get()))
                 if hasattr(self, "theme_var"):
                     self.theme_var.set(self.settings.get("theme", self.theme_var.get()))
+                if not hasattr(self, "follow_system_theme_var"):
+                    self.follow_system_theme_var = tk.IntVar(
+                        value=1 if self.settings.get("follow_system_theme") else 0)
+                else:
+                    self.follow_system_theme_var.set(
+                        1 if self.settings.get("follow_system_theme") else 0)
+                if self.follow_system_theme_var.get():
+                    self._apply_system_theme_now()
+                    self._start_system_theme_poll()
             except Exception:
                 pass
 
@@ -7585,13 +8055,17 @@ class CompressorGUI:
 
     def open_settings_dialog(self):
         win = tk.Toplevel(self.root)
-        win.title(self._t("dlg.settings", "Settings"))
+        win.title(self._t("dlg.settings", "Configure Paths"))
         win.geometry("450x300")
         win.transient(self.root)
         win.grab_set()
+        try:
+            win.configure(bg=APP_BG)
+        except Exception:
+            pass
         pad = {"padx": 10, "pady": 5}
 
-        tk.Label(win, text=self._t("set.save_folder", "Default Save Folder:")).grid(row=0, column=0, sticky="e", **pad)
+        tk.Label(win, text=self._t("set.save_folder", "Default Save Folder:"), bg=APP_BG, fg=FG).grid(row=0, column=0, sticky="e", **pad)
         save_entry = tk.Entry(win, width=40)
         save_entry.insert(0, self.settings.get("output_dir", ""))
         save_entry.grid(row=0, column=1, **pad)
@@ -7606,7 +8080,7 @@ class CompressorGUI:
         ttk.Checkbutton(win, text=self._t("set.auto_delete", "Auto-delete originals"), variable=auto_del_var)\
             .grid(row=1, column=1, sticky="w", **pad)
 
-        tk.Label(win, text=self._t("set.watch_folder", "Watch Folder:")).grid(row=2, column=0, sticky="e", **pad)
+        tk.Label(win, text=self._t("set.watch_folder", "Watch Folder:"), bg=APP_BG, fg=FG).grid(row=2, column=0, sticky="e", **pad)
         watch_entry = tk.Entry(win, width=40)
         watch_entry.insert(0, self.settings.get("watch_folder", ""))
         watch_entry.grid(row=2, column=1, **pad)
@@ -7621,37 +8095,39 @@ class CompressorGUI:
         ttk.Checkbutton(win, text=self._t("set.enable_watch", "Enable Watch-Folder"), variable=watch_on_var)\
             .grid(row=3, column=1, sticky="w", **pad)
 
-    def on_save():
-        self.settings["output_dir"]   = save_entry.get()
-        self.settings["auto_delete"]  = auto_del_var.get()
-        self.settings["watch_folder"] = watch_entry.get()
-        self.settings["enable_watch"] = watch_on_var.get()
-        self.settings["theme"]        = self.theme_var.get()
+        def on_save():
+            self.settings["output_dir"]   = save_entry.get()
+            self.settings["auto_delete"]  = auto_del_var.get()
+            self.settings["watch_folder"] = watch_entry.get()
+            self.settings["enable_watch"] = watch_on_var.get()
+            self.settings["theme"]        = self.theme_var.get()
+            self.settings["follow_system_theme"] = bool(
+                getattr(self, "follow_system_theme_var", None) and self.follow_system_theme_var.get())
 
-        self.save_path.set(self.settings["output_dir"])
-        self.watch_folder.set(self.settings["watch_folder"])
-        self.enable_watch.set(self.settings.get("enable_watch", False))
+            self.save_path.set(self.settings["output_dir"])
+            self.watch_folder.set(self.settings["watch_folder"])
+            self.enable_watch.set(self.settings.get("enable_watch", False))
 
-        self.save_settings()
+            self.save_settings()
 
-        try:
-            self.webhook.set_url(self.settings.get("webhook_url", "")
-                                 or self.webhook_url_var.get())
-        except Exception:
-            pass
+            try:
+                self.webhook.set_url(self.settings.get("webhook_url", "")
+                                     or self.webhook_url_var.get())
+            except Exception:
+                pass
 
-        if self.settings["enable_watch"]:
-            self.stop_folder_watcher()
-            self.start_folder_watcher()
-        else:
-            self.stop_folder_watcher()
+            if self.settings["enable_watch"]:
+                self.stop_folder_watcher()
+                self.start_folder_watcher()
+            else:
+                self.stop_folder_watcher()
 
-        win.destroy()
+            win.destroy()
 
-        btns = tk.Frame(win)
+        btns = tk.Frame(win, bg=APP_BG)
         btns.grid(row=4, column=0, columnspan=3, pady=20)
         tk.Button(btns, text=self._t("btn.save", "Save"), command=on_save).pack(side="left", padx=10)
-        ttk.Button(btns, text=_("title.cancel"), command=win.destroy).pack(side="right", padx=10)
+        ttk.Button(btns, text=self._t("btn.cancel", "Cancel"), command=win.destroy).pack(side="right", padx=10)
 
         win.wait_window()
 
@@ -8038,6 +8514,10 @@ class CompressorGUI:
         win.title(self._t("dlg.self_check", "Startup Self-Check"))
         win.resizable(False, False)
         try:
+            win.configure(bg=APP_BG)
+        except Exception:
+            pass
+        try:
             win.transient(self.root)
         except Exception:
             pass
@@ -8053,7 +8533,7 @@ class CompressorGUI:
             row = ttk.Frame(body)
             row.grid(row=i, column=0, sticky="ew", pady=3)
             status_text = self._t("self_check.ok", "OK") if r["ok"] else self._t("self_check.fail", "FAIL")
-            status_lbl = tk.Label(row, text=status_text, width=5,
+            status_lbl = tk.Label(row, text=status_text, width=5, bg=APP_BG,
                                    fg=("#2e7d32" if r["ok"] else "#c62828"))
             status_lbl.pack(side="left")
             ttk.Label(row, text=r["label"], width=24).pack(side="left", padx=(6, 0))
@@ -8089,6 +8569,8 @@ class CompressorGUI:
         if self.cancel_event.is_set():
             return  # already stopping
         self.cancel_event.set()
+        self.paused = False  # a stop must also release anything blocked on pause
+        getattr(self, "_update_pause_button_text", lambda: None)()
         self.update_status("[Cancel] Stop requested - halting active encode...",
                            level="WARNING")
         try:
@@ -8103,6 +8585,125 @@ class CompressorGUI:
     def cancel_queue(self):
         # Legacy name kept for old callers; the Stop button binds stop_compression.
         self.stop_compression()
+
+    def _on_escape(self, _event=None):
+        """Esc in the main window. Confirms before discarding work.
+
+        Esc is a dismiss key everywhere else in the OS, so wiring it straight
+        to stop_compression made an idle reflex throw away however many
+        minutes of encoding were in flight - unrecoverably, since a killed
+        two-pass encode keeps nothing. It now asks, and does nothing at all
+        when there is no batch running (rather than emitting a stop for
+        something that isn't going)."""
+        if not getattr(self, "compression_running", False):
+            return
+        from tkinter import messagebox
+        if messagebox.askyesno(
+                self._t("dlg.stop_batch", "Stop compression"),
+                self._t("msg.stop_batch",
+                        "Stop the running batch?\n\n"
+                        "The file currently encoding loses its progress."),
+                parent=self.root, default="no"):
+            self.stop_compression()
+
+    def cancel_single_file(self, path):
+        """Cancel ONE queued/running file without stopping the rest of the
+        batch (unlike Stop, which sets the shared cancel_event for everyone
+        and leaves it set).
+
+        - Running under a concurrent worker (workers>1): kill just that
+          worker's process tree via its tracked Popen (self._job_procs). Its
+          entire encode (probes, codec race, both passes, refine-reencode)
+          runs confined to that one child process, so this fully and cleanly
+          stops it - no partial in-process state to worry about.
+        - Running in sequential mode: there's no per-file cancel plumbing
+          threaded through compress_video's internal retry/probe/pass stages,
+          and killing just the CURRENT ffmpeg subprocess isn't enough on its
+          own - verified experimentally: the orchestration's own retry logic
+          simply moved on (codec race, refine-reencode, ...) and produced a
+          normal successful result regardless. So this reuses the real,
+          already-proven cancel_event/cancel_callback plumbing Stop uses
+          (the only thing compress_video's internals actually check) to
+          abort THIS file's encode cleanly, then sets
+          _single_file_cancel_only so the sequential dispatch loop clears
+          cancel_event right after and continues to the next file instead of
+          stopping the batch (see that loop in compress_all).
+        - Not started yet: mark it in self._file_cancel_set so _run_one()
+          skips it the moment it's picked up, without ever encoding it.
+        - Already finished (or not part of a running batch at all): no-op.
+
+        Every branch that actually cancels something also records the path in
+        self._single_cancelled, which _run_one_inner reads to badge the row
+        "cancelled" instead of "failed". Without it the concurrent branch below
+        looked like a crash: killing the worker leaves it with no result, and
+        the shared cancel_event is deliberately untouched, so the generic
+        failure path saw compression_cancelled == False.
+        """
+        try:
+            path = _normalize_drop_path(str(path))
+        except Exception:
+            path = str(path)
+        if not isinstance(getattr(self, "_single_cancelled", None), set):
+            self._single_cancelled = set()
+        proc = (getattr(self, "_job_procs", None) or {}).get(path)
+        if proc is not None:
+            # Only kill a process that is still alive. A finished/reaped Popen
+            # holds a PID the OS may already have handed to something else.
+            if proc.poll() is None:
+                from support.concurrent_pool import _kill_tree
+                self._single_cancelled.add(path)
+                _kill_tree(proc.pid)
+                self.update_status(f"[Cancel] Stopping {os.path.basename(path)}...", level="INFO")
+            else:
+                self.update_status(f"[Cancel] {os.path.basename(path)} already finished.", level="INFO")
+            return
+        if getattr(self, "_current_sequential_path", None) == path:
+            self._single_file_cancel_only = True
+            self._single_cancelled.add(path)
+            self.cancel_event.set()
+            try:
+                from encode.ffmpeg_exec import kill_active_processes
+                kill_active_processes()
+            except Exception:
+                pass
+            self.update_status(f"[Cancel] Stopping {os.path.basename(path)}...", level="INFO")
+            return
+        if getattr(self, "compression_running", False):
+            if not hasattr(self, "_file_cancel_set") or self._file_cancel_set is None:
+                self._file_cancel_set = set()
+            self._file_cancel_set.add(path)
+            self.update_status(f"[Cancel] {os.path.basename(path)} will be skipped.", level="INFO")
+        else:
+            self.update_status("[Cancel] Nothing running for that file.", level="INFO")
+
+    def toggle_pause(self):
+        """Pause/resume button: pausing stops NEW files from starting: the
+        dispatch loop (sequential) and each pool-worker thread's next pickup
+        (concurrent) block on self.paused at the top of _run_one. In-flight
+        file(s) finish normally - matching Stop's own philosophy, can't
+        safely interrupt a two-pass ffmpeg encode mid-run without losing that
+        work. Resuming lets queued files start again."""
+        if not getattr(self, "compression_running", False):
+            self.update_status("[Pause] Nothing running to pause.", level="INFO")
+            return
+        self.paused = not getattr(self, "paused", False)
+        if self.paused:
+            self.update_status(
+                "[Pause] Paused - in-flight file(s) will finish, no new ones will start.",
+                level="INFO")
+        else:
+            self.update_status("[Pause] Resumed.", level="INFO")
+        self._update_pause_button_text()
+
+    def _update_pause_button_text(self):
+        try:
+            btn = getattr(self, "_pause_btn", None)
+            if btn is not None and btn.winfo_exists():
+                btn.config(text=self._t("btn.resume", "Resume")
+                           if getattr(self, "paused", False)
+                           else self._t("btn.pause", "Pause"))
+        except Exception:
+            pass
 
 
 
@@ -8204,7 +8805,7 @@ class CompressorGUI:
         if not paths:
             self.update_status("[Clipboard] No image or file found on clipboard.", level="INFO")
             return
-        added = 0
+        added_paths = []
         for path in paths:
             if not os.path.isfile(path):
                 continue
@@ -8215,9 +8816,11 @@ class CompressorGUI:
                 continue
             self.file_list.append(_norm)
             self.queue_box.insert("end", _norm)
-            added += 1
+            added_paths.append(_norm)
+        added = len(added_paths)
         if added:
             self._save_queue()
+            self._track_recent_files(added_paths)
             self.update_status(f"[Clipboard] Added {added} file(s) from clipboard to the queue.", level="INFO")
         else:
             self.update_status("[Clipboard] Clipboard file(s) already in the queue.", level="INFO")
@@ -8229,16 +8832,19 @@ class CompressorGUI:
             "*.jpg *.jpeg *.jfif *.png *.webp *.gif *.bmp *.tiff *.tif *.heic *.heif *.jxl *.raw *.avif "
             "*.pdf")])
 
+        added = []
         for path in paths:
             if path not in self.file_list:
                 self.file_list.append(path)
                 self.queue_box.insert("end", path)
+                added.append(path)
                 notification.notify(
                     title="BitCrusher - File Added",
                     message=f"{os.path.basename(path)} added to queue.",
                     timeout=3
                 )
         self._save_queue()
+        self._track_recent_files(added)
 
 
     def remove_selected(self):
@@ -8356,6 +8962,24 @@ class CompressorGUI:
             if i < len(self.file_list) - 1:
                 self.file_list[i], self.file_list[i+1] = self.file_list[i+1], self.file_list[i]
         self.refresh_queue_box()
+        self._save_queue()
+
+    def _on_queue_reorder(self, new_order_iids):
+        """QueueTree drag-reorder callback: new_order_iids is the tree's row
+        order right after a drop (iid == normalized path). The tree already
+        shows this order (that's what the drag did) - just resync file_list
+        to match and persist, no rebuild needed."""
+        try:
+            by_norm = {}
+            for p in self.file_list:
+                by_norm.setdefault(_normalize_drop_path(p), p)
+            new_list = [by_norm[_normalize_drop_path(i)] for i in new_order_iids
+                       if _normalize_drop_path(i) in by_norm]
+            seen = set(new_list)
+            new_list += [p for p in self.file_list if p not in seen]
+            self.file_list = new_list
+        except Exception:
+            return
         self._save_queue()
 
     def clear_queue(self):
@@ -8495,6 +9119,10 @@ class CompressorGUI:
         win.title(self._t("dlg.preflight", "Pre-flight estimate (from the ledger)"))
         win.transient(self.root)
         win.geometry("640x360")
+        try:
+            win.configure(bg=APP_BG)
+        except Exception:
+            pass
         ttk.Label(win, text=f"Predicted outcome at {human_bytes(tgt)} — no encoding, "
                             f"learned from past encodes.").pack(anchor="w", padx=12, pady=(12, 4))
         cols = ("codec", "size", "vmaf", "worst", "time", "n")
@@ -8576,16 +9204,24 @@ class CompressorGUI:
         win.title(f"Result — {os.path.basename(str(input_path))}")
         win.transient(self.root)
         win.geometry("720x430")
-        accent = "#4caf7d"
-        danger = "#d9655b"
-        muted = "#8a8a96"
+        win.configure(bg=APP_BG)
+        accent = ACCENT or "#4caf7d"
+        danger = ERROR or "#d9655b"
+        muted = FG_SUB or "#8a8a96"
 
+        _mean_txt = (m['mean'] if m['mean'] is not None
+                     else ("unreliable" if m.get("vmaf_unreliable_reason") else "—"))
+        _worst_txt = (m['worst'] if m['worst'] is not None
+                      else ("unreliable" if m.get("vmaf_unreliable_reason") else "—"))
         head = (f"{m['encoder'] or '-'}   •   mean VMAF "
-                f"{m['mean'] if m['mean'] is not None else '—'}   •   "
-                f"worst {m['worst'] if m['worst'] is not None else '—'} ({m['band']})"
+                f"{_mean_txt}   •   "
+                f"worst {_worst_txt} ({m['band']})"
                 + (f"   •   {human_bytes(m['size_bytes'])}" if m.get('size_bytes') else "")
                 + (f"   •   {m['encode_seconds']:.0f}s" if m.get('encode_seconds') else ""))
         ttk.Label(win, text=head).pack(anchor="w", padx=14, pady=(12, 2))
+        if m.get("why_text"):
+            ttk.Label(win, text=m["why_text"], foreground=muted).pack(
+                anchor="w", padx=14, pady=(0, 2))
         ttk.Label(win, text="VMAF over time — red marks the worst window",
                   foreground=muted).pack(anchor="w", padx=14, pady=(6, 2))
 
@@ -8611,8 +9247,14 @@ class CompressorGUI:
                 c.create_oval(mx - 4, my - 4, mx + 4, my + 4, fill=danger, outline="")
                 c.create_text(mx, 20, text=f"worst {mk['value']:.0f}", fill=danger, font=("", 9))
         else:
-            c.create_text(cw / 2, ch / 2, text="no VMAF series for this encode",
-                          fill=muted)
+            if m.get("vmaf_unreliable_reason"):
+                _no_series_text = ("VMAF measurement was unreliable for this file and was "
+                                    "discarded, not used for gating or learning\n("
+                                    + m["vmaf_unreliable_reason"] + ")")
+            else:
+                _no_series_text = "no VMAF series for this encode"
+            c.create_text(cw / 2, ch / 2, text=_no_series_text, fill=muted,
+                          width=cw - 40, justify="center")
 
         # Scene heatmap strip: time x quality bands (green/amber/red) with a
         # hover timestamp readout. Levels come from the framework-free
@@ -8729,6 +9371,10 @@ class CompressorGUI:
         win = tk.Toplevel(self.root)
         win.title(self._t("dlg.dupes_found", "Duplicate Files Found"))
         win.transient(self.root)
+        try:
+            win.configure(bg=APP_BG)
+        except Exception:
+            pass
         win.grab_set()  # modal: queue edits mid-review would orphan row_info's path keys
         win.geometry("740x400")
 
@@ -8793,6 +9439,59 @@ class CompressorGUI:
         ttk.Button(btns, text="Apply", command=_apply).pack(side="right")
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right", padx=(0, 6))
 
+    # Fixed column set for the batch-summary export. Pinned rather than
+    # derived from rows[0]: an empty batch produced a CSV with no header line
+    # at all (DictWriter(fieldnames=[])), and deriving from the first row also
+    # let the schema shift between exports if that row happened to be a
+    # dedup-reuse or a failure. A consumer can now rely on the columns.
+    _BATCH_EXPORT_FIELDS = ("file", "path", "status", "input_bytes",
+                            "output_bytes", "ratio_pct", "vmaf", "encoder",
+                            "seconds", "output_path", "reused_duplicate_of")
+
+    def _export_batch_summary(self, results):
+        """CSV/JSON export of the batch summary dialog's rows - format chosen
+        by the extension the user picks in the save dialog."""
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Export Batch Summary",
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv"), ("JSON", "*.json")],
+            initialfile="bitcrusher_batch_summary.csv",
+        )
+        if not path:
+            return
+        rows = []
+        for r in results:
+            i_b, o_b = int(r.get("in_bytes") or 0), int(r.get("out_bytes") or 0)
+            v = r.get("vmaf")
+            rows.append({
+                "file": os.path.basename(str(r.get("path") or "")),
+                "path": str(r.get("path") or ""),
+                "status": ("ok" if r.get("ok") else (r.get("error") or "failed")),
+                "input_bytes": i_b,
+                "output_bytes": o_b,
+                "ratio_pct": (round(o_b * 100.0 / i_b, 1) if (i_b and o_b) else None),
+                "vmaf": (round(float(v), 2) if isinstance(v, (int, float)) else None),
+                "encoder": r.get("encoder"),
+                "seconds": round(float(r.get("secs") or 0.0), 1),
+                "output_path": r.get("output_path"),
+                "reused_duplicate_of": r.get("reused_duplicate_of"),
+            })
+        try:
+            if path.lower().endswith(".json"):
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(rows, f, indent=2, ensure_ascii=False)
+            else:
+                import csv
+                with open(path, "w", encoding="utf-8", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=list(self._BATCH_EXPORT_FIELDS))
+                    w.writeheader()
+                    w.writerows(rows)
+            self.update_status(f"[Export] Batch summary written to {path}", level="INFO")
+        except Exception as e:
+            self.update_status(f"[Export] Failed: {e}", level="ERROR")
+
     def _show_batch_summary(self):
         """Post-queue summary: per-file results + totals (main thread only)."""
         results = list(getattr(self, "batch_results", []) or [])
@@ -8809,6 +9508,10 @@ class CompressorGUI:
         win.title(self._t("dlg.batch_summary", "Batch Summary"))
         win.transient(self.root)
         win.geometry("720x380")
+        try:
+            win.configure(bg=APP_BG)
+        except Exception:
+            pass
 
         cols = ("in", "out", "ratio", "vmaf", "time")
         tree = ttk.Treeview(win, columns=cols, show="tree headings", height=10)
@@ -8864,6 +9567,8 @@ class CompressorGUI:
         btns.pack(fill="x", padx=12, pady=(0, 12))
         ttk.Button(btns, text="Open Save Folder",
                    command=getattr(self, "open_save_folder", lambda: None)).pack(side="left")
+        ttk.Button(btns, text="Export...",
+                   command=lambda: self._export_batch_summary(results)).pack(side="left", padx=(8, 0))
 
         def _details_selected():
             sel = tree.focus()
@@ -8933,6 +9638,136 @@ class CompressorGUI:
                 self._queue_restore_announced = True
         except Exception:
             LOG.debug("Queue restore failed", exc_info=True)
+
+    # ---- Saved queues / templates -----------------------------------------
+    # A named snapshot of file_list + per_file_opts (never statuses - a
+    # template should always reload as fresh, all-pending work, not carry
+    # over stale done/failed badges from when it was saved). Reuses the same
+    # v2 schema/helpers as the live queue.json; just a different file per name
+    # under user_settings/saved_queues/.
+    def _saved_queues_dir(self) -> str:
+        d = os.path.join(USER_SETTINGS_DIR, "saved_queues")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        return d
+
+    def _saved_queue_path(self, name: str) -> str:
+        safe = re.sub(r'[\\/:*?"<>|]+', "_", str(name)).strip() or "queue"
+        return os.path.join(self._saved_queues_dir(), safe + ".json")
+
+    def save_queue_as(self):
+        from tkinter import simpledialog
+        if not getattr(self, "file_list", None):
+            self.update_status("[Queue] Nothing to save - queue is empty.", level="INFO")
+            return
+        name = simpledialog.askstring(
+            "Save Queue As",
+            "Name for this saved queue:",
+            parent=self.root,
+        )
+        if not name or not name.strip():
+            return
+        name = name.strip()
+        try:
+            data = dump_queue(self.file_list, dict(getattr(self, "per_file_opts", {}) or {}), {})
+            p = self._saved_queue_path(name)
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, p)
+            self.update_status(f"[Queue] Saved '{name}' ({len(self.file_list)} file(s)).", level="INFO")
+        except Exception as e:
+            self.update_status(f"[Queue] Save failed: {e}", level="ERROR")
+
+    def _list_saved_queues(self) -> list:
+        d = self._saved_queues_dir()
+        try:
+            names = sorted(f[:-5] for f in os.listdir(d) if f.lower().endswith(".json"))
+        except Exception:
+            names = []
+        return names
+
+    def load_saved_queue_dialog(self):
+        import tkinter as tk
+        from tkinter import ttk as _ttk
+        names = self._list_saved_queues()
+        if not names:
+            self.update_status("[Queue] No saved queues yet - use File > Save Queue As...", level="INFO")
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Load Saved Queue")
+        win.transient(self.root)
+        win.geometry("360x320")
+        try:
+            win.configure(bg=APP_BG)
+        except Exception:
+            pass
+        _ttk.Label(win, text="Adds the saved files to your current queue:").pack(
+            anchor="w", padx=10, pady=(10, 4))
+        lb = tk.Listbox(win, exportselection=False, bg=APP_BG, fg=FG,
+                         highlightthickness=0, selectbackground=(ACCENT or "#4C5BD4"))
+        for n in names:
+            lb.insert("end", n)
+        lb.pack(fill="both", expand=True, padx=10, pady=4)
+        lb.selection_set(0)
+
+        def _do_load():
+            sel = lb.curselection()
+            if not sel:
+                return
+            name = names[sel[0]]
+            win.destroy()
+            self._load_saved_queue_by_name(name)
+
+        def _do_delete():
+            sel = lb.curselection()
+            if not sel:
+                return
+            name = names[sel[0]]
+            try:
+                os.remove(self._saved_queue_path(name))
+                self.update_status(f"[Queue] Deleted saved queue '{name}'.", level="INFO")
+            except Exception as e:
+                self.update_status(f"[Queue] Delete failed: {e}", level="ERROR")
+            win.destroy()
+
+        btns = tk.Frame(win)
+        btns.pack(fill="x", padx=10, pady=(0, 10))
+        _ttk.Button(btns, text="Load", command=_do_load).pack(side="left")
+        _ttk.Button(btns, text="Delete", command=_do_delete).pack(side="left", padx=(6, 0))
+        _ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right")
+        lb.bind("<Double-Button-1>", lambda e: _do_load())
+
+    def _load_saved_queue_by_name(self, name: str):
+        try:
+            p = self._saved_queue_path(name)
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            jobs = load_queue(data)
+        except Exception as e:
+            self.update_status(f"[Queue] Load failed: {e}", level="ERROR")
+            return
+        if not jobs:
+            self.update_status(f"[Queue] '{name}' has no valid files (missing on disk?).", level="WARNING")
+            return
+        if not hasattr(self, "file_list") or self.file_list is None:
+            self.file_list = []
+        if not isinstance(getattr(self, "per_file_opts", None), dict):
+            self.per_file_opts = {}
+        added = 0
+        for job in jobs:
+            x = job["path"]
+            if x not in self.file_list:
+                self.file_list.append(x)
+                added += 1
+            if job.get("opts"):
+                self.per_file_opts[x] = dict(job["opts"])
+        self.refresh_queue_box()
+        self._save_queue()
+        self.update_status(f"[Queue] Loaded '{name}': {added} new file(s) added "
+                           f"({len(jobs) - added} already in queue).", level="INFO")
 
     def _record_job_state(self, path, status, output=None):
         """Persist one job's outcome (main thread; called after each file)."""
@@ -9223,7 +10058,7 @@ class CompressorGUI:
             pass
 
         adv = tk.Toplevel(self.root)
-        adv.title(self._t("dlg.advanced_options_win", "Advanced Options"))
+        adv.title(self._t("dlg.advanced_options_win", "Settings"))
         try:
             adv.configure(bg=APP_BG)
         except Exception:
@@ -9268,13 +10103,29 @@ class CompressorGUI:
         _canvas.bind("<Configure>", lambda e: _canvas.itemconfigure(_win, width=e.width))
 
         # Mouse-wheel scrolling while the pointer is over the dialog.
+        #
+        # Bound on the TOPLEVEL, not via bind_all. Wheel events bubble up the
+        # bindtags chain (widget -> class -> toplevel -> all), so a toplevel
+        # binding already covers every widget inside this dialog and nothing
+        # outside it. bind_all was application-wide: while the dialog was open
+        # the wheel scrolled this canvas even with the pointer over the main
+        # window's queue or log, and the matching unbind_all on <Destroy>
+        # then tore down the "all" binding wholesale rather than just this
+        # dialog's. Binding on `adv` also needs no teardown at all - it dies
+        # with the window.
         def _on_wheel(e):
             try:
-                _canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+                delta = getattr(e, "delta", 0)
+                if delta:
+                    step = int(-1 * (delta / 120)) or (-1 if delta > 0 else 1)
+                else:  # X11 reports the wheel as Button-4 (up) / Button-5 (down)
+                    step = -1 if getattr(e, "num", 0) == 4 else 1
+                _canvas.yview_scroll(step, "units")
             except Exception:
                 pass
-        _canvas.bind_all("<MouseWheel>", _on_wheel)
-        adv.bind("<Destroy>", lambda e: (_canvas.unbind_all("<MouseWheel>") if e.widget is adv else None), add="+")
+        adv.bind("<MouseWheel>", _on_wheel)
+        adv.bind("<Button-4>", _on_wheel)
+        adv.bind("<Button-5>", _on_wheel)
 
         video = ttk.LabelFrame(container, text=self._t("adv.sec.video", "Video"), padding=10)
         audio = ttk.LabelFrame(container, text=self._t("adv.sec.audio", "Audio"), padding=10)
@@ -9405,26 +10256,28 @@ class CompressorGUI:
         ttk.Checkbutton(images, text=self._t("adv.png_opt", "PNG Optimize"), variable=self.adv_pngopt).grid(row=1, column=0, sticky="w", padx=6, pady=4)
         ttk.Checkbutton(images, text=self._t("adv.auto_jpeg", "Auto JPEG"), variable=self.adv_auto_jpeg).grid(row=1, column=1, sticky="w", padx=6, pady=4)
 
+        misc.grid_columnconfigure(0, weight=1)
+        misc.grid_columnconfigure(1, weight=1)
         ttk.Checkbutton(misc, text=self._t("adv.concurrent", "Concurrent Compression"), variable=self.adv_concurrent).grid(row=0, column=0, sticky="w", padx=6, pady=4)
-        _jobs_row = ttk.Frame(misc); _jobs_row.grid(row=0, column=2, sticky="w", padx=6, pady=4)
+        _jobs_row = ttk.Frame(misc); _jobs_row.grid(row=0, column=1, sticky="w", padx=6, pady=4)
         ttk.Label(_jobs_row, text=self._t("adv.parallel_jobs", "Parallel jobs:")).pack(side="left")
         ttk.Combobox(_jobs_row, textvariable=self.adv_concurrent_jobs, values=["Auto", "1", "2", "3", "4"],
                      state="readonly", width=6).pack(side="left", padx=(4, 0))
-        ttk.Checkbutton(misc, text=self._t("adv.auto_output", "Auto Create Output Folder"), variable=self.adv_auto_output).grid(row=0, column=1, sticky="w", padx=6, pady=4)
+        ttk.Checkbutton(misc, text=self._t("adv.auto_output", "Auto Create Output Folder"), variable=self.adv_auto_output).grid(row=1, column=0, sticky="w", padx=6, pady=4)
         if hasattr(self, "adv_grain_filter"):
-            ttk.Checkbutton(misc, text=self._t("adv.grain_filter", "Grain-aware denoise filter"), variable=self.adv_grain_filter).grid(row=1, column=0, sticky="w", padx=6, pady=4)
+            ttk.Checkbutton(misc, text=self._t("adv.grain_filter", "Grain-aware denoise filter"), variable=self.adv_grain_filter).grid(row=1, column=1, sticky="w", padx=6, pady=4)
         if not hasattr(self, "dino_game_var"):
             self.dino_game_var = tk.IntVar(value=1 if (getattr(self, "settings", {}) or {}).get("dino_game", False) else 0)
         ttk.Checkbutton(misc, text=self._t("adv.dino", "Hidden dino runner (Activity area)"), variable=self.dino_game_var,
-                        command=self._toggle_dino).grid(row=1, column=1, sticky="w", padx=6, pady=4)
+                        command=self._toggle_dino).grid(row=2, column=0, sticky="w", padx=6, pady=4)
         if not hasattr(self, "notify_on_complete_var"):
             self.notify_on_complete_var = tk.IntVar(value=1 if (getattr(self, "settings", {}) or {}).get("notify_on_complete", True) else 0)
         ttk.Checkbutton(misc, text=self._t("adv.notify_complete", "Notify when the batch finishes"),
-                        variable=self.notify_on_complete_var).grid(row=2, column=0, sticky="w", padx=6, pady=4)
+                        variable=self.notify_on_complete_var).grid(row=2, column=1, sticky="w", padx=6, pady=4)
         if not hasattr(self, "auto_open_output_var"):
             self.auto_open_output_var = tk.IntVar(value=1 if (getattr(self, "settings", {}) or {}).get("auto_open_output", False) else 0)
         ttk.Checkbutton(misc, text=self._t("adv.auto_open_output", "Open output folder when the batch finishes"),
-                        variable=self.auto_open_output_var).grid(row=2, column=1, sticky="w", padx=6, pady=4)
+                        variable=self.auto_open_output_var).grid(row=3, column=0, sticky="w", padx=6, pady=4)
 
         # --- Watcher Rules -------------------------------------------------
         # Optional conditions applied only to files the folder watcher / Send-To
@@ -9511,6 +10364,18 @@ class CompressorGUI:
 
         self.cancel_event.clear()
         self.paused = False
+        # Single-file cancel bookkeeping (see cancel_single_file): pending
+        # files marked to skip, concurrent workers' live Popen by path, and
+        # (sequential mode only, one file at a time) which path is active.
+        self._file_cancel_set: set = set()
+        self._job_procs: dict = {}
+        self._current_sequential_path = None
+        self._single_file_cancel_only = False
+        # Paths cancel_single_file actually stopped mid-encode, so the result
+        # is reported as "cancelled" rather than the crash it otherwise looks
+        # like (a killed worker returns no result, and cancel_event is left
+        # alone on purpose so the rest of the batch keeps running).
+        self._single_cancelled: set = set()
 
         files = list(getattr(self, "_thread_file_list", []) or [])
         files = [_normalize_drop_path(p) for p in files if isinstance(p, str)]
@@ -9537,6 +10402,19 @@ class CompressorGUI:
             files = [p for p in files if not _is_dup(p)] + [p for p in files if _is_dup(p)]
         total = len(files)
 
+        # Drop any leftover per-row state for the files THIS batch is about to
+        # encode. job_rows was previously only cleared by clear_queue(), so a
+        # second run over the same queue (Start again, Retry failed, Reset
+        # status) still saw last run's status="done"/progress=100 rows - and
+        # _update_batch_progress_bar counts every terminal row as one whole
+        # finished file, so the overall bar opened near 100% and never moved.
+        # Files skipped above (already done in a previous session) are NOT in
+        # `files`, so their badges are deliberately left intact.
+        _rows = getattr(self, "job_rows", None)
+        if isinstance(_rows, dict):
+            for _p in files:
+                _rows.pop(_p, None)
+
         if total == 0:
             self._ui(self.update_status, "No files in queue to compress.", level="ERROR")
             self.compression_running = False
@@ -9552,6 +10430,15 @@ class CompressorGUI:
                 self.progress["mode"] = "determinate"
                 self.progress["maximum"] = max(1, total)
                 self.progress["value"] = 0
+            except Exception:
+                pass
+            self._set_batch_eta_text("")
+            self._update_pause_button_text()
+            self._progress_state = None
+            self._set_progress_state("normal")
+            try:
+                from support.taskbar_progress import set_state as _tb_state, STATE_INDETERMINATE
+                _tb_state(self.root.winfo_id(), STATE_INDETERMINATE)
             except Exception:
                 pass
         self._ui(_prep)
@@ -9603,6 +10490,15 @@ class CompressorGUI:
                     kw["status"] = label
                 if stage in ("retrying", "packing") and ev.get("attempt"):
                     self._ui(self._dino_retry, int(ev.get("attempt")))
+                # Colour the bar by what size control is doing: cruising,
+                # working to fit, or recovering from an overshoot.
+                _pstate = {"retrying": "risk" if ev.get("over") else "warn",
+                           "refining": "warn", "packing": "warn"}.get(stage)
+                if _pstate is None and stage in ("probing", "pass1", "pass2",
+                                                 "encoding", "vmaf"):
+                    _pstate = "normal"
+                if _pstate:
+                    self._ui(self._set_progress_state, _pstate)
                 if not kw:
                     return
                 now = time.monotonic()
@@ -9610,10 +10506,105 @@ class CompressorGUI:
                     return
                 _last_row_update[job_id] = now
                 self._ui(self._job_update, job_id, **kw)
+                _update_batch_eta()
+                _update_batch_progress_bar()
             except Exception:
                 pass
 
         t_start = time.time()
+
+        # Overall progress bar: _bump_progress() alone only advances it once per
+        # WHOLE file (0/N, 1/N, 2/N...), which on a batch of a few large files can
+        # sit visibly motionless for the entire length of each encode. Blend in
+        # each currently-running file's own live percentage (already arriving via
+        # _progress_event) so the bar creeps continuously instead of jumping in
+        # big, sparse steps.
+        _progress_bar_state = {"t": 0.0}
+
+        def _update_batch_progress_bar(force=False):
+            now = time.monotonic()
+            if not force and now - _progress_bar_state["t"] < 0.25:
+                return
+            _progress_bar_state["t"] = now
+            try:
+                _rows = getattr(self, "job_rows", None) or {}
+                frac_total = 0.0
+                for p in files:
+                    try:
+                        row = _rows.get(_normalize_drop_path(p), {})
+                    except Exception:
+                        row = {}
+                    st = row.get("status")
+                    if st in ("done", "failed", "cancelled"):
+                        frac_total += 1.0
+                    else:
+                        pct = row.get("progress")
+                        if isinstance(pct, (int, float)) and pct > 0:
+                            frac_total += max(0.0, min(1.0, float(pct) / 100.0))
+                self._ui(self._bump_progress, frac_total)
+            except Exception:
+                pass
+
+        # Batch ETA (status label above the progress bar): sum of per-file
+        # estimates, adjusted for concurrency. Per-file estimate = the job's
+        # own live eta_s while it's running (real, from ffmpeg progress); for
+        # not-yet-started files, the running average of already-completed
+        # jobs' encode time (excludes dedup-reused hits - those take ~0s and
+        # would skew the average). Not-started files run `workers` at a time,
+        # so their total contributes divided by workers, not summed flat -
+        # summing flat would wildly overstate wall-clock time under
+        # concurrency (e.g. 10 files x 1min at workers=5 is ~2min, not 10min).
+        _completed_secs: list = []
+        _eta_calc_state = {"t": 0.0}
+
+        def _fmt_eta(secs):
+            secs = max(0, int(secs))
+            m, s = divmod(secs, 60)
+            h, m = divmod(m, 60)
+            if h:
+                return f"{h}h {m}m"
+            if m:
+                return f"{m}m {s}s"
+            return f"{s}s"
+
+        def _update_batch_eta(force=False):
+            now = time.monotonic()
+            if not force and now - _eta_calc_state["t"] < 1.0:
+                return
+            _eta_calc_state["t"] = now
+            try:
+                n_done = 0
+                running_etas = []
+                n_running = 0
+                _rows = getattr(self, "job_rows", None) or {}
+                for p in files:
+                    try:
+                        row = _rows.get(_normalize_drop_path(p), {})
+                    except Exception:
+                        row = {}
+                    st = row.get("status")
+                    if st in ("done", "failed", "cancelled"):
+                        n_done += 1
+                    elif row.get("progress") is not None or st == "starting":
+                        n_running += 1
+                        _eta = row.get("eta")
+                        if isinstance(_eta, (int, float)) and _eta > 0:
+                            running_etas.append(float(_eta))
+                n_not_started = max(0, total - n_done - n_running)
+                avg = (sum(_completed_secs) / len(_completed_secs)) if _completed_secs else None
+                if n_done >= total:
+                    self._ui(self._set_batch_eta_text, "")
+                    return
+                if avg is None and not running_etas:
+                    text = "[~] Estimating time remaining..." if (n_running or n_not_started) else ""
+                else:
+                    _avg_use = avg if avg is not None else (sum(running_etas) / len(running_etas))
+                    remaining_running = max(running_etas) if running_etas else 0.0
+                    remaining_queue = (n_not_started * _avg_use) / max(1, workers)
+                    text = f"[~] Est. {_fmt_eta(remaining_running + remaining_queue)} remaining ({n_done}/{total} done)"
+                self._ui(self._set_batch_eta_text, text)
+            except Exception:
+                pass
 
         # Batch dedup: source path -> {"output_path", "target", "adv"} for every
         # real (non-reused) encode that completes, filled in as _run_one()
@@ -9622,12 +10613,54 @@ class CompressorGUI:
         # yet (e.g. concurrent workers) it falls through to a normal encode --
         # correctness over speed.
         _dedup_canonical_outputs: dict = {}
+        _dedup_failed: set = set()
         _DEDUP_SETTINGS_KEYS = ("encoder", "codec_pinned", "output_prefix", "output_suffix",
                                 "container", "trim_range", "spotlight_range")
+        _DEDUP_WAIT_MAX_S = 1800.0  # safety net only; the loop normally exits
+                                    # as soon as the canonical finishes either way
 
         def _run_one(idx, path):
+            """Dedup-safe wrapper around _run_one_inner.
+
+            Every duplicate whose canonical hasn't finished yet parks in the
+            poll loop below until that canonical lands in either
+            _dedup_canonical_outputs (reuse it) or _dedup_failed (give up and
+            encode independently). _run_one_inner records both of those on its
+            normal exit paths - but NOT if it raises: the ThreadPoolExecutor
+            just captures the exception at the as_completed() loop, leaving the
+            canonical in neither set, so its waiters spun for the full
+            _DEDUP_WAIT_MAX_S safety net (30 minutes) before giving up.
+            Marking the path failed from a finally: closes that hole for every
+            exit path at once, including exceptions.
+            """
+            try:
+                return _run_one_inner(idx, path)
+            finally:
+                if path not in _dedup_canonical_outputs:
+                    _dedup_failed.add(path)
+
+        def _run_one_inner(idx, path):
+            # Pause: block here (before touching this file at all) until
+            # resumed or cancelled. Covers both sequential dispatch (blocks
+            # the dispatch loop directly) and concurrent dispatch (blocks
+            # whichever pool-worker thread picked up this not-yet-started
+            # task; already-running files are past this point and unaffected).
+            while getattr(self, "paused", False) and not self.compression_cancelled:
+                time.sleep(0.3)
             if self.compression_cancelled:
                 self._ui(self._job_update, path, status="cancelled")
+                _dedup_failed.add(path)  # unblock any duplicate waiting on this as its canonical
+                return {"path": path, "ok": False, "in_bytes": 0, "out_bytes": 0,
+                        "vmaf": None, "encoder": None, "secs": 0.0, "error": "cancelled"}
+            # Single-file cancel (cancel_single_file), requested while this
+            # file was still pending: skip it without touching cancel_event,
+            # so the rest of the batch keeps going.
+            if path in getattr(self, "_file_cancel_set", ()):
+                self._file_cancel_set.discard(path)
+                self._ui(self._job_update, path, status="cancelled", eta="")
+                self._ui(self._record_job_state, path, "cancelled")
+                _dedup_failed.add(path)
+                _update_batch_eta(force=True)
                 return {"path": path, "ok": False, "in_bytes": 0, "out_bytes": 0,
                         "vmaf": None, "encoder": None, "secs": 0.0, "error": "cancelled"}
             out_dir = getattr(self, "_thread_save_path", "") or os.path.dirname(path) or os.getcwd()
@@ -9642,6 +10675,9 @@ class CompressorGUI:
                     # there would resurrect a stale marker on a future run.
                     _po[path] = {k: v for k, v in _po[path].items() if k != "_dedup_canonical_source"}
             _dedup_canon_src = adv.pop("_dedup_canonical_source", None)
+            # One shared rate memory per file-job, so the also-target loop
+            # below starts from what the primary encode measured.
+            _attach_job_rate_memory(adv, adv.get("also_targets"))
             # Watcher-rule per-file overrides (custom folder / target size for
             # files brought in by the folder watcher or Send-To).
             _file_target = tgt
@@ -9659,6 +10695,24 @@ class CompressorGUI:
                     _file_target = int(_wtb)
             except Exception:
                 _file_target = tgt
+
+            if _dedup_canon_src and not _dedup_canonical_outputs.get(_dedup_canon_src) \
+                    and _dedup_canon_src not in _dedup_failed:
+                # Cross-worker dedup: submission order puts duplicates after
+                # their canonical, but under concurrent dispatch that doesn't
+                # guarantee COMPLETION order - the canonical may simply still
+                # be encoding. Poll briefly instead of immediately falling
+                # back to a full independent encode; bounded so a canonical
+                # that fails/hangs can't stall this file forever. Every
+                # _run_one() exit records into _dedup_canonical_outputs (on
+                # success) or _dedup_failed (on failure/cancel) below, so this
+                # loop always has a way to end short of the safety-net timeout.
+                _wait_deadline = time.time() + _DEDUP_WAIT_MAX_S
+                while (not _dedup_canonical_outputs.get(_dedup_canon_src)
+                       and _dedup_canon_src not in _dedup_failed
+                       and not self.compression_cancelled
+                       and time.time() < _wait_deadline):
+                    time.sleep(0.5)
 
             if _dedup_canon_src:
                 _canon = _dedup_canonical_outputs.get(_dedup_canon_src)
@@ -9679,6 +10733,8 @@ class CompressorGUI:
                             self._ui(self._job_update, path, status="done", progress=100, eta="", size=out_b)
                             self.update_status(f"[Dedup] Reused canonical output for "
                                               f"{os.path.basename(path)}", level="INFO")
+                            _update_batch_eta(force=True)
+                            self._track_recent_output(_dup_out)
                             return {"path": path, "ok": True, "in_bytes": in_b, "out_bytes": out_b,
                                    "vmaf": None, "encoder": None, "secs": 0.0, "error": None,
                                    "output_path": _dup_out, "reused_duplicate_of": _dedup_canon_src}
@@ -9717,11 +10773,20 @@ class CompressorGUI:
                     spec = {"input": path, "out_dir": out_dir,
                             "target_bytes": int(_file_target),
                             "webhook": webhook, "adv": spec_adv}
-                    w = run_worker_subprocess(
-                        spec, script_path=os.path.abspath(__file__),
-                        real_settings_dir=USER_SETTINGS_DIR,
-                        thread_budget=thread_budget, stats_lock=_STATS_LOCK,
-                        cancel_event=self.cancel_event)
+                    try:
+                        w = run_worker_subprocess(
+                            spec, script_path=os.path.abspath(__file__),
+                            real_settings_dir=USER_SETTINGS_DIR,
+                            thread_budget=thread_budget, stats_lock=_STATS_LOCK,
+                            cancel_event=self.cancel_event,
+                            progress_cb=_progress_event, job_id=path,
+                            on_proc_start=lambda p: self._job_procs.__setitem__(path, p))
+                    finally:
+                        # MUST be a finally: if the call raises, the dead Popen
+                        # stays keyed here and a later cancel_single_file()
+                        # tree-kills its PID - which Windows recycles fast
+                        # enough to hit an unrelated process.
+                        self._job_procs.pop(path, None)
                     ok = bool(w.get("ok"))
                     res = {"path": path, "ok": ok,
                            "in_bytes": int(w.get("in_bytes") or 0),
@@ -9735,9 +10800,13 @@ class CompressorGUI:
                         _dedup_canonical_outputs[path] = {"output_path": _out_path, "target": _file_target,
                                                           "adv": {k: adv.get(k) for k in _DEDUP_SETTINGS_KEYS}}
                 else:
-                    stats = self.compress_file_task(
-                        filepath=path, output_folder=out_dir,
-                        target_size=_file_target, webhook=webhook, adv_options=adv) or {}
+                    self._current_sequential_path = path
+                    try:
+                        stats = self.compress_file_task(
+                            filepath=path, output_folder=out_dir,
+                            target_size=_file_target, webhook=webhook, adv_options=adv) or {}
+                    finally:
+                        self._current_sequential_path = None
                     ok = bool(stats.get("compressed_size"))
                     res = {"path": path, "ok": ok,
                            "in_bytes": int(stats.get("original_size") or 0),
@@ -9794,22 +10863,41 @@ class CompressorGUI:
                          vmaf=(res["vmaf"] if isinstance(res["vmaf"], (int, float)) else None),
                          orig_size=(res["in_bytes"] or None))
                 self._ui(self._record_job_state, path, "done", res.get("output_path"))
+                if not res.get("reused_duplicate_of") and res.get("secs"):
+                    _completed_secs.append(float(res["secs"]))
+                self._track_recent_output(res.get("output_path"))
             else:
-                _st = "cancelled" if self.compression_cancelled else "failed"
+                _single = path in getattr(self, "_single_cancelled", ())
+                _st = "cancelled" if (self.compression_cancelled or _single) else "failed"
+                if _single:
+                    self._single_cancelled.discard(path)
+                    res["error"] = "cancelled"
                 self._ui(self._job_update, path, status=_st, eta="")
                 self._ui(self._record_job_state, path, _st)
+                _dedup_failed.add(path)
+            _update_batch_eta(force=True)
             return res
 
         results = []
         if workers <= 1:
             for idx, path in enumerate(files, start=1):
                 if self.compression_cancelled:
-                    # Leave the untouched remainder as pending (resumable);
-                    # only files that actually started get a cancelled badge.
-                    self.update_status(
-                        f"[Cancel] Stopped after {len(results)} of {total} file(s).",
-                        level="INFO")
-                    break
+                    if getattr(self, "_single_file_cancel_only", False):
+                        # cancel_single_file used the real cancel_event to
+                        # cleanly abort the file that was mid-encode (the
+                        # only way to interrupt its in-process orchestration
+                        # partway through a retry/probe/pass) - clear it here
+                        # so the rest of the batch isn't affected, matching
+                        # "cancel this file" rather than "stop everything".
+                        self._single_file_cancel_only = False
+                        self.cancel_event.clear()
+                    else:
+                        # Leave the untouched remainder as pending (resumable);
+                        # only files that actually started get a cancelled badge.
+                        self.update_status(
+                            f"[Cancel] Stopped after {len(results)} of {total} file(s).",
+                            level="INFO")
+                        break
                 results.append(_run_one(idx, path))
                 self._ui(self._bump_progress, len(results))
         else:
@@ -9837,9 +10925,17 @@ class CompressorGUI:
         dt = time.time() - t_start
 
         def _finish():
+            # Green only if every file landed; red if any errored.
+            self._set_progress_state("risk" if errors else ("ok" if processed else "normal"))
             try:
                 self.progress.stop()
                 self.progress["mode"] = "indeterminate"
+            except Exception:
+                pass
+            self._set_batch_eta_text("")
+            try:
+                from support.taskbar_progress import clear as _tb_clear
+                _tb_clear(self.root.winfo_id())
             except Exception:
                 pass
             if processed > 0:
@@ -9903,12 +10999,51 @@ class CompressorGUI:
         except Exception:
             self.progress = None
 
+    # Progress-bar state -> (ttk style, taskbar_progress.STATE_* name).
+    _PROGRESS_STYLES = {
+        "normal": ("Accent.Horizontal.TProgressbar", "STATE_NORMAL"),
+        "ok":     ("Ok.Horizontal.TProgressbar", "STATE_NORMAL"),
+        "warn":   ("Warn.Horizontal.TProgressbar", "STATE_PAUSED"),
+        "risk":   ("Risk.Horizontal.TProgressbar", "STATE_ERROR"),
+    }
+
+    def _set_progress_state(self, state):
+        """Recolour the batch progress bar. Cheap no-op when already in it."""
+        if getattr(self, "_progress_state", None) == state:
+            return
+        style, tb = self._PROGRESS_STYLES.get(state) or self._PROGRESS_STYLES["normal"]
+        self._progress_state = state
+        try:
+            self.ensure_progress_bars()
+            if getattr(self, "progress", None) is not None:
+                self.progress.configure(style=style)
+        except Exception:
+            pass
+        try:
+            from support import taskbar_progress as _tb
+            _tb.set_state(self.root.winfo_id(), getattr(_tb, tb))
+        except Exception:
+            pass
+
     def _bump_progress(self, v):
         try:
 
             self.ensure_progress_bars()
             if hasattr(self, "progress") and self.progress:
                 self.progress.configure(value=v)
+                try:
+                    from support.taskbar_progress import set_progress as _tb_set
+                    _tb_set(self.root.winfo_id(), int(v), int(self.progress["maximum"] or 1))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _set_batch_eta_text(self, text):
+        try:
+            lbl = getattr(self, "_batch_eta_label", None)
+            if lbl is not None and lbl.winfo_exists():
+                lbl.config(text=text)
         except Exception:
             pass
 
@@ -10142,6 +11277,8 @@ def _build_adv_from_args(args) -> dict:
         adv["output_prefix"] = args.prefix
     if args.suffix is not None:
         adv["output_suffix"] = args.suffix
+    if getattr(args, "name_template", None) is not None:
+        adv["output_template"] = args.name_template
 
     # New pipeline options.
     adv["quality_mode"] = getattr(args, "quality", "max")
@@ -10341,8 +11478,17 @@ def build_arg_parser():
     # nargs="?"/const="" so a bare `--suffix` means "no suffix" — PowerShell
     # silently drops empty-string args (`--suffix ""`), which would otherwise
     # error as "expected one argument".
-    p.add_argument("--prefix", nargs="?", const="", default="", help="Output filename prefix")
-    p.add_argument("--suffix", nargs="?", const="", default="_discord_ready", help="Output filename suffix (bare flag = none)")
+    # default=None so "flag absent" stays distinguishable from "given empty" -
+    # _build_adv_from_args tests for None and would otherwise always overwrite.
+    p.add_argument("--prefix", nargs="?", const="", default=None,
+                   help="Output filename prefix (default: none)")
+    p.add_argument("--suffix", nargs="?", const="", default=None,
+                   help="Output filename suffix, bare flag = none (default: _discord_ready)")
+    p.add_argument("--name-template", default=None,
+                   help="Filename template, overrides --prefix/--suffix. Tokens: "
+                        "{name} {ext} {codec} {size} {bytes} {vmaf} {target} "
+                        "{width} {height} {res} {fps} {date} {time}. "
+                        'Example: "{name}_{codec}_{size}"')
     p.add_argument("--webhook", help="Webhook URL to POST results")
     p.add_argument("--discord-compat", action="store_true",
                    help="Force H.264 + AAC (MP4) for guaranteed inline Discord playback (size cost)")
@@ -10362,6 +11508,9 @@ def build_arg_parser():
     p.add_argument("-j", "--jobs", type=int, default=1,
                    help="Encode this many files at once (parallel)")
     p.add_argument("-q", "--quiet", action="store_true", help="Less verbose CLI logging")
+    p.add_argument("--json", action="store_true",
+                   help="Machine-readable output: suppress human status/progress text, "
+                        "print one JSON array of per-file results to stdout at the end")
     p.add_argument("--version", action="store_true", help="Print version info and exit")
     return p
 
@@ -10392,6 +11541,26 @@ def _run_bc_worker(spec_path: str, result_path: str) -> int:
 
     def _status(msg, level="INFO"):
         print(f"[{level}] {msg}", flush=True)
+
+    # Live progress for the parent's per-file row: this process can't call
+    # back into the parent's progress_cb closure directly, so it writes each
+    # event to progress_path (atomic temp+replace) instead; the parent's
+    # run_worker_subprocess poll loop picks it up (see support/concurrent_pool.py).
+    _progress_path = spec.get("progress_path")
+    if _progress_path:
+        def _write_progress(_job_id, ev):
+            try:
+                tmp = _progress_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    _json.dump(ev, f)
+                os.replace(tmp, _progress_path)
+            except Exception:
+                pass
+        adv["progress_cb"] = _write_progress
+
+    # The also-targets run in this process, so build the shared rate memory
+    # here, after the spec crossed the boundary.
+    _attach_job_rate_memory(adv, adv.get("also_targets"))
 
     t0 = time.time()
     try:
@@ -10448,6 +11617,12 @@ def _run_bc_worker(spec_path: str, result_path: str) -> int:
 
 
 def cli_main():
+    # Declared up here rather than at the tool-install block further down: a
+    # `global` statement must precede every use of those names in the same
+    # function, and --version (below) reads FFMPEG/FFPROBE to report which
+    # binaries this run resolved.
+    global HANDBRAKE_CLI, FFPROBE, FFMPEG
+
     # Hidden internal mode for the concurrency engine's worker subprocesses -
     # checked before argparse so it never interacts with the documented flag
     # surface (build_arg_parser/CLI_COMMANDS.md are untouched).
@@ -10458,7 +11633,14 @@ def cli_main():
     args = parser.parse_args()
 
     if args.version:
-        print("BitCrusher CLI - powered by HandBrakeCLI/ffmpeg")
+        print(f"BitCrusher {APP_VERSION} - powered by HandBrakeCLI/ffmpeg")
+        print(f"Python  {platform.python_version()} on {platform.system()} {platform.release()}")
+        try:
+            print(f"ffmpeg  {ffmpeg_build_version()}")
+        except Exception:
+            print("ffmpeg  (not found)")
+        print(f"ffmpeg  path: {FFMPEG}")
+        print(f"ffprobe path: {FFPROBE}")
         return 0
 
     _cli_install_sigint_handler()
@@ -10549,7 +11731,6 @@ def cli_main():
         print("No matching files found.")
         return 1
 
-    global HANDBRAKE_CLI, FFPROBE, FFMPEG
     # ffmpeg/ffprobe required; HandBrakeCLI is a fallback -- install best-effort,
     # never block (no static build off Windows).
     _required_missing = [name for name, exe in (("ffmpeg", FFMPEG), ("ffprobe", FFPROBE))
@@ -10604,7 +11785,8 @@ def cli_main():
     # Prediction-only mode: estimate size/VMAF/time from the ledger, no encode.
     if getattr(args, "estimate", False):
         from learning.outcome_ledger import estimate_encode as _ol_est
-        from learning.outcome_ledger import lookup_by_signature as _ol_sig_lookup
+        from learning.outcome_ledger import history_for_file as _ol_history
+        from learning.outcome_ledger import observed_outcomes as _ol_observed
         from learning.outcome_ledger import nearest_neighbors as _ol_neighbors
         from encode.ml_heuristics import _bc_file_sig as _ol_sig_fn
         _model = resolve_vmaf_model() or "version=vmaf_v0.6.1"
@@ -10626,14 +11808,21 @@ def cli_main():
             v_bps = max(24_000, int((_tgt_bytes * 8.0 / max(1.0, dur) - _aud) * 0.94))
             print(f"{os.path.basename(src)}  ({w}x{h} {fps:.3g}fps {dur:.0f}s)"
                   f"  ->  target {args.target_size:g} MB")
+            # Recall beats prediction here: for a file the ledger has already
+            # seen, these are measured outcomes, not an estimate.
             try:
-                _sig = _ol_sig_fn(src)
-                _known = _ol_sig_lookup(_stats_dir, _sig, _tgt_bytes,
-                                        encoder=(args.encoder if getattr(args, "encoder", None) else None))
-                if _known:
-                    print(f"   [known-good] this exact file was already encoded near this target: "
-                          f"{_known['encoder']} @ {_known['v_bps']} bps -> {_known['size']} bytes "
-                          f"({_known['ts']})")
+                _hist = _ol_history(_stats_dir, _ol_sig_fn(src), limit=5)
+                if _hist:
+                    _any = True
+                    print(f"   [seen before] {len(_hist)} past encode(s) of this exact file:")
+                    for _h in _hist:
+                        _t = (f"{_h['target_bytes']/1048576:.0f}MB" if _h.get("target_bytes") else "?")
+                        _sz = (f"{_h['size']/1048576:.2f}MB" if _h.get("size") else "?")
+                        _vm = (f"VMAF {_h['vmaf']:.1f}" if isinstance(_h.get("vmaf"), (int, float))
+                               else "no VMAF")
+                        _sc = (f"{_h['seconds']:.0f}s" if _h.get("seconds") else "?")
+                        print(f"        {_t:>6} -> {_sz:>8}  {_vm:<11} "
+                              f"{str(_h.get('encoder') or '?'):<6} {_sc:>5}  {_h['ts'][:16]}")
             except Exception:
                 pass
             for enc in _encs:
@@ -10645,10 +11834,22 @@ def cli_main():
                     continue
                 _any = True
                 sz = est["size_bytes"] / 1048576.0
-                vm = f"VMAF ~{est['mean']:.1f}" if est["mean"] is not None else "VMAF n/a"
-                wo = f"worst ~{est['worst']:.0f}" if est["worst"] is not None else "worst n/a"
                 tm = f"~{est['seconds']:.0f}s" if est["seconds"] is not None else "time n/a"
-                print(f"   {fam:5}  ~{sz:5.2f} MB  {vm:11}  {wo:10}  enc {tm:8}  (n={est['n']})")
+                print(f"   {fam:5}  ~{sz:5.2f} MB   enc {tm:8}  (from {est['n']} comparable encode(s))")
+                # Observed range, not a point estimate: measured leave-one-
+                # SOURCE-out error for a VMAF prediction is no better than
+                # guessing the mean, so report what the ledger actually saw.
+                try:
+                    _obs = _ol_observed(_stats_dir, feats, enc, w, h, fps, v_bps,
+                                        k=8, vmaf_model=_model)
+                    _ov = _obs.get("vmaf")
+                    if _ov:
+                        print(f"          VMAF observed on {_ov['n']} comparable encode(s): "
+                              f"{_ov['min']:.1f} - {_ov['max']:.1f} (median {_ov['med']:.1f})")
+                    else:
+                        print("          no comparable VMAF on this model scale yet")
+                except Exception:
+                    pass
                 try:
                     _nn = _ol_neighbors(_stats_dir, feats, enc, w, h, fps, v_bps, k=3)
                     for _nb in _nn:
@@ -10664,6 +11865,8 @@ def cli_main():
     # when the flag is off, so _one()'s lookups below are always safe no-ops.
     _confirmed_reuse: dict = {}
     _dedup_canonical_outputs: dict = {}
+    _dedup_failed: set = set()
+    _DEDUP_WAIT_MAX_S = 1800.0  # safety net only; see _one()'s wait loop below
     if getattr(args, "dedup_scan", False):
         from encode.ml_heuristics import build_batch_dedup_index as _ol_dedup_index
         groups = _ol_dedup_index(files)
@@ -10703,15 +11906,15 @@ def cli_main():
     target_mb = max(1, int(round(args.target_size)))
     stats_all = []
 
-    if args.quiet:
+    if args.quiet or args.json:
         def status_cb(msg, level="INFO"):
-            if level in ("ERROR", "CRITICAL", "WARNING"):
+            if level in ("ERROR", "CRITICAL", "WARNING") and not args.json:
                 _cli_status(msg, level)
     else:
         status_cb = _cli_status
 
-    # Live one-line progress (only when not quiet and stdout is a terminal).
-    _show_progress = (not args.quiet) and sys.stdout.isatty()
+    # Live one-line progress (only when not quiet/json and stdout is a terminal).
+    _show_progress = (not args.quiet) and (not args.json) and sys.stdout.isatty()
 
     def _make_progress_cb(label):
         state = {"last": -1}
@@ -10726,15 +11929,44 @@ def cli_main():
                 state["last"] = pct
                 eta = ev.get("eta_s")
                 eta_s = f" ETA ~{int(eta)}s" if eta else ""
-                sys.stdout.write(f"\r  {label}: {stage} {pct:3d}%{eta_s}      ")
+                bar_w = 24
+                filled = max(0, min(bar_w, int(round(bar_w * pct / 100.0))))
+                bar = "#" * filled + "-" * (bar_w - filled)
+                sys.stdout.write(f"\r  {label}: {stage} [{bar}] {pct:3d}%{eta_s}      ")
                 sys.stdout.flush()
             except Exception:
                 pass
         return _cb
 
     def _one(src):
+        """Dedup-safe wrapper around _one_inner - see compress_all's _run_one
+        for the same guard and the same reason: an exception escaping the
+        per-file work leaves the path in neither _dedup_canonical_outputs nor
+        _dedup_failed, so its duplicates park in the wait loop below for the
+        full _DEDUP_WAIT_MAX_S safety net instead of falling through to their
+        own encode immediately."""
+        try:
+            return _one_inner(src)
+        finally:
+            if src not in _dedup_canonical_outputs:
+                _dedup_failed.add(src)
+
+    def _one_inner(src):
         name = os.path.basename(src)
         _canon_src = _confirmed_reuse.get(src)
+        if _canon_src and not _dedup_canonical_outputs.get(_canon_src) \
+                and _canon_src not in _dedup_failed:
+            # Cross-worker dedup: -j>1 submission order puts duplicates after
+            # their canonical, but concurrent dispatch doesn't guarantee
+            # completion order - poll briefly instead of immediately falling
+            # back to a full independent encode (bounded so a canonical that
+            # fails/hangs can't stall this file forever).
+            _wait_deadline = time.time() + _DEDUP_WAIT_MAX_S
+            while (not _dedup_canonical_outputs.get(_canon_src)
+                   and _canon_src not in _dedup_failed
+                   and not _cli_cancel()
+                   and time.time() < _wait_deadline):
+                time.sleep(0.5)
         if _canon_src:
             _canon = _dedup_canonical_outputs.get(_canon_src)
             # No per-file settings variation exists in CLI mode (adv/target_mb
@@ -10765,6 +11997,7 @@ def cli_main():
         job_adv = dict(adv)
         job_adv["job_id"] = src
         job_adv["progress_cb"] = _make_progress_cb(name)
+        _attach_job_rate_memory(job_adv, getattr(args, "also_target", None))
         _cli_jobs = max(1, int(getattr(args, "jobs", 1) or 1))
         if _cli_jobs > 1:
             # Process-isolated (see docs/CONCURRENCY_REWORK.md): -j>1 used to run
@@ -10781,7 +12014,8 @@ def cli_main():
                 spec, script_path=os.path.abspath(__file__),
                 real_settings_dir=USER_SETTINGS_DIR,
                 thread_budget=max(1, (os.cpu_count() or 4) // _cli_jobs),
-                stats_lock=_STATS_LOCK, cancel_event=_CLI_CANCEL_EVENT)
+                stats_lock=_STATS_LOCK, cancel_event=_CLI_CANCEL_EVENT,
+                progress_cb=_make_progress_cb(name), job_id=src)
             s = {"compressed_size": w.get("out_bytes") if w.get("ok") else None,
                  "original_size": w.get("in_bytes"), "vmaf": w.get("vmaf"),
                  "encoder": w.get("encoder"), "output_path": w.get("output_path"),
@@ -10794,6 +12028,8 @@ def cli_main():
             outp = s.get("output_path")
             if outp:
                 _dedup_canonical_outputs[src] = outp
+            else:
+                _dedup_failed.add(src)
             try:
                 if bool(job_adv.get("copy_to_clipboard")) and outp and os.path.isfile(outp):
                     if set_clipboard_files([outp]):
@@ -10827,6 +12063,8 @@ def cli_main():
                 pass
         if outp:
             _dedup_canonical_outputs[src] = outp
+        else:
+            _dedup_failed.add(src)
         if s.get("ceiling_exceeded"):
             status_cb(f"[FAIL] {name} - CEILING EXCEEDED: {s.get('compressed_size')} bytes vs "
                       f"target {int(target_mb * 1024 * 1024)} bytes.", level="ERROR")
@@ -10884,11 +12122,14 @@ def cli_main():
             except Exception as e:
                 status_cb(f"[FAIL] {src} - {e}", level="ERROR")
 
-    _print_summary(stats_all)
     _n_ok = sum(1 for s in stats_all if s.get("compressed_size"))
     _n_over = sum(1 for s in stats_all if s.get("ceiling_exceeded"))
-    if _n_over:
-        _cli_status(f"{_n_over} of {len(stats_all)} file(s) exceeded the size ceiling.", "ERROR")
+    if args.json:
+        print(json.dumps(stats_all, default=str, indent=2))
+    else:
+        _print_summary(stats_all)
+        if _n_over:
+            _cli_status(f"{_n_over} of {len(stats_all)} file(s) exceeded the size ceiling.", "ERROR")
     return 0 if (_n_ok and not _n_over) else 1
 
 

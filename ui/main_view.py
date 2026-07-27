@@ -146,7 +146,7 @@ def build_main_view(gui):
         gui.adv_quality_mode = tk.StringVar(value="max")
     ttk.Button(header, text=gui._t("btn.user_guide", "User Guide"), style="Ghost.TButton",
                command=getattr(gui, "show_user_guide", lambda: None)).pack(side="right", padx=(8, 0))
-    ttk.Button(header, text=gui._t("btn.advanced", "Advanced…"), style="Ghost.TButton",
+    ttk.Button(header, text=gui._t("btn.advanced", "Settings…"), style="Ghost.TButton",
                command=getattr(gui, "open_advanced_options", lambda: None)).pack(side="right", padx=(8, 0))
     _qwrap = tk.Frame(header, bg=APP_BG)
     _qwrap.pack(side="right", padx=(0, 12))
@@ -180,7 +180,7 @@ def build_main_view(gui):
         ("Activity", gui._t("nav.activity", "Activity")),
         ("Stats",    gui._t("nav.stats",    "Stats")),
         ("Watcher",  gui._t("nav.watcher",  "Watcher")),
-        ("Settings", gui._t("nav.settings", "Settings")),
+        ("Settings", gui._t("nav.settings", "General")),
     ]
     gui._pages = {}
     gui._nav_buttons = {}
@@ -334,6 +334,7 @@ def build_main_view(gui):
     gui.drop_frame.pack(fill="both", expand=True, padx=12, pady=(8, 12))
 
     gui.queue_box = QueueTree(gui.drop_frame)
+    gui.queue_box.on_reorder = gui._on_queue_reorder
     gui._queue_scroll = ttk.Scrollbar(gui.drop_frame, orient="vertical",
                                        command=gui.queue_box.yview)
     gui.queue_box.configure(yscrollcommand=gui._queue_scroll.set)
@@ -352,6 +353,8 @@ def build_main_view(gui):
     gui.queue_menu.add_separator()
     gui.queue_menu.add_command(label=gui._t("qmenu.reset_overrides", "Reset per-file overrides"), command=lambda: gui._queue_reset_overrides())
     gui.queue_menu.add_command(label=gui._t("qmenu.reset_status", "Reset status (re-encode)"), command=lambda: gui._queue_reset_status())
+    gui.queue_menu.add_command(label=gui._t("qmenu.cancel_single", "Cancel this file"), command=lambda: gui._queue_cancel_single())
+    gui.queue_menu.add_command(label=gui._t("qmenu.view_details", "View Details (why this size)..."), command=lambda: gui._queue_view_details())
     gui.queue_menu.add_command(label=gui._t("qmenu.open_output", "Open Output Folder"), command=gui.open_save_folder)
     gui.queue_menu.add_command(label=gui._t("qmenu.remove", "Remove from Queue"),  command=gui.remove_selected)
     def _on_queue_context(event):
@@ -425,6 +428,25 @@ def build_main_view(gui):
                                  eta="", size=None, vmaf=None)
                 gui.update_status(f"Status reset (will re-encode): "
                                    f"{os.path.basename(path)}")
+            except Exception:
+                pass
+
+    def _queue_view_details():
+        sel = list(gui.queue_box.curselection())
+        if not sel:
+            return
+        try:
+            gui._show_result_dashboard(gui.file_list[sel[0]])
+        except Exception:
+            pass
+
+    def _queue_cancel_single():
+        sel = list(gui.queue_box.curselection())
+        if not sel:
+            return
+        for i in sel:
+            try:
+                gui.cancel_single_file(gui.file_list[i])
             except Exception:
                 pass
 
@@ -584,6 +606,8 @@ def build_main_view(gui):
     gui._queue_suggest_trim = _queue_suggest_trim
     gui._queue_reset_overrides = _queue_reset_overrides
     gui._queue_reset_status = _queue_reset_status
+    gui._queue_cancel_single = _queue_cancel_single
+    gui._queue_view_details = _queue_view_details
 
     gui.queue_box.bind("<Button-3>", gui._on_queue_context)
     gui.queue_box.pack(fill="both", expand=True, padx=6, pady=6)
@@ -608,7 +632,15 @@ def build_main_view(gui):
         text=gui._t("btn.stop", "Stop"),
         style="Ghost.TButton",
         command=getattr(gui, "stop_compression", lambda: None)
-    ).pack(side="left", padx=(0, 0), ipadx=10)
+    ).pack(side="left", padx=(0, 8), ipadx=10)
+
+    gui._pause_btn = ttk.Button(
+        start_row,
+        text=gui._t("btn.pause", "Pause"),
+        style="Ghost.TButton",
+        command=getattr(gui, "toggle_pause", lambda: None)
+    )
+    gui._pause_btn.pack(side="left", padx=(0, 0), ipadx=10)
 
     # Queue management toolbar (secondary/ghost buttons).
     qbtns = tk.Frame(left, bg=APP_BG)
@@ -644,10 +676,16 @@ def build_main_view(gui):
     gui._activity_label = tk.Label(mid, text=gui._t("lbl.activity", "Activity"), bg=APP_BG, fg=FG, anchor="w")
     gui._activity_label.pack(fill="x", padx=12, pady=(12, 0))
 
-    # Overall queue progress lives at the bottom of the middle pane.
+    # Overall queue progress lives at the bottom of the middle pane, with a
+    # one-line batch ETA (sum of per-file estimates, concurrency-adjusted)
+    # just above it - blank until the first file's timing gives it something
+    # to estimate from. Packed bottom-first so the progress bar stays the
+    # bottom-most widget and the ETA label sits directly above it.
     gui.progress = ttk.Progressbar(mid, style="Accent.Horizontal.TProgressbar",
                                     mode="determinate")
     gui.progress.pack(side="bottom", fill="x", padx=12, pady=(6, 12))
+    gui._batch_eta_label = tk.Label(mid, text="", bg=APP_BG, fg=FG_SUB, anchor="w")
+    gui._batch_eta_label.pack(side="bottom", fill="x", padx=12, pady=(0, 2))
 
     _mid_nb = ttk.Notebook(mid)
     _mid_nb.pack(fill="both", expand=True, padx=12, pady=(8, 0))
