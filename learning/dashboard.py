@@ -9,6 +9,11 @@ is unit-testable and can drive any renderer (the GUI canvas, an SVG, a CLI bar).
 """
 from __future__ import annotations
 
+try:
+    from encode.media_math import human_bytes
+except Exception:
+    from media_math import human_bytes
+
 
 def _f(x):
     try:
@@ -150,6 +155,47 @@ def quality_band(worst) -> str:
     return "excellent"
 
 
+def why_this_size_text(record: dict) -> str | None:
+    """One-line "why this size" explanation for the result dashboard: the
+    bitrate/resolution/encoder actually used and how the final size compares
+    to the target budget. None when there isn't enough data (no op/outcome
+    block, e.g. an old pre-schema ledger record)."""
+    rec = record or {}
+    outc = rec.get("outcome") or rec
+    op = rec.get("op") or {}
+    size = outc.get("size")
+    target = op.get("target_bytes")
+    if not size or not target:
+        return None
+    try:
+        pct = float(size) * 100.0 / float(target)
+    except Exception:
+        return None
+    v_bps = op.get("v_bps")
+    w, h = op.get("width"), op.get("height")
+    res = f"{int(w)}x{int(h)}" if (w and h) else None
+    bits = f"{float(v_bps) / 1000:.0f} kbps" if v_bps else None
+    encoder = op.get("encoder_eff") or outc.get("encoder")
+    lead = " @ ".join(x for x in (bits, res) if x)
+    prefix = " ".join(x for x in (encoder, lead) if x).strip()
+    attempts = rec.get("attempts") or []
+    n_attempts = len(attempts) if isinstance(attempts, list) else 0
+    retry_note = f", {n_attempts} attempts" if n_attempts > 1 else ""
+    if pct <= 100.0:
+        tail = f"{human_bytes(size)} - {pct:.0f}% of the {human_bytes(target)} budget"
+    else:
+        # Deliberately vague about the cause: overshoot can come from the
+        # quality floor holding the line, but also from a mux-overhead
+        # misestimate or a source the size controller ran out of retries on.
+        # Naming one of them as fact would be wrong most of the time.
+        tail = (f"{human_bytes(size)} - {pct:.0f}% of the {human_bytes(target)} "
+                f"budget (OVER the cap)")
+    # ASCII "->" on purpose: this string reaches the log/status surfaces, and
+    # the project keeps those plain-ASCII after a history of mojibake damage.
+    return (f"{prefix} -> {tail}{retry_note}." if prefix
+            else f"{tail}{retry_note}.")
+
+
 def build_dashboard_model(record: dict) -> dict:
     """
     Assemble the full view-model from a ledger record (or a live stats dict with
@@ -187,6 +233,8 @@ def build_dashboard_model(record: dict) -> dict:
         "size_ratio": size_ratio,
         "under_target": (size_ratio is not None and size_ratio <= 1.0),
         "encode_seconds": outc.get("encode_seconds"),
+        "why_text": why_this_size_text(rec),
+        "vmaf_unreliable_reason": outc.get("vmaf_unreliable_reason"),
     }
 
 

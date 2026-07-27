@@ -284,7 +284,9 @@ def _pbae_export_zones(
 
     # If too many zones, merge adjacent smallest deltas (log-space) deterministically.
     def _merge_pair(idx: int) -> None:
-        nonlocal merge_applied, filtered
+        # `filtered` is only ever mutated in place here, never rebound, so it
+        # needs no nonlocal (it was declared and flagged as unused).
+        nonlocal merge_applied
         a = filtered[idx]
         b = filtered[idx + 1]
         dur_a = float(max(0.0, a["dur_s"]))

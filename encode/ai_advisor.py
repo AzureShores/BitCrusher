@@ -3,7 +3,7 @@
 from __future__ import annotations
 import os, json, time, math, threading, logging
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional
 
 import numpy as np
 

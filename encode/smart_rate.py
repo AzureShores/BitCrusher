@@ -321,6 +321,30 @@ def _extract_probe_segments(src: str, out_dir: str, seconds: int = 5) -> list[st
     return outs
 
 
+def _ffmpeg_vcodec_for_encoder(encoder: str) -> str:
+    """Map a requested encoder name (canonical tag, ffmpeg name, or a loose
+    user string) to the ffmpeg -c:v the probe would actually use.
+
+    Substring matching, not a lookup table, on purpose: callers pass anything
+    from "x265" to "libsvtav1" to "hevc_nvenc", and the probe path only cares
+    which software family it lands in. Kept deliberately identical to the
+    branch _probe_encode_ssim runs below - both must agree or the CRF grid
+    would be tuned for a different codec than the one actually probed.
+    """
+    enc = (encoder or "").lower()
+    if "vvenc" in enc or "vvc" in enc or "266" in enc:
+        return "libvvenc"
+    if "svt" in enc and "av1" in enc:
+        return "libsvtav1"
+    if "av1" in enc:
+        return "libaom-av1"
+    if "vp9" in enc:
+        return "libvpx-vp9"
+    if "265" in enc or "x265" in enc or "hevc" in enc:
+        return "libx265"
+    return "libx264"
+
+
 def _probe_encode_ssim(clips: list[str], encoder: str, crf: int, tmpdir: str | None = None) -> tuple[float, float]:
     ffmpeg = FFMPEG
     ffprobe = FFPROBE
@@ -343,20 +367,8 @@ def _probe_encode_ssim(clips: list[str], encoder: str, crf: int, tmpdir: str | N
             subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", mosaic],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        enc = (encoder or "").lower()
-        if "vvenc" in enc or "vvc" in enc or "266" in enc:
-            vcodec = "libvvenc"
-        elif "svt" in enc and "av1" in enc:
-            vcodec = "libsvtav1"
-        elif "av1" in enc:
-            vcodec = "libaom-av1"
-        elif "vp9" in enc:
-            vcodec = "libvpx-vp9"
-        elif "265" in enc or "x265" in enc or "hevc" in enc:
-            vcodec = "libx265"
-            out = os.path.join(tmp, "enc.mp4")
-        else:
-            vcodec = "libx264"
+        vcodec = _ffmpeg_vcodec_for_encoder(encoder)
+        if vcodec in ("libx264", "libx265"):
             out = os.path.join(tmp, "enc.mp4")
 
         # very-fast probe settings (probe must be stable, not perfect)

@@ -389,8 +389,48 @@ def _scene_core(path: str, fps_hint: float | None = None) -> dict:
     return core
 
 
+def _estimate_difficulty(scenes: list) -> float:
+    """Whole-clip difficulty in 0..1, from the per-scene scores _scene_core
+    already measured: a duration-weighted mean, so one hard 30s stretch counts
+    for more than one hard 2s cut.
+
+    This was referenced by analyze_scenes but never defined, and the call sits
+    inside a `try/except: d0 = 0.5`. So whenever the caller passed no explicit
+    difficulty, the NameError was swallowed and the planner silently received a
+    hardcoded 0.5 for every file -- easy content and hard content alike.
+
+    Returns 0.5 (the same neutral midpoint) only when there is genuinely
+    nothing to average, which keeps the degenerate case unchanged.
+    """
+    tot_w = 0.0
+    acc = 0.0
+    for s in (scenes or []):
+        try:
+            d = float(s.get("difficulty"))
+        except (TypeError, ValueError):
+            continue
+        # Weight by scene length; fall back to an equal vote when a scene has
+        # no usable span (never let a bad start/end silently drop the scene).
+        try:
+            w = max(0.0, float(s.get("end", 0.0)) - float(s.get("start", 0.0)))
+        except (TypeError, ValueError):
+            w = 0.0
+        if w <= 0.0:
+            w = 1.0
+        acc += max(0.0, min(1.0, d)) * w
+        tot_w += w
+    if tot_w <= 0.0:
+        return 0.5
+    return max(0.0, min(1.0, acc / tot_w))
+
+
 def analyze_scenes(path: str, encoder: str = "x264", fps_hint: float | None = None,
                    difficulty: float | None = None) -> dict:
+    """
+    Returns {"zones_str":..., "gop":..., "aq_strength":..., "scenes":[...]}
+    """
+    # (This docstring used to sit BELOW the cache-hit block, i.e. as a dead
+    # mid-body string expression, leaving the function with no __doc__ at all.)
     if not _bc_cache_disabled():
         sig = _bc_file_sig(path)
         cp = _bc_cache_path('scenes', f"{encoder}_{sig}")
@@ -405,9 +445,6 @@ def analyze_scenes(path: str, encoder: str = "x264", fps_hint: float | None = No
             except Exception:
                 pass
             return cached
-    """
-    Returns {"zones_str":..., "gop":..., "aq_strength":..., "scenes":[...]}
-    """
     # Heavy, codec-independent scene analysis (scene-cut pass + per-scene frame
     # sampling) is computed once per file and shared across encoders; only the
     # cheap per-codec fields below (zones/gop/aq) are re-derived here.
