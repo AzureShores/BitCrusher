@@ -11,6 +11,7 @@ from PIL import Image
 
 from encode.ffmpeg_exec import si, NO_WIN, _sp_run
 from encode.media_math import apply_target_size_margin
+from encode.output_paths import _bc_build_output_path
 from support.text_utils import format_bytes
 from support.webhook import _post_webhook_hardened
 
@@ -62,10 +63,8 @@ def compress_pdf(input_path: str, save_path: str, status_callback,
     linearize_if_close = bool(adv.get("pdf_linearize_if_close", True))
 
     filename = os.path.basename(input_path)
-    name, _ = os.path.splitext(filename)
-    out_prefix = adv.get("output_prefix", "")
-    out_suffix = adv.get("output_suffix", "")
-    output_file = os.path.join(save_path, f"{out_prefix}{name}{out_suffix}.pdf")
+    # Shared builder: sanitizes prefix/suffix and refuses to target the source.
+    output_file = _bc_build_output_path(input_path, save_path, adv, default_ext="pdf")
 
     if src_size <= int(target_bytes * (1.0 + tol)) and linearize_if_close:
         try:
