@@ -188,6 +188,100 @@ def lookup_by_signature(stats_dir: str, sig: str, target_bytes: int,
     return best
 
 
+def history_for_file(stats_dir: str, sig: str, *, limit: int = 6) -> list[dict]:
+    """Every past encode of this exact source, newest first.
+
+    Recall of measured facts, not a prediction: leave-one-record-out error for
+    the same file is ~1.9 VMAF (median 0.2), against ~4.7 for an unseen source
+    where the mean baseline is 4.8. So this is worth showing and a point
+    prediction for new content is not.
+    """
+    if not sig:
+        return []
+    out = []
+    for r in _load_all_records(ledger_path(stats_dir)):
+        if (r.get("src") or {}).get("input_sig") != sig:
+            continue
+        o = r.get("outcome") or {}
+        if not o.get("success", True):
+            continue
+        op = r.get("op") or {}
+        out.append({
+            "ts": r.get("ts") or "",
+            "target_bytes": op.get("target_bytes"),
+            "encoder": op.get("encoder_eff"),
+            "v_bps": op.get("v_bps"),
+            "width": op.get("width"), "height": op.get("height"),
+            "size": o.get("size"),
+            "vmaf": o.get("vmaf"),
+            "vmaf_model": r.get("vmaf_model"),
+            "worst": o.get("min_window"),
+            "seconds": o.get("encode_seconds"),
+        })
+    out.sort(key=lambda d: d["ts"], reverse=True)
+    return out[:max(1, int(limit))]
+
+
+def observed_outcomes(stats_dir: str, features: dict, encoder: str,
+                      width: int, height: int, fps: float, v_bps: float,
+                      *, k: int = 8, vmaf_model: str | None = None,
+                      op_flags: dict | None = None) -> dict:
+    """What the ledger has actually SEEN for comparable content.
+
+    Deliberately not a prediction. Measured leave-one-source-out error for a
+    VMAF point estimate is 4.67 against a 4.76 mean-only baseline, i.e. no
+    better than printing "about 93", so callers report the observed spread and
+    the record count instead of a confident-looking number.
+
+    Returns {"n", "vmaf": {min,med,max}|None, "size_ratio": {...}|None,
+             "encoders": {family: count}}. VMAF is filtered to one model scale;
+    v0.6.1 and v1 numbers must never be pooled.
+    """
+    fam = encoder_family(encoder)
+    want_scale = _scale_key(vmaf_model) if vmaf_model else None
+    recs = ledger_load(stats_dir, encoder_fam=fam)
+    try:
+        bpp = float(v_bps) / max(1.0, float(width) * float(height) * max(1.0, float(fps)))
+    except Exception:
+        bpp = 0.05
+    q = feature_vector(features, width, height, fps, bpp, op_flags=op_flags)
+
+    scored = []
+    for r in recs:
+        op = r.get("op") or {}
+        try:
+            r_bpp = float(op.get("v_bps") or 0.0) / max(
+                1.0, float(op.get("width") or 1) * float(op.get("height") or 1)
+                * max(1.0, float(op.get("fps") or 30.0)))
+        except Exception:
+            r_bpp = 0.05
+        rv = feature_vector(r.get("features") or {}, op.get("width") or 0,
+                            op.get("height") or 0, op.get("fps") or 30.0, r_bpp,
+                            op_flags=(_op_flags_from_record(r) if op_flags is not None else None))
+        scored.append((_dist(q, rv), r))
+    scored.sort(key=lambda t: t[0])
+    near = [r for _, r in scored[:max(1, int(k))]]
+
+    def spread(vals):
+        vals = sorted(v for v in vals if isinstance(v, (int, float)))
+        if not vals:
+            return None
+        n = len(vals)
+        med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+        return {"min": vals[0], "med": med, "max": vals[-1], "n": n}
+
+    vmafs = [(r.get("outcome") or {}).get("vmaf") for r in near
+             if not want_scale or _scale_key(r.get("vmaf_model")) == want_scale]
+    ratios = [record_deviation(r) for r in near]
+    encs = {}
+    for r in near:
+        f = encoder_family((r.get("op") or {}).get("encoder_eff"))
+        encs[f] = encs.get(f, 0) + 1
+    return {"n": len(near), "vmaf": spread(vmafs),
+            "size_ratio": spread([x for x in ratios if x is not None]),
+            "encoders": encs}
+
+
 def skip_race_candidates(stats_dir: str, klass: str | None, candidates: list[str],
                          min_races: int = 5) -> set[str]:
     """Codec-race time-saver: a family that has been raced at least
