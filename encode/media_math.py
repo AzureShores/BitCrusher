@@ -35,6 +35,44 @@ def bytes_from_value_unit(val, unit):
     return b
 
 
+_TARGET_MB_RE = re.compile(r"^\s*([0-9]*\.?[0-9]+)\s*(b|kb|k|mb|m|gb|g)?\s*$", re.I)
+_TARGET_MB_MUL = {"b": 1.0 / (1024 ** 2), "kb": 1.0 / 1024, "k": 1.0 / 1024,
+                  "mb": 1.0, "m": 1.0, "gb": 1024.0, "g": 1024.0}
+
+
+def parse_target_mb(text):
+    """
+    Free-typed per-file size target -> megabytes, or None for "no override".
+
+    A bare number means MB, which is what the queue column asks for; an
+    explicit unit is honoured so "700kb" does the obvious thing. Anything
+    unparseable or non-positive returns None rather than 0, so a typo falls
+    back to the batch target instead of silently becoming an impossible cap.
+    """
+    if text is None:
+        return None
+    if isinstance(text, (int, float)) and not isinstance(text, bool):
+        return float(text) if float(text) > 0 else None
+    m = _TARGET_MB_RE.match(str(text))
+    if not m:
+        return None
+    mb = float(m.group(1)) * _TARGET_MB_MUL.get((m.group(2) or "mb").lower(), 1.0)
+    return mb if mb > 0 else None
+
+
+def format_target_mb(mb) -> str:
+    """Compact cell text for a target: '10', '8.5', '' when unset."""
+    if mb is None:
+        return ""
+    try:
+        f = float(mb)
+    except (TypeError, ValueError):
+        return ""
+    if f <= 0:
+        return ""
+    return f"{f:.0f}" if abs(f - round(f)) < 0.05 else f"{f:.2f}".rstrip("0").rstrip(".")
+
+
 def apply_target_size_margin(target_bytes):
     """
     Keep outputs slightly below platform hard limits (e.g. 10 MB upload caps)

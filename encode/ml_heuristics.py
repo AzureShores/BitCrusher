@@ -88,6 +88,42 @@ def _bc_content_hash(path: str) -> str | None:
     except Exception:
         return None
 
+_CONTENT_SIG_CHUNK = 1024 * 1024
+
+
+def content_signature(path: str) -> str | None:
+    """Path- and mtime-independent content signature: exact byte size plus a
+    hash of the first, middle and last 1MB.
+
+    Unlike _bc_file_sig (path+mtime+head, so a copy elsewhere looks different)
+    this identifies the same bytes wherever they live, and unlike
+    _bc_content_hash it does not read the whole file - cheap enough to compute
+    on every encode so the ledger can answer "have I encoded this content
+    before?" across sessions.
+
+    It is a LOOKUP key, not a proof. Anything acting on a match still confirms
+    with the full hash (_bc_content_hash) before reusing an output.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    h = hashlib.sha1()
+    h.update(f"{size}|".encode("ascii"))
+    try:
+        with open(path, "rb") as f:
+            h.update(f.read(_CONTENT_SIG_CHUNK))
+            if size > 2 * _CONTENT_SIG_CHUNK:
+                f.seek(max(0, size // 2 - _CONTENT_SIG_CHUNK // 2))
+                h.update(f.read(_CONTENT_SIG_CHUNK))
+            if size > _CONTENT_SIG_CHUNK:
+                f.seek(max(0, size - _CONTENT_SIG_CHUNK))
+                h.update(f.read(_CONTENT_SIG_CHUNK))
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
 def build_batch_dedup_index(file_paths: list) -> list:
     # O(n) exact-match grouping by content hash -- no pairwise/frame comparison.
     # A path listed twice (file queued twice) is deduped first so it can't group

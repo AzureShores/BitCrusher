@@ -266,12 +266,88 @@ def _audio_energy_tracks(input_path: str, n_tracks: int, win_s: float = 0.5) -> 
     return [t for t in out if t] or []
 
 
-def suggest_trim_ranges(input_path: str, *, clip_seconds: float = 20.0,
-                        top_n: int = 3, status_cb=None) -> list[dict]:
+# Nominal width of the worst VMAF window (compute_vmaf rolls a ~2s mean).
+WORST_WINDOW_S = 2.0
+# Keep-ranges shorter than this are not worth suggesting.
+_MIN_KEEP_S = 3.0
+
+
+def worst_window_ranges(worst_rows, *, total_s: float, pad_s: float = 1.0,
+                        top_n: int = 2) -> list[dict]:
     """
-    Suggest up to top_n candidate trim ranges from audio energy. Adds a human
-    "why" to each. Returns [] when there is nothing meaningful to point at
-    (silent/uniform audio) — the caller should say so, never guess.
+    Turn measured worst-VMAF windows into keep-ranges that AVOID them.
+
+    Polarity matters: a trim range says what to keep, and the worst window is
+    what you want gone — so each candidate is the material on one side of the
+    2s that scored worst, not the 2s itself. Handing back the bad window as a
+    trim would deliver exactly the part that ruined the encode.
+
+    Pure: takes already-loaded rows (see outcome_ledger.worst_windows_for_file)
+    and returns the same shape as the audio-energy candidates.
+    """
+    try:
+        total = float(total_s or 0.0)
+    except (TypeError, ValueError):
+        total = 0.0
+    if total <= _MIN_KEEP_S:
+        return []
+    out: list[dict] = []
+    seen: set = set()
+    for row in (worst_rows or []):
+        try:
+            at = float(row.get("at_s"))
+            score = float(row.get("min_window"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if at < 0 or at >= total:
+            continue
+        # Coverage: on long sources VMAF only measures the opening stretch, so
+        # "the worst window" is only the worst of what was looked at.
+        try:
+            span = float(row.get("measured_span_s") or 0.0)
+        except (TypeError, ValueError):
+            span = 0.0
+        partial = bool(span and span < total * 0.98)
+        cut_a = max(0.0, at - pad_s)
+        cut_b = min(total, at + WORST_WINDOW_S + pad_s)
+        why_at = _fmt_ts(at)
+        note = f" of the first {span:.0f}s measured" if partial else ""
+        for start, end, side in ((0.0, cut_a, "before"), (cut_b, total, "after")):
+            if end - start < _MIN_KEEP_S:
+                continue
+            key = (round(start, 1), round(end, 1))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "start": round(start, 1), "end": round(end, 1),
+                "score": round(score, 2),
+                "track": None,
+                "source": "vmaf",
+                "why": (f"keeps everything {side} the worst 2s"
+                        f" (VMAF {score:.1f} at {why_at}{note})"),
+                "range": f"{_fmt_ts(start)}-{_fmt_ts(end)}",
+            })
+        if len(out) >= max(1, int(top_n)):
+            break
+    # Worst window first: the lower the score, the more there is to gain.
+    out.sort(key=lambda c: c["score"])
+    return out[:max(1, int(top_n))]
+
+
+def suggest_trim_ranges(input_path: str, *, clip_seconds: float = 20.0,
+                        top_n: int = 3, status_cb=None,
+                        worst_rows=None) -> list[dict]:
+    """
+    Suggest up to top_n candidate trim ranges. Adds a human "why" to each.
+    Returns [] when there is nothing meaningful to point at (silent/uniform
+    audio, no measured history) — the caller should say so, never guess.
+
+    Two sources, in this order:
+      * measured VMAF worst windows from past encodes of this exact file
+        (`worst_rows`), which say what to cut out rather than guessing at what
+        matters — offered first because they are measurements, not a proxy;
+      * audio energy peaks, the original heuristic.
     """
     try:
         mt = get_media_type(input_path)
@@ -285,23 +361,32 @@ def suggest_trim_ranges(input_path: str, *, clip_seconds: float = 20.0,
         dur = 0.0
     if dur <= clip_seconds * 1.2:
         return []       # nothing to cut away
+
+    quality = worst_window_ranges(worst_rows, total_s=dur, top_n=2)
+
+    cands = []
     n_a = _count_audio_streams(input_path)
     if n_a <= 0:
-        if callable(status_cb):
+        if callable(status_cb) and not quality:
             status_cb("[Suggest] No audio track to analyze - set the trim manually.", "INFO")
-        return []
-    win_s = 0.5
-    tracks = _audio_energy_tracks(input_path, min(n_a, 3), win_s=win_s)
-    cands = _rank_energy_windows(tracks, win_s, float(clip_seconds),
-                                 top_n=top_n, total_s=dur)
-    for c in cands:
-        c["why"] = ("mic/track-2 spike" if c.get("track", 0) >= 1 else "audio energy peak")
-        c["range"] = f"{_fmt_ts(c['start'])}-{_fmt_ts(c['end'])}"
+    else:
+        win_s = 0.5
+        tracks = _audio_energy_tracks(input_path, min(n_a, 3), win_s=win_s)
+        cands = _rank_energy_windows(tracks, win_s, float(clip_seconds),
+                                     top_n=top_n, total_s=dur)
+        for c in cands:
+            c["why"] = ("mic/track-2 spike" if c.get("track", 0) >= 1 else "audio energy peak")
+            c["range"] = f"{_fmt_ts(c['start'])}-{_fmt_ts(c['end'])}"
+            c["source"] = "audio"
+
+    # Measured first, guessed second.
+    cands = (quality + cands)[:max(1, int(top_n) + len(quality))]
     if callable(status_cb):
         if cands:
             status_cb("[Suggest] Candidate moments: "
                       + "; ".join(f"{c['range']} ({c['why']}, score {c['score']})"
                                   for c in cands), "INFO")
         else:
-            status_cb("[Suggest] No clear audio peaks found - set the trim manually.", "INFO")
+            status_cb("[Suggest] No clear audio peaks or measured worst window "
+                      "- set the trim manually.", "INFO")
     return cands
