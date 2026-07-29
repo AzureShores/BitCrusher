@@ -222,6 +222,126 @@ def history_for_file(stats_dir: str, sig: str, *, limit: int = 6) -> list[dict]:
     return out[:max(1, int(limit))]
 
 
+def prior_outputs_for_content(stats_dir: str, content_sig: str, *,
+                              limit: int = 8) -> list[dict]:
+    """Past successful encodes of this exact CONTENT, newest first.
+
+    Keyed on src.content_sig (path-independent), so a copy of a source under a
+    new name in a later session still matches - which is what the in-batch
+    dedup index cannot see. Records written before content_sig existed simply
+    do not match; there is no way to reconstruct it for them.
+    """
+    if not content_sig:
+        return []
+    out = []
+    for r in _load_all_records(ledger_path(stats_dir)):
+        src = r.get("src") or {}
+        if src.get("content_sig") != content_sig:
+            continue
+        o = r.get("outcome") or {}
+        if not o.get("success", True) or not o.get("output_path"):
+            continue
+        op = r.get("op") or {}
+        out.append({
+            "ts": r.get("ts") or "",
+            "input": r.get("input") or "",
+            "content_sig": content_sig,
+            "output_path": str(o.get("output_path")),
+            "size": o.get("size"),
+            "vmaf": o.get("vmaf"),
+            "target_bytes": op.get("target_bytes"),
+            "encoder": op.get("encoder_eff"),
+            "spotlight": op.get("spotlight"),
+            "preproc": op.get("preproc"),
+        })
+    out.sort(key=lambda d: d["ts"], reverse=True)
+    return out[:max(1, int(limit))]
+
+
+def reusable_prior_output(rows, *, target_bytes, encoder=None, pinned=False,
+                          trimmed=False, exists=None):
+    """The newest prior output that is safe to hand back instead of encoding.
+
+    Deliberately strict - being too strict costs a re-encode, being too loose
+    delivers the wrong file:
+
+      * the size ceiling must be identical (a 10MB output is not a 25MB one);
+      * a pinned encoder must be the encoder that actually produced it;
+      * a trimmed or spotlit job is different content, so never reused, and
+        neither is an output that was itself spotlit;
+      * the file has to still be on disk.
+
+    `exists` defaults to os.path.isfile and is injectable for tests.
+    """
+    if trimmed:
+        return None
+    try:
+        want = int(target_bytes)
+    except (TypeError, ValueError):
+        return None
+    check = exists if callable(exists) else os.path.isfile
+    want_enc = str(encoder or "").strip().lower()
+    for row in (rows or []):
+        try:
+            if int(row.get("target_bytes") or 0) != want:
+                continue
+        except (TypeError, ValueError):
+            continue
+        if row.get("spotlight"):
+            continue
+        if pinned and want_enc and str(row.get("encoder") or "").strip().lower() != want_enc:
+            continue
+        if not check(row.get("output_path") or ""):
+            continue
+        return row
+    return None
+
+
+def worst_windows_for_file(stats_dir: str, sig: str, *, limit: int = 6) -> list[dict]:
+    """Where past encodes of this exact source scored worst, newest first.
+
+    Same footing as history_for_file: measured facts about this file, not a
+    prediction. Only records carrying a located worst window are returned, and
+    only on one VMAF scale - v0.6.1 and v1 numbers are not comparable, so the
+    newest record's model wins and the others are dropped rather than pooled.
+
+    `measured_span_s` is how much of the source VMAF actually looked at. It is
+    smaller than the duration on long sources (measurement is capped), which
+    makes "the worst window" true only within that span - callers must say so
+    rather than implying the whole file was searched.
+    """
+    if not sig:
+        return []
+    rows = []
+    for r in _load_all_records(ledger_path(stats_dir)):
+        if (r.get("src") or {}).get("input_sig") != sig:
+            continue
+        o = r.get("outcome") or {}
+        if not o.get("success", True):
+            continue
+        at = o.get("min_window_at")
+        if at is None or o.get("min_window") is None:
+            continue
+        op = r.get("op") or {}
+        rows.append({
+            "ts": r.get("ts") or "",
+            "at_s": float(at),
+            "min_window": float(o["min_window"]),
+            "vmaf": o.get("vmaf"),
+            "spread": o.get("spread"),
+            "measured_span_s": o.get("series_span_s"),
+            "encoder": op.get("encoder_eff"),
+            "target_bytes": op.get("target_bytes"),
+            "vmaf_model": r.get("vmaf_model"),
+        })
+    if not rows:
+        return []
+    rows.sort(key=lambda d: d["ts"], reverse=True)
+    newest_scale = _scale_key(rows[0].get("vmaf_model") or "")
+    rows = [d for d in rows if _scale_key(d.get("vmaf_model") or "") == newest_scale]
+    return rows[:max(1, int(limit))]
+
+
 def observed_outcomes(stats_dir: str, features: dict, encoder: str,
                       width: int, height: int, fps: float, v_bps: float,
                       *, k: int = 8, vmaf_model: str | None = None,
