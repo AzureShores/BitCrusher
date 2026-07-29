@@ -68,7 +68,8 @@ Audio & images:
 Trim & spotlight:
 --trim START-END            compress only this range, e.g. 1:42-2:05 or 12-31 (source never modified)
 --trim-fade                 frame-exact trim with 0.5s fades (default is zero-loss stream-copy)
---suggest-trim [SECONDS]    print candidate trim ranges from audio energy, then exit
+--suggest-trim [SECONDS]    print candidate trim ranges (measured VMAF worst window
+                            from past encodes, then audio energy), and exit
 --spotlight START-END       keep the whole video but boost quality in this range
 
 Output & sharing:
@@ -91,6 +92,37 @@ Output & sharing:
 --enqueue-target MB          with --enqueue: per-file target override carried into
                              the running instance (context-menu presets use this)
 --register-send-to / --unregister-send-to   Explorer "Send to" shortcut
+
+Remote upload (optional extras: pip install -r requirements-remote.txt):
+--serve [PORT]               run the remote-upload server headless: a phone (or
+                             any browser) on the same network signs in, uploads a
+                             file, and gets it back compressed. Blocks until
+                             Ctrl+C. Each upload rides THIS invocation's flags
+                             (-t, --encoder, --quality, ...); outputs go to -o, or
+                             the current directory. Off by default, and bound to
+                             127.0.0.1 unless the saved settings say otherwise.
+                             Refuses to start rather than degrade: a taken port, a
+                             non-loopback bind without a TLS certificate, or no
+                             password set are all hard failures - it never picks a
+                             different port, which would make the pairing link
+                             point at the wrong place.
+--serve-bind ADDR            with --serve: bind address override (default
+                             127.0.0.1). Anything other than loopback needs
+                             tls_cert/tls_key in user_settings/settings.json.
+--serve-set-password         prompt for the remote-upload password, store its
+                             hash in user_settings/remote_auth.json, then exit.
+                             Required before --serve will start.
+--serve-make-cert            generate THIS machine's own self-signed TLS
+                             certificate into user_settings/, write the paths
+                             into settings.json, then exit. Required before a
+                             non-loopback --serve will start.
+                             The key is generated per install and is never
+                             shipped in a release: one private key shared by
+                             every user would be worse than no TLS at all.
+                             Self-signed = encryption without authentication.
+                             It stops passive sniffing on your network; it does
+                             not prove the server is yours, so the browser warns
+                             once. Accept it on the phone and it stops asking.
 --export-format {gif,webp}   export video sources as animated GIF/WebP instead of
                              an encoded video (size-targeted quality ladder)
 --contact-sheet              also save a 4x4 frame-grid JPEG (<output>_sheet.jpg)

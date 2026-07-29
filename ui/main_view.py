@@ -256,6 +256,27 @@ def build_main_view(gui):
             command=lambda k=_preset_key: getattr(gui, "set_preset", lambda *_a, **_k: None)(k)
         ).pack(side="left", padx=(6, 0))
 
+    # Verdict chip: what the current settings will do on Discord. Read-only -
+    # it never changes the encode, it just stops "why won't this preview?".
+    gui.discord_chip = ttk.Label(quick_row, text="", style="Sub.TLabel")
+    gui.discord_chip.pack(side="left", padx=(12, 0))
+    # Traced once, not per build: a language change re-runs this whole builder
+    # and would otherwise stack a duplicate trace on the same variables.
+    if not getattr(gui, "_discord_chip_traced", False):
+        for _var_name in ("adv_encoder", "adv_audio_format", "adv_discord_compat"):
+            _v = getattr(gui, _var_name, None)
+            if _v is None:
+                continue
+            try:
+                _v.trace_add("write", lambda *_a: gui._refresh_discord_chip())
+            except Exception:
+                pass
+        gui._discord_chip_traced = True
+    try:
+        gui._refresh_discord_chip()
+    except Exception:
+        pass
+
     tk.Label(right, text=gui._t("lbl.display", "Display"), bg=APP_BG, fg=FG, anchor="w").pack(fill="x", padx=12, pady=(12, 0))
 
     gui.display_mode_var = tk.StringVar(value="Quality Metrics")
@@ -341,12 +362,13 @@ def build_main_view(gui):
     gui._queue_scroll.pack(side="right", fill="y")
     gui.job_rows: dict = {}
     gui.queue_menu = tk.Menu(gui.root, tearoff=0)
+    gui.queue_menu.add_command(label=gui._t("qmenu.set_target", "Set target size (MB) for this file..."), command=lambda: gui._queue_set_target())
     gui.queue_menu.add_command(label=gui._t("qmenu.set_encoder", "Set encoder for this file..."), command=lambda: gui._queue_set("encoder"))
     gui.queue_menu.add_command(label=gui._t("qmenu.set_container", "Set container/format for this file..."), command=lambda: gui._queue_set("container"))
     gui.queue_menu.add_command(label=gui._t("qmenu.set_prefix", "Set prefix for this file..."),  command=lambda: gui._queue_set("output_prefix"))
     gui.queue_menu.add_command(label=gui._t("qmenu.set_suffix", "Set suffix for this file..."),  command=lambda: gui._queue_set("output_suffix"))
     gui.queue_menu.add_command(label=gui._t("qmenu.trim", "Trim / clip range for this file..."), command=lambda: gui._queue_set_trim())
-    gui.queue_menu.add_command(label=gui._t("qmenu.suggest_trim", "Suggest trim ranges (audio peaks)..."), command=lambda: gui._queue_suggest_trim())
+    gui.queue_menu.add_command(label=gui._t("qmenu.suggest_trim2", "Suggest trim ranges..."), command=lambda: gui._queue_suggest_trim())
     gui.queue_menu.add_command(label=gui._t("qmenu.spotlight", "Spotlight quality range for this file..."), command=lambda: gui._queue_set_spotlight())
     gui.queue_menu.add_command(label=gui._t("qmenu.also_targets", "Also export at size(s) MB (e.g. 25 or 8,25)..."), command=lambda: gui._queue_set("also_targets"))
     gui.queue_menu.add_command(label=gui._t("qmenu.export_format", "Export as GIF/WebP (gif, webp, or blank)..."), command=lambda: gui._queue_set("export_format"))
@@ -354,7 +376,9 @@ def build_main_view(gui):
     gui.queue_menu.add_command(label=gui._t("qmenu.reset_overrides", "Reset per-file overrides"), command=lambda: gui._queue_reset_overrides())
     gui.queue_menu.add_command(label=gui._t("qmenu.reset_status", "Reset status (re-encode)"), command=lambda: gui._queue_reset_status())
     gui.queue_menu.add_command(label=gui._t("qmenu.cancel_single", "Cancel this file"), command=lambda: gui._queue_cancel_single())
+    gui.queue_menu.add_command(label=gui._t("qmenu.encode_again", "Encode again with..."), command=lambda: gui._queue_encode_again())
     gui.queue_menu.add_command(label=gui._t("qmenu.view_details", "View Details (why this size)..."), command=lambda: gui._queue_view_details())
+    gui.queue_menu.add_command(label=gui._t("qmenu.scene_report", "Scene report (where the bits went)..."), command=lambda: gui._queue_scene_report())
     gui.queue_menu.add_command(label=gui._t("qmenu.open_output", "Open Output Folder"), command=gui.open_save_folder)
     gui.queue_menu.add_command(label=gui._t("qmenu.remove", "Remove from Queue"),  command=gui.remove_selected)
     def _on_queue_context(event):
@@ -400,6 +424,31 @@ def build_main_view(gui):
         try: gui._save_queue()
         except Exception: pass
 
+    def _queue_set_target():
+        """Same override the Target column edits, from the context menu -
+        applied to every selected row, so a whole batch can be retargeted."""
+        from tkinter import simpledialog
+        sel = list(gui.queue_box.curselection())
+        if not sel:
+            return
+        try:
+            first = gui.file_list[sel[0]]
+        except (IndexError, AttributeError):
+            return
+        val = simpledialog.askstring(
+            "Per-file target",
+            "Target size in MB (blank = use the batch target):",
+            initialvalue=gui._queue_target_cell(first),
+            parent=gui.root,
+        )
+        if val is None:
+            return
+        for i in sel:
+            try:
+                gui._apply_queue_target(gui.file_list[i], val)
+            except (IndexError, AttributeError):
+                pass
+
     def _queue_reset_overrides():
         sel = list(gui.queue_box.curselection())
         if not sel or not getattr(gui, "per_file_opts", None):
@@ -411,6 +460,10 @@ def build_main_view(gui):
                     gui.update_status(f"Per-file overrides cleared: {os.path.basename(path)}")
             except Exception:
                 pass
+        try:
+            gui._refresh_queue_targets()
+        except Exception:
+            pass
         try:
             gui._save_queue()
         except Exception:
@@ -439,6 +492,32 @@ def build_main_view(gui):
             gui._show_result_dashboard(gui.file_list[sel[0]])
         except Exception:
             pass
+
+    def _queue_scene_report():
+        sel = list(gui.queue_box.curselection())
+        if not sel:
+            return
+        try:
+            gui._show_scene_report(gui.file_list[sel[0]])
+        except (IndexError, AttributeError):
+            pass
+
+    def _queue_encode_again():
+        sel = list(gui.queue_box.curselection())
+        if not sel:
+            return
+        try:
+            path = gui.file_list[sel[0]]
+        except (IndexError, AttributeError):
+            return
+        # Most recent result for this file, so the dialog pre-fills what the
+        # last run actually produced.
+        last = {}
+        for r in reversed(list(getattr(gui, "batch_results", []) or [])):
+            if str(r.get("path") or "") == path:
+                last = r
+                break
+        gui._encode_again_dialog(path, last)
 
     def _queue_cancel_single():
         sel = list(gui.queue_box.curselection())
@@ -547,12 +626,13 @@ def build_main_view(gui):
         path = _queue_selected_path()
         if not path:
             return
-        gui.update_status(f"[Suggest] Analyzing audio energy of {os.path.basename(path)}...")
+        gui.update_status(f"[Suggest] Analyzing {os.path.basename(path)}...")
 
         def _work():
             try:
                 cands = suggest_trim_ranges(path, clip_seconds=20.0,
-                                            status_cb=lambda m, l="INFO": gui.update_status(m, level=l))
+                                            status_cb=lambda m, l="INFO": gui.update_status(m, level=l),
+                                            worst_rows=_worst_windows_for(path))
             except Exception:
                 cands = []
             gui._ui(_show, cands)
@@ -562,7 +642,8 @@ def build_main_view(gui):
                 try:
                     messagebox.showinfo(
                         "Suggest trim",
-                        "No clear audio peaks found.\n\n"
+                        "No clear audio peaks found, and no measured worst window "
+                        "from a past encode of this file.\n\n"
                         "Silent or uniform-loudness moments (e.g. a great play in a "
                         "quiet game) can't be detected by signal analysis - set the "
                         "trim manually via 'Trim / clip range for this file...'.",
@@ -598,9 +679,60 @@ def build_main_view(gui):
 
         threading.Thread(target=_work, name="bc_suggest", daemon=True).start()
 
+    def _edit_target_cell(event):
+        """Double-click on the Target column: an Entry floated over the cell.
+
+        Any other column falls through to the normal double-click handler, so
+        this never gets in the way of selecting a row."""
+        try:
+            if gui.queue_box.identify_region(event.x, event.y) != "cell":
+                return None
+            col = gui.queue_box.identify_column(event.x)
+            if gui.queue_box.column(col, "id") != "target":
+                return None
+            iid = gui.queue_box.identify_row(event.y)
+            if not iid:
+                return None
+            x, y, w, h = gui.queue_box.bbox(iid, col)
+        except Exception:
+            return None
+
+        old = getattr(gui, "_target_editor", None)
+        if old is not None:
+            try: old.destroy()
+            except Exception: pass
+        ent = tk.Entry(gui.queue_box, justify="right")
+        gui._target_editor = ent
+        ent.insert(0, gui._queue_target_cell(iid))
+        ent.select_range(0, "end")
+        ent.place(x=x, y=y, width=w, height=h)
+        ent.focus_set()
+
+        def _close(_e=None):
+            try: ent.destroy()
+            except Exception: pass
+            if getattr(gui, "_target_editor", None) is ent:
+                gui._target_editor = None
+
+        def _commit(_e=None):
+            val = ent.get()
+            # Keep the editor open on unreadable input so the typo is visible
+            # and correctable instead of vanishing.
+            if gui._apply_queue_target(iid, val):
+                _close()
+            return "break"
+
+        ent.bind("<Return>", _commit)
+        ent.bind("<KP_Enter>", _commit)
+        ent.bind("<Escape>", lambda _e: (_close(), "break")[1])
+        ent.bind("<FocusOut>", _close)
+        return "break"
+
     # expose nested helpers as instance attributes for event bindings/menu commands
+    gui._edit_target_cell = _edit_target_cell
     gui._on_queue_context = _on_queue_context
     gui._queue_set = _queue_set
+    gui._queue_set_target = _queue_set_target
     gui._queue_set_trim = _queue_set_trim
     gui._queue_set_spotlight = _queue_set_spotlight
     gui._queue_suggest_trim = _queue_suggest_trim
@@ -608,12 +740,17 @@ def build_main_view(gui):
     gui._queue_reset_status = _queue_reset_status
     gui._queue_cancel_single = _queue_cancel_single
     gui._queue_view_details = _queue_view_details
+    gui._queue_encode_again = _queue_encode_again
+    gui._queue_scene_report = _queue_scene_report
 
     gui.queue_box.bind("<Button-3>", gui._on_queue_context)
     gui.queue_box.pack(fill="both", expand=True, padx=6, pady=6)
     gui._rebuild_display_panel()
     gui.queue_box.bind("<<TreeviewSelect>>", lambda e: gui._schedule_display_refresh())
     gui.queue_box.bind("<Double-Button-1>", lambda e: gui._schedule_display_refresh())
+    # Registered after the refresh handler so both run; returns "break" only
+    # when it actually opened an editor on the Target column.
+    gui.queue_box.bind("<Double-Button-1>", gui._edit_target_cell, add="+")
     gui.queue_box.bind("<Control-v>", lambda e: getattr(gui, "paste_from_clipboard", lambda: None)())
 
 
@@ -773,6 +910,106 @@ def build_main_view(gui):
         variable=gui.pipeline_var, onvalue=True, offvalue=False,
         command=lambda: gui.settings.__setitem__("pipeline_mode", bool(gui.pipeline_var.get())))
     gui.pipeline_chk.pack(anchor="w", padx=10, pady=(0, 10))
+
+    # Remote upload: a phone on the same network uploads a file and the running
+    # app compresses it through the watcher's path. Off by default, loopback by
+    # default; a LAN bind needs TLS and a password or the server refuses.
+    _rcfg = {}
+    try:
+        from support.remote_server import load_remote_config as _load_rcfg
+        _rcfg = _load_rcfg(getattr(gui, "settings", {}) or {})
+    except Exception:
+        _rcfg = {"enabled": False, "bind": "127.0.0.1", "port": 8420,
+                 "auto_start": False}
+    rf = ttk.LabelFrame(watcher_page, text=gui._t("panel.remote", "Remote Upload"),
+                        style="Card.TLabelframe")
+    rf.pack(fill="x", padx=12, pady=(0, 10))
+    if not hasattr(gui, "remote_enabled_var"):
+        gui.remote_enabled_var = tk.BooleanVar(value=bool(_rcfg.get("enabled")))
+    if not hasattr(gui, "remote_bind_var"):
+        gui.remote_bind_var = tk.StringVar(value=str(_rcfg.get("bind", "127.0.0.1")))
+    if not hasattr(gui, "remote_port_var"):
+        gui.remote_port_var = tk.StringVar(value=str(_rcfg.get("port", 8420)))
+    if not hasattr(gui, "remote_autostart_var"):
+        gui.remote_autostart_var = tk.BooleanVar(value=bool(_rcfg.get("auto_start")))
+    gui.remote_chk = ttk.Checkbutton(
+        rf, text=gui._t("lbl.remote_enable", "Enable remote upload server"),
+        variable=gui.remote_enabled_var, onvalue=True, offvalue=False,
+        command=getattr(gui, "_remote_toggle", lambda: None))
+    gui.remote_chk.pack(anchor="w", padx=10, pady=(8, 2))
+    rrow = tk.Frame(rf, bg=APP_BG); rrow.pack(fill="x", padx=10, pady=(0, 4))
+    ttk.Label(rrow, text=gui._t("lbl.remote_bind", "Bind"),
+              style="Sub.TLabel").pack(side="left")
+    ttk.Entry(rrow, textvariable=gui.remote_bind_var, width=16,
+              style="Dark.TEntry").pack(side="left", padx=(6, 10))
+    ttk.Label(rrow, text=gui._t("lbl.remote_port", "Port"),
+              style="Sub.TLabel").pack(side="left")
+    ttk.Entry(rrow, textvariable=gui.remote_port_var, width=7,
+              style="Dark.TEntry").pack(side="left", padx=(6, 0))
+    # TLS. A non-loopback bind is refused without both of these, so they have to
+    # be settable here - otherwise the panel can reach a state it cannot leave.
+    if not hasattr(gui, "remote_tls_cert_var"):
+        gui.remote_tls_cert_var = tk.StringVar(value=str(_rcfg.get("tls_cert", "")))
+    if not hasattr(gui, "remote_tls_key_var"):
+        gui.remote_tls_key_var = tk.StringVar(value=str(_rcfg.get("tls_key", "")))
+    for _lbl, _var, _which in (
+            (gui._t("lbl.remote_tls_cert", "TLS certificate"),
+             gui.remote_tls_cert_var, "cert"),
+            (gui._t("lbl.remote_tls_key", "TLS private key"),
+             gui.remote_tls_key_var, "key")):
+        _trow = tk.Frame(rf, bg=APP_BG); _trow.pack(fill="x", padx=10, pady=(0, 4))
+        ttk.Label(_trow, text=_lbl, style="Sub.TLabel", width=15).pack(side="left")
+        ttk.Entry(_trow, textvariable=_var, style="Dark.TEntry").pack(
+            side="left", fill="x", expand=True)
+        ttk.Button(_trow, text="…", width=3, style="Ghost.TButton",
+                   command=(lambda w=_which: getattr(
+                       gui, "_remote_browse_tls", lambda *_a: None)(w))
+                   ).pack(side="left", padx=(6, 0))
+    ttk.Checkbutton(
+        rf, text=gui._t("lbl.remote_autostart", "Start it when BitCrusher launches"),
+        variable=gui.remote_autostart_var, onvalue=True, offvalue=False,
+        command=getattr(gui, "_remote_apply_panel_fields", lambda: None)
+    ).pack(anchor="w", padx=10, pady=(0, 4))
+    rbtns = tk.Frame(rf, bg=APP_BG); rbtns.pack(fill="x", padx=10, pady=(0, 4))
+    ttk.Button(rbtns, text=gui._t("btn.remote_password", "Set password…"),
+               style="Ghost.TButton",
+               command=getattr(gui, "_remote_set_password_dialog", lambda: None)
+               ).pack(side="left")
+    ttk.Button(rbtns, text=gui._t("btn.remote_pair", "Pair a device…"),
+               style="Ghost.TButton",
+               command=getattr(gui, "_remote_show_pairing", lambda: None)
+               ).pack(side="left", padx=6)
+    ttk.Button(rbtns, text=gui._t("btn.remote_cert", "Create certificate…"),
+               style="Ghost.TButton",
+               command=getattr(gui, "_remote_generate_cert", lambda: None)
+               ).pack(side="left")
+    # The extras are not in requirements.txt on purpose, so a first-time user
+    # meets "not installed" before anything else in this panel works. One
+    # button, two confirmations, and it says what it downloads before it does.
+    rbtns2 = tk.Frame(rf, bg=APP_BG); rbtns2.pack(fill="x", padx=10, pady=(0, 4))
+    gui.remote_install_btn = ttk.Button(
+        rbtns2, text=gui._t("btn.remote_install", "Install dependencies…"),
+        style="Ghost.TButton",
+        command=getattr(gui, "_remote_install_deps", lambda: None))
+    gui.remote_install_btn.pack(side="left")
+    gui.remote_status_lbl = ttk.Label(rf, text="", style="Sub.TLabel",
+                                      wraplength=420, justify="left")
+    gui.remote_status_lbl.pack(anchor="w", padx=10, pady=(2, 2))
+    # Say what the upload check is, and is not. It rejects an obvious .exe or
+    # .zip; it does not protect ffmpeg from a hostile media file.
+    ttk.Label(rf, wraplength=420, justify="left", style="Sub.TLabel",
+              text=gui._t(
+                  "lbl.remote_note",
+                  "127.0.0.1 keeps this machine-only. A LAN address needs a TLS "
+                  "certificate and a password, or the server refuses to start. "
+                  "Uploads are checked against known media signatures - that "
+                  "filters out obvious non-media files, it is NOT protection "
+                  "against a malicious media file.")
+              ).pack(anchor="w", padx=10, pady=(0, 10))
+    try:
+        gui._remote_refresh_panel()
+    except Exception:
+        pass
 
     pf = ttk.LabelFrame(settings_page, text=gui._t("panel.profiles","Profiles"), style="Card.TLabelframe")
     pf.pack(fill="x", padx=12, pady=(0, 10))

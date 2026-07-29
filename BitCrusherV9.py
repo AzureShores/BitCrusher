@@ -18,6 +18,7 @@ from pathlib import Path
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from ui.ui_aesthetics import init_aesthetics, animated_retheme, open_theme_lab
 import queue
+import types
 import webbrowser
 
 from PIL import Image, ImageTk
@@ -223,10 +224,11 @@ from encode.feature_helpers import (set_clipboard_files, get_clipboard_media_pat
 from support.sendto_ipc import (_BC_IPC_HOST, _BC_IPC_PORT, _BC_STARTUP_FILES,
                         _bc_ipc_send, _sendto_launch_target, IpcServer,
                         register_send_to, unregister_send_to)
-from support.queue_store import dump_queue, load_queue
+from support.queue_store import (dump_queue, load_queue, next_pending_path,
+                         reencode_overrides)
 from support.watch_digest import DigestBuffer
 from encode.media_math import (bytes_from_value_unit, apply_target_size_margin, human_bytes,
-                        next_lower_std_width,
+                        next_lower_std_width, parse_target_mb, format_target_mb,
                         determine_tune_profile, determine_frame_rate, determine_resolution,
                         get_media_type)
 from encode.output_paths import (_build_output_path,
@@ -245,11 +247,95 @@ from encode.codec_race import (_probe_film_grain, choose_best_codec_by_vmaf)
 from encode.preproc import (_preproc_candidates,
                      _preproc_chain, decide_preprocessing)
 from encode.pdf_encode import compress_pdf
+from encode.discord_compat import (verdict_for_settings as discord_verdict_for_settings,
+                            verdict_for_output as discord_verdict_for_output,
+                            verdict_text as discord_verdict_text)
 
 def _ensure_dir(p):
     try: os.makedirs(p, exist_ok=True)
     except Exception: pass
     return p
+
+
+def _prior_output_matches(files, adv_base, per_file_opts, batch_target,
+                          stats_dir, *, exists=None) -> dict:
+    """path -> the prior encode whose output can be reused for it.
+
+    Cross-session counterpart to build_batch_dedup_index: that one groups files
+    inside the current queue, this one asks the ledger whether the same content
+    was already delivered in an earlier session under identical settings.
+    Advisory - the caller still has the user confirm, and the dispatch loop
+    re-verifies before copying anything.
+    """
+    try:
+        from encode.ml_heuristics import content_signature
+        from learning.outcome_ledger import prior_outputs_for_content, reusable_prior_output
+    except ImportError:
+        return {}
+    base = dict(adv_base or {})
+    po = per_file_opts or {}
+    out = {}
+    for p in files or []:
+        adv = dict(base)
+        adv.update(po.get(p) or {})
+        sig = content_signature(p)
+        if not sig:
+            continue
+        rows = prior_outputs_for_content(stats_dir, sig)
+        if not rows:
+            continue
+        hit = reusable_prior_output(
+            rows,
+            target_bytes=_resolve_file_target_bytes(adv, batch_target),
+            encoder=adv.get("encoder"),
+            pinned=bool(adv.get("codec_pinned")),
+            trimmed=bool(adv.get("trim_range") or adv.get("spotlight_range")),
+            exists=exists)
+        # An output that IS this file, or that the queue is about to overwrite,
+        # is not a reuse candidate.
+        if hit and os.path.abspath(hit["output_path"]) != os.path.abspath(p):
+            out[p] = hit
+    return out
+
+
+def _worst_windows_for(path: str) -> list:
+    """Measured worst-VMAF windows from past encodes of this exact file, for
+    trim suggestions. Best-effort: no ledger, no history, no signature - all
+    just mean the suggestion falls back to audio energy alone."""
+    try:
+        from learning.outcome_ledger import worst_windows_for_file
+        from encode.ml_heuristics import _bc_file_sig
+        return worst_windows_for_file(os.path.join(USER_SETTINGS_DIR, "stats"),
+                                      _bc_file_sig(path))
+    except Exception:
+        return []
+
+
+def _resolve_file_target_bytes(adv: dict, batch_target_bytes) -> int:
+    """One file's size ceiling, consuming the override keys from `adv`.
+
+    Precedence: a target set on the row ('target_mb', from the queue's Target
+    column or its context-menu twin) beats a watcher rule
+    ('_watch_target_bytes') beats the batch target. Both keys are popped so
+    they never travel on to the encoder as stray advanced options.
+
+    Unreadable values fall through to the next source rather than becoming a
+    zero-byte ceiling.
+    """
+    try:
+        target = int(batch_target_bytes)
+    except (TypeError, ValueError):
+        target = 0
+    try:
+        wtb = adv.pop("_watch_target_bytes", None)
+        if wtb and int(wtb) > 0:
+            target = int(wtb)
+    except (TypeError, ValueError):
+        pass
+    mb = parse_target_mb(adv.pop("target_mb", None))
+    if mb:
+        target = int(mb * 1024 * 1024)
+    return max(1, target)
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _LOG_DIR = _ensure_dir(os.path.join(_SCRIPT_DIR, "logs"))
@@ -770,7 +856,7 @@ PRESETS = {
 }
 
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.6.0"
 
 ADVANCED_DEFAULTS = {
     "auto_retry": True,
@@ -1172,6 +1258,8 @@ def apply_theme(style: ttk.Style, theme_name: str="Dark"):
         style.configure(f"{_name}.Horizontal.TProgressbar",
             troughcolor=CARD_BG, background=_col, bordercolor=CARD_BG,
             lightcolor=_col, darkcolor=_hsl_shift(_col, l_mul=0.8), thickness=10)
+        # Same three states as text, for verdict chips.
+        style.configure(f"{_name}.TLabel", background=APP_BG, foreground=_col)
 
     style.configure("TCheckbutton", background=APP_BG, foreground=FG,
                     indicatorcolor=entry_bg, focuscolor=APP_BG)
@@ -3638,6 +3726,13 @@ def compress_video(input_path: str, save_path: str, status_cb,
             _ol_input_sig = _ol_sig_fn(input_path)
         except Exception:
             _ol_input_sig = None
+        # Path-independent, so a copy of this source in a later session can be
+        # recognised as already encoded (cross-session dedup).
+        try:
+            from encode.ml_heuristics import content_signature as _ol_content_fn
+            _ol_content_sig = _ol_content_fn(input_path)
+        except Exception:
+            _ol_content_sig = None
         _vm_tag = resolve_vmaf_model() or "version=vmaf_v0.6.1"
         if _vm_tag.startswith("path="):
             _vm_tag = os.path.splitext(os.path.basename(_vm_tag[5:]))[0]
@@ -3740,6 +3835,7 @@ def compress_video(input_path: str, save_path: str, status_cb,
                  "dur": float(dur or 0.0), "bitrate": int(br or 0),
                  "size": int(os.path.getsize(input_path)) if os.path.exists(input_path) else 0,
                  "input_sig": _ol_input_sig,
+                 "content_sig": _ol_content_sig,
                  # Full source color/HDR characterization -- already computed
                  # by extract_media_features (ml_heuristics.py), previously
                  # dropped entirely at this call site.
@@ -3780,6 +3876,9 @@ def compress_video(input_path: str, save_path: str, status_cb,
             race=(advanced_options or {}).get("_race_scores"),
             outcome={"success": True,
                      "size": int(final_size or 0),
+                     # Where the delivered file went, so a later session can
+                     # offer to reuse it instead of re-encoding the same bytes.
+                     "output_path": str(out_file or ""),
                      "vmaf": (vmaf_result or {}).get("vmaf"),
                      "harmonic": (vmaf_result or {}).get("harmonic"),
                      "p5": (vmaf_result or {}).get("p5"),
@@ -4668,7 +4767,9 @@ class QueueTree(ttk.Treeview):
     iid == the normalized full path.
     """
 
-    COLS = ("status", "progress", "eta", "size", "vmaf")
+    # "target" is the only user-editable column (double-click); the rest are
+    # status readouts the encode fills in.
+    COLS = ("target", "status", "progress", "eta", "size", "vmaf")
 
     def __init__(self, parent, **kw):
         kw.pop("selectmode", None)
@@ -4682,6 +4783,11 @@ class QueueTree(ttk.Treeview):
         # after construction and fires once per drop with the tree's final
         # row order (iid == normalized path) so it can resync file_list.
         self.on_reorder = None
+        # iid -> label to show instead of the basename. Remote uploads live on
+        # disk under a server-minted UUID (the path-traversal defence), so the
+        # row would otherwise read as hex; the phone's own filename is a display
+        # label and this is where it gets displayed.
+        self.display_names: dict = {}
         self._drag_iid = None
         self._drag_start_y = 0
         self._drag_active = False
@@ -4697,6 +4803,7 @@ class QueueTree(ttk.Treeview):
         self.heading("#0", text="File")
         self.column("#0", width=150, minwidth=100, stretch=True)
         for col, txt, w, mw, anchor, stretch in (
+            ("target", "Target", 62, 48, "e", False),
             ("status", "Status", 108, 72, "w", False),
             ("progress", "%", 40, 36, "e", False),
             ("eta", "ETA", 52, 44, "e", False),
@@ -4785,9 +4892,10 @@ class QueueTree(ttk.Treeview):
         if self.exists(path):
             return path
         pos = "end" if index in ("end", None) else index
-        return super().insert("", pos, iid=path,
-                              text=(os.path.basename(path) or path),
-                              values=("pending", "", "", "", ""))
+        label = (self.display_names.get(path)
+                 or os.path.basename(path) or path)
+        return super().insert("", pos, iid=path, text=label,
+                              values=("", "pending", "", "", "", ""))
 
     def get(self, first, last=None):
         iids = self._iids()
@@ -5710,6 +5818,14 @@ class CompressorGUI:
             self._start_ipc_server()   # single-instance Send-To hand-off listener
         except Exception:
             pass
+        try:
+            # Remote upload: opt-in twice over - the feature has to be enabled
+            # AND auto_start set before anything binds a socket at launch.
+            _rcfg = self._remote_config()
+            if _rcfg.get("enabled") and _rcfg.get("auto_start"):
+                self._start_remote_server()
+        except Exception:
+            pass
         self.setup_menu()
         self.check_dependencies()
         self.root.after(300, lambda: self.run_self_check(auto=True))
@@ -5896,6 +6012,10 @@ class CompressorGUI:
         try:
             if getattr(self, "_ipc_srv", None) is not None:
                 self._ipc_srv.stop()   # closes socket + removes endpoint file
+        except Exception:
+            pass
+        try:
+            self._stop_remote_server()   # closes the listener, sessions die with it
         except Exception:
             pass
         try:
@@ -6204,6 +6324,540 @@ class CompressorGUI:
                 self._pipeline_kick()
         except Exception as e:
             self.update_status(f"Watcher enqueue failed: {e}", level="ERROR")
+
+    # --- Remote upload sink -------------------------------------------------
+    # support.remote_server hands files here. accept()/status() are called from
+    # the server thread and must never touch Tk directly; _enqueue_from_remote
+    # is the Tk-thread half and deliberately mirrors _enqueue_from_watcher.
+
+    def _remote_accept(self, path: str, meta: dict) -> str:
+        """UploadSink.accept - server thread. Returns immediately with a job id."""
+        job_id = os.urandom(8).hex()
+        norm = _normalize_drop_path(path)
+        if not isinstance(getattr(self, "_remote_jobs", None), dict):
+            self._remote_jobs = {}
+        self._remote_jobs[job_id] = norm
+        self._ui(self._enqueue_from_remote, path, dict(meta or {}))
+        return job_id
+
+    def _remote_status(self, job_id: str) -> dict:
+        """UploadSink.status - server thread, dict reads only, no Tk calls."""
+        norm = (getattr(self, "_remote_jobs", None) or {}).get(job_id)
+        if not norm:
+            return {"state": "failed", "pct": 0, "out_path": "",
+                    "error": "unknown job"}
+        st = (getattr(self, "job_states", None) or {}).get(norm) or {}
+        status = str(st.get("status") or "")
+        if status == "done":
+            return {"state": "done", "pct": 100,
+                    "out_path": str(st.get("output") or ""), "error": ""}
+        if status in ("failed", "cancelled"):
+            return {"state": "failed", "pct": 0, "out_path": "",
+                    "error": f"encode {status}"}
+        row = (getattr(self, "job_rows", None) or {}).get(norm) or {}
+        try:
+            pct = int(row.get("progress") or 0)
+        except Exception:
+            pct = 0
+        row_status = str(row.get("status") or "pending")
+        state = "queued" if row_status in ("", "pending") else "running"
+        return {"state": state, "pct": pct, "out_path": "", "error": ""}
+
+    def _enqueue_from_remote(self, filepath: str, meta: dict):
+        """Queue a file that arrived over the remote-upload server (Tk thread).
+
+        Same body as _enqueue_from_watcher: watch rules first, then queue_file,
+        then the origin marker - a remote upload is a watcher drop as far as
+        everything downstream is concerned.
+        """
+        try:
+            if threading.current_thread() is not threading.main_thread():
+                self._ui(self._enqueue_from_remote, filepath, meta)
+                return
+        except Exception:
+            pass
+        label = str((meta or {}).get("display_name") or os.path.basename(filepath))
+        try:
+            # Register the label before queue_file so the row renders with the
+            # phone's filename rather than the quarantine UUID. The file on disk
+            # keeps the UUID - the client's name never becomes a path.
+            self.queue_box.display_names[_normalize_drop_path(filepath)] = label
+        except Exception:
+            pass
+        try:
+            self._apply_watch_rules_to_file(filepath)
+            self.queue_file(filepath)
+            self.update_status(f"[Remote] Queued upload: {label}")
+            try:
+                po = getattr(self, "per_file_opts", None)
+                if isinstance(po, dict):
+                    _o = po.setdefault(_normalize_drop_path(filepath), {})
+                    _o["_via_remote"] = True
+                    # The uploaded file is a UUID on disk; keep the phone's name
+                    # so the queue row and the download are recognisable.
+                    _o["_remote_name"] = label
+            except Exception:
+                pass
+            try:
+                notify_info("BitCrusher", f"Remote upload queued:\n{label}", duration=4)
+            except Exception:
+                pass
+            if self._remote_auto_pipeline() or self._pipeline_enabled():
+                self._pipeline_kick()
+        except Exception as e:
+            self.update_status(f"[Remote] Enqueue failed: {e}", level="ERROR")
+
+    def _remote_config(self) -> dict:
+        from support.remote_server import load_remote_config
+        return load_remote_config(getattr(self, "settings", {}) or {})
+
+    def _remote_palette(self) -> dict:
+        """The palette the served page should use - this window's own theme.
+
+        Read per request (the server calls this), so switching theme in the GUI
+        reaches the phone on its next page load without restarting the server.
+        Called from the server thread: no Tk widget access, settings only.
+        """
+        try:
+            name = str((getattr(self, "settings", {}) or {}).get("theme")
+                       or (getattr(self, "settings", {}) or {}).get("ui_theme")
+                       or "Dark")
+        except Exception:
+            name = "Dark"
+        return dict(THEMES.get(name) or THEMES.get("Dark") or {})
+
+    def _remote_auto_pipeline(self) -> bool:
+        try:
+            return bool(self._remote_config().get("auto_pipeline"))
+        except Exception:
+            return False
+
+    def _start_remote_server(self, announce: bool = True) -> bool:
+        """Start the remote-upload listener. Refuses loudly rather than
+        degrading: a taken port, a LAN bind without TLS, a passwordless network
+        bind and missing extras all report and return False."""
+        if getattr(self, "_remote_srv", None) is not None:
+            return True
+        try:
+            from support import remote_server as _rs
+        except Exception as e:
+            self.update_status(f"[Remote] Server module unavailable: {e}",
+                               level="ERROR")
+            return False
+        cfg = self._remote_config()
+        sink = types.SimpleNamespace(accept=self._remote_accept,
+                                     status=self._remote_status)
+        srv = _rs.RemoteServer(sink, USER_SETTINGS_DIR, cfg,
+                               status_cb=lambda m, lvl="INFO": self._ui(
+                                   self.update_status, m, lvl),
+                               palette=self._remote_palette)
+        try:
+            srv.start()
+        except _rs.RemoteDependencyError as e:
+            self.update_status(f"[Remote] {e}", level="ERROR")
+            return False
+        except _rs.RemoteError as e:
+            self.update_status(f"[Remote] Refusing to start: {e}", level="ERROR")
+            return False
+        except Exception as e:
+            self.update_status(f"[Remote] Start failed: {e}", level="ERROR")
+            return False
+        self._remote_srv = srv
+        if announce:
+            self.update_status(f"[Remote] Upload server ready at {srv.url}")
+        return True
+
+    def _stop_remote_server(self):
+        srv = getattr(self, "_remote_srv", None)
+        if srv is None:
+            return
+        try:
+            srv.stop()
+        except Exception:
+            pass
+        self._remote_srv = None
+
+    # --- Remote upload settings panel ---------------------------------------
+
+    def _remote_save_config(self, **changes):
+        """Merge changes into settings['remote_upload'] and persist."""
+        if not isinstance(getattr(self, "settings", None), dict):
+            self.settings = {}
+        cur = dict(self.settings.get("remote_upload") or {})
+        cur.update(changes)
+        self.settings["remote_upload"] = cur
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+        return cur
+
+    def _remote_status_text(self) -> str:
+        """One line describing what the listener is actually doing right now."""
+        try:
+            from support import remote_server as _rs
+        except Exception:
+            return "Remote upload unavailable (support.remote_server missing)."
+        msg = _rs.remote_deps_message()
+        if msg:
+            return (msg[len("[Remote] "):]
+                    + "\nOr press Install dependencies below.")
+        srv = getattr(self, "_remote_srv", None)
+        if srv is not None and srv.running:
+            scope = ("loopback only" if _rs.is_loopback_bind(str(srv.config.get("bind")))
+                     else "LAN")
+            tls = "TLS" if srv.tls_enabled else "plaintext"
+            line = f"Listening on {srv.url}  ({scope}, {tls})"
+            stale = _rs.cert_stale_reason(USER_SETTINGS_DIR, srv.config)
+            if stale:
+                line += f"\nCertificate warning: {stale}. Use Create certificate."
+            return line
+        cfg = self._remote_config()
+        reasons = _rs.validate_remote_config(cfg, USER_SETTINGS_DIR)
+        if reasons:
+            return "Cannot start: " + "; ".join(reasons)
+        return "Stopped."
+
+    def _remote_install_deps(self):
+        """Install the remote-upload extras with pip, behind two confirmations.
+
+        This is the only button in the app that downloads Python packages, so it
+        never runs unannounced: the first dialog names every package and what it
+        is for, the second is a plain yes/no on the exact pip command.
+        """
+        from tkinter import messagebox
+        from support import remote_server as _rs
+
+        if getattr(self, "_remote_install_running", False):
+            messagebox.showinfo("Remote upload",
+                                "An install is already running.")
+            return
+        pending = _rs.remote_deps_pending()
+        if not pending:
+            messagebox.showinfo(
+                "Remote upload",
+                "All remote-upload dependencies are already installed.")
+            return
+        blocker = _rs.remote_install_blocker()
+        if blocker:
+            messagebox.showerror(
+                "Remote upload",
+                blocker + "\n\nInstall manually with:\n  " + _rs.REMOTE_INSTALL_HINT)
+            return
+
+        listing = "\n".join(
+            f"  - {d['dist']}"
+            + (f"  ({'required' if d['required'] else 'optional'}"
+               + (f", {d['purpose']}" if d['purpose'] else "") + ")")
+            for d in pending)
+        if not messagebox.askyesno(
+                "Remote upload - install dependencies",
+                "THIS WILL DOWNLOAD NEW DEPENDENCIES from the Python package "
+                "index (PyPI) over the internet.\n\n"
+                f"{len(pending)} package(s) will be installed:\n\n{listing}\n\n"
+                "They are installed into the Python that is running BitCrusher. "
+                "Nothing else in BitCrusher needs them - compression stays fully "
+                "offline either way.\n\nContinue?",
+                parent=self.root, icon="warning"):
+            return
+        cmd = " ".join(_rs.remote_install_command()[1:])
+        if not messagebox.askokcancel(
+                "Remote upload - confirm download",
+                "Last check before anything is downloaded.\n\n"
+                "This will run:\n"
+                f"  python -m {cmd}\n\n"
+                f"Into: {sys.executable}\n\n"
+                "Press OK to download and install now.",
+                parent=self.root, icon="warning"):
+            return
+
+        self._remote_install_running = True
+        try:
+            self.remote_install_btn.config(
+                state="disabled",
+                text=self._t("btn.remote_installing", "Installing…"))
+        except Exception:
+            pass
+        self.update_status("[Remote] Installing server dependencies (pip)...")
+
+        def _worker():
+            ok, out = _rs.install_remote_deps(
+                log_cb=lambda line: self._ui(self.update_status,
+                                             f"[Remote] pip: {line}"))
+            self._ui(self._remote_install_done, ok, out)
+
+        threading.Thread(target=_worker, name="bc_remote_deps",
+                         daemon=True).start()
+
+    def _remote_install_done(self, ok: bool, output: str):
+        """Back on the Tk thread once pip has finished."""
+        from tkinter import messagebox
+        from support import remote_server as _rs
+        self._remote_install_running = False
+        still = [d["dist"] for d in _rs.remote_deps_pending()]
+        if ok and not still:
+            self.update_status("[Remote] Dependencies installed.")
+            messagebox.showinfo(
+                "Remote upload",
+                "Dependencies installed. You can enable the remote upload "
+                "server now.")
+        elif ok:
+            # pip succeeded but something is still not importable - almost
+            # always a package that needs a restart of the interpreter.
+            self.update_status("[Remote] pip finished; still missing: "
+                               + ", ".join(still), level="WARNING")
+            messagebox.showwarning(
+                "Remote upload",
+                "pip finished, but these are still not loadable:\n\n  "
+                + "\n  ".join(still)
+                + "\n\nRestart BitCrusher and try again.")
+        else:
+            self.update_status(f"[Remote] Dependency install failed: {output}",
+                               level="ERROR")
+            messagebox.showerror(
+                "Remote upload",
+                "The install did not finish:\n\n" + str(output)[-1500:]
+                + "\n\nYou can install manually with:\n  "
+                + _rs.REMOTE_INSTALL_HINT)
+        self._remote_refresh_panel()
+
+    def _remote_generate_cert(self, ask: bool = True) -> bool:
+        """Create this machine's own self-signed certificate and use it.
+
+        Per-install on purpose: a certificate shipped in a release would carry a
+        private key every user shared, which is worse than no TLS at all.
+        """
+        from tkinter import messagebox
+        from support import remote_server as _rs
+        cert, key = _rs.cert_paths(USER_SETTINGS_DIR)
+        if ask:
+            existing = os.path.isfile(cert)
+            msg = (
+                "Create a self-signed certificate for this PC?\n\n"
+                "What it does: encrypts the connection, so nobody on your "
+                "network can read the password or the files you upload.\n\n"
+                "What it does NOT do: prove the server is really yours. Your "
+                "phone will show a certificate warning the first time - that is "
+                "expected, and you accept it once.\n\n"
+                f"Certificate will be valid for: {', '.join(_rs.cert_hosts())}\n"
+                f"Saved in: {USER_SETTINGS_DIR}\n"
+                "The private key never leaves this PC.")
+            if existing:
+                msg = "A certificate already exists and will be REPLACED.\n\n" + msg
+            if not messagebox.askyesno("Remote upload - certificate", msg,
+                                       parent=self.root):
+                return False
+        try:
+            cert, key = _rs.generate_self_signed_cert(USER_SETTINGS_DIR)
+        except _rs.RemoteDependencyError as e:
+            messagebox.showerror("Remote upload", str(e))
+            return False
+        except Exception as e:
+            messagebox.showerror("Remote upload",
+                                 f"Could not create a certificate: {e}")
+            return False
+        try:
+            self.remote_tls_cert_var.set(cert)
+            self.remote_tls_key_var.set(key)
+        except Exception:
+            pass
+        self._remote_apply_panel_fields()
+        self.update_status(f"[Remote] Certificate created ({_rs.describe_cert(cert)}).")
+        self._remote_refresh_panel()
+        return True
+
+    def _remote_toggle(self):
+        """Enable/disable checkbox handler. Never leaves the two out of sync."""
+        want = False
+        try:
+            want = bool(self.remote_enabled_var.get())
+        except Exception:
+            pass
+        if want:
+            self._remote_apply_panel_fields()
+            # A LAN bind needs TLS. Rather than refuse and leave the user to
+            # find out what a certificate is, offer to make one right here.
+            if not self._remote_ensure_cert_for_bind():
+                try:
+                    self.remote_enabled_var.set(False)
+                except Exception:
+                    pass
+                self._remote_save_config(enabled=False)
+                self._remote_refresh_panel()
+                return
+            ok = self._start_remote_server()
+            if not ok:
+                try:
+                    self.remote_enabled_var.set(False)
+                except Exception:
+                    pass
+                want = False
+        else:
+            self._stop_remote_server()
+            self.update_status("[Remote] Upload server stopped.")
+        self._remote_save_config(enabled=want)
+        self._remote_refresh_panel()
+
+    def _remote_apply_panel_fields(self):
+        """Copy the panel's port/bind/auto-start widgets into the settings."""
+        changes = {}
+        try:
+            port = int(str(self.remote_port_var.get()).strip())
+            if 1 <= port <= 65535:
+                changes["port"] = port
+        except Exception:
+            pass
+        try:
+            changes["bind"] = str(self.remote_bind_var.get()).strip() or "127.0.0.1"
+        except Exception:
+            pass
+        try:
+            changes["auto_start"] = bool(self.remote_autostart_var.get())
+        except Exception:
+            pass
+        # Written even when blank: clearing the fields is how the user turns TLS
+        # back off, which a truthiness check would silently ignore.
+        for key, attr in (("tls_cert", "remote_tls_cert_var"),
+                          ("tls_key", "remote_tls_key_var")):
+            try:
+                changes[key] = str(getattr(self, attr).get()).strip()
+            except Exception:
+                pass
+        if changes:
+            self._remote_save_config(**changes)
+
+    def _remote_ensure_cert_for_bind(self) -> bool:
+        """True when this bind can legally start. Offers to make a certificate
+        when a LAN bind needs one and none is configured."""
+        from support import remote_server as _rs
+        cfg = self._remote_config()
+        if _rs.is_loopback_bind(str(cfg.get("bind"))):
+            return True                      # loopback needs no certificate
+        cert, key = str(cfg.get("tls_cert") or ""), str(cfg.get("tls_key") or "")
+        if cert and key and os.path.isfile(cert) and os.path.isfile(key):
+            # The cert is usable, but a DHCP move can leave it not covering this
+            # PC's current address - which downgrades the phone's one-time
+            # "unknown issuer" prompt into a name mismatch it may refuse to pass.
+            stale = _rs.cert_stale_reason(USER_SETTINGS_DIR, cfg)
+            if stale:
+                from tkinter import messagebox
+                if messagebox.askyesno(
+                        "Remote upload - certificate out of date",
+                        f"The saved certificate no longer matches this PC:\n\n"
+                        f"{stale}.\n\nCreate a new one now?\n\n"
+                        f"(Devices you already paired will show the certificate "
+                        f"warning once more.)",
+                        parent=self.root):
+                    return self._remote_generate_cert(ask=False)
+                self.update_status(f"[Remote] Certificate is out of date - {stale}.",
+                                   level="WARNING")
+            return True
+        return self._remote_generate_cert(ask=True)
+
+    def _remote_browse_tls(self, which: str):
+        """Pick a PEM for tls_cert / tls_key. A LAN bind is refused without both,
+        and the panel used to offer no way to set them at all."""
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            title=("Remote upload TLS certificate" if which == "cert"
+                   else "Remote upload TLS private key"),
+            initialdir=USER_SETTINGS_DIR,
+            filetypes=[("PEM files", "*.pem"), ("Certificates", "*.crt *.cer"),
+                       ("Keys", "*.key"), ("All files", "*.*")])
+        if not path:
+            return
+        var = (self.remote_tls_cert_var if which == "cert"
+               else self.remote_tls_key_var)
+        var.set(path)
+        self._remote_apply_panel_fields()
+        self._remote_refresh_panel()
+
+    def _remote_refresh_panel(self):
+        try:
+            if getattr(self, "remote_status_lbl", None) is not None:
+                self.remote_status_lbl.config(text=self._remote_status_text())
+        except Exception:
+            pass
+        # The install button reports what is left to install, including the
+        # optional extras - "installed" here means all of them, not just enough
+        # to start.
+        try:
+            btn = getattr(self, "remote_install_btn", None)
+            if btn is not None and not getattr(self, "_remote_install_running", False):
+                from support import remote_server as _rs
+                pending = _rs.remote_deps_pending()
+                if pending:
+                    label = self._t("btn.remote_install", "Install dependencies…")
+                    btn.config(state="normal", text=f"{label} ({len(pending)})")
+                else:
+                    btn.config(state="disabled",
+                               text=self._t("btn.remote_installed",
+                                            "Dependencies installed"))
+        except Exception:
+            pass
+
+    def _remote_set_password_dialog(self):
+        from tkinter import simpledialog, messagebox
+        from support.remote_server import set_password as _set_pw
+        pw = simpledialog.askstring("Remote upload password",
+                                    "New password for remote uploads:",
+                                    show="*", parent=self.root)
+        if not pw:
+            return
+        again = simpledialog.askstring("Remote upload password",
+                                       "Repeat the password:",
+                                       show="*", parent=self.root)
+        if pw != again:
+            messagebox.showerror("Remote upload", "Passwords did not match - "
+                                                  "nothing was changed.")
+            return
+        try:
+            _set_pw(USER_SETTINGS_DIR, pw)
+        except Exception as e:
+            messagebox.showerror("Remote upload", f"Could not store the password: {e}")
+            return
+        self.update_status("[Remote] Password updated.")
+        self._remote_refresh_panel()
+
+    def _remote_show_pairing(self):
+        """Mint a one-time pairing link and show it (QR when qrcode is installed)."""
+        from tkinter import messagebox
+        srv = getattr(self, "_remote_srv", None)
+        if srv is None or not srv.running:
+            messagebox.showinfo("Remote upload",
+                                "Start the remote-upload server first.")
+            return
+        try:
+            from support.remote_server import qr_ascii
+            token = srv.sessions.mint_pairing()
+            url = f"{srv.url}/pair/{token}"
+        except Exception as e:
+            messagebox.showerror("Remote upload", f"Could not create a pairing link: {e}")
+            return
+
+        import tkinter as tk
+        win = tk.Toplevel(self.root)
+        win.title("Pair a device")
+        win.transient(self.root)
+        tk.Label(win, text="Open this on the phone within 60 seconds.\n"
+                           "The link works once.",
+                 justify="left").pack(padx=14, pady=(12, 6), anchor="w")
+        art = qr_ascii(url)
+        if art:
+            tk.Label(win, text=art, font=("Consolas", 5), justify="left",
+                     bg="#ffffff", fg="#000000").pack(padx=14, pady=4)
+        else:
+            tk.Label(win, text="(install qrcode for a scannable code - "
+                               "see requirements-remote.txt)",
+                     justify="left").pack(padx=14, pady=(0, 4), anchor="w")
+        entry = tk.Entry(win, width=64)
+        entry.insert(0, url)
+        entry.config(state="readonly")
+        entry.pack(padx=14, pady=(4, 12), fill="x")
+        # The pairing token must not travel any further than this window - no
+        # status line, no log.
+        tk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
 
     def _watch_digest_enabled(self) -> bool:
         try:
@@ -7761,6 +8415,9 @@ class CompressorGUI:
                 "recent_files":   list((getattr(self, "settings", {}) or {}).get("recent_files", [])),
                 "recent_outputs": list((getattr(self, "settings", {}) or {}).get("recent_outputs", [])),
                 "watch_rules":  dict((getattr(self, "settings", {}) or {}).get("watch_rules", {}) or {}),
+                # Remote upload. The password lives in remote_auth.json (hashed),
+                # never here.
+                "remote_upload": dict((getattr(self, "settings", {}) or {}).get("remote_upload", {}) or {}),
                 "update_check_consent": (getattr(self, "settings", {}) or {}).get("update_check_consent", None),
                 "last_update_check_ts": (getattr(self, "settings", {}) or {}).get("last_update_check_ts", 0),
             }
@@ -9008,6 +9665,64 @@ class CompressorGUI:
                     self.queue_box.job_update(_norm, **cached)
             except Exception:
                 pass
+            try:
+                self.queue_box.set(_norm, "target", self._queue_target_cell(_norm))
+            except Exception:
+                pass
+
+    # ---- Per-file size target (queue "Target" column) -------------------
+    def _queue_target_cell(self, path) -> str:
+        """Cell text for one row's target override; empty means batch default."""
+        po = getattr(self, "per_file_opts", None) or {}
+        return format_target_mb(parse_target_mb((po.get(path) or {}).get("target_mb")))
+
+    def _apply_queue_target(self, path, text):
+        """Set or clear one file's size target from the Target column.
+
+        An empty entry clears the override; unreadable text leaves the current
+        value alone rather than silently reverting to the batch target."""
+        raw = "" if text is None else str(text).strip()
+        mb = parse_target_mb(raw)
+        if raw and mb is None:
+            self.update_status(f"[Queue] Could not read target '{raw}'; left unchanged.",
+                               level="WARNING")
+            return False
+        if not hasattr(self, "per_file_opts") or self.per_file_opts is None:
+            self.per_file_opts = {}
+        row = self.per_file_opts.get(path)
+        if mb is None:
+            if isinstance(row, dict):
+                row.pop("target_mb", None)
+                if not row:
+                    self.per_file_opts.pop(path, None)
+            self.update_status(f"[Queue] {os.path.basename(str(path))}: target cleared "
+                               f"(uses the batch target).")
+        else:
+            self.per_file_opts.setdefault(path, {})["target_mb"] = format_target_mb(mb)
+            self.update_status(f"[Queue] {os.path.basename(str(path))}: target "
+                               f"{format_target_mb(mb)} MB.")
+        try:
+            self.queue_box.set(path, "target", self._queue_target_cell(path))
+        except Exception:
+            pass
+        try:
+            self._save_queue()
+        except Exception:
+            pass
+        return True
+
+    def _refresh_queue_targets(self):
+        """Repaint every row's Target cell from per_file_opts (after a queue
+        load, a rebuild, or a bulk override reset)."""
+        box = getattr(self, "queue_box", None)
+        if box is None:
+            return
+        for p in list(getattr(self, "file_list", []) or []):
+            try:
+                if box.exists(p):
+                    box.set(p, "target", self._queue_target_cell(p))
+            except Exception:
+                pass
 
     # ---- Rich queue-row updates (main thread only) ----------------------
     def _job_update(self, path, *, status=None, progress=None, eta=None,
@@ -9182,6 +9897,139 @@ class CompressorGUI:
         except Exception:
             return None
 
+    def _scene_report_output_for(self, input_path: str):
+        """The delivered file for `input_path`, from this session's results or
+        the ledger. None when there is nothing on disk to measure."""
+        for r in reversed(list(getattr(self, "batch_results", []) or [])):
+            if str(r.get("path") or "") == str(input_path) and r.get("output_path"):
+                if os.path.isfile(str(r["output_path"])):
+                    return str(r["output_path"])
+        rec = self._latest_ledger_record(input_path) or {}
+        p = str((rec.get("outcome") or {}).get("output_path") or "")
+        return p if p and os.path.isfile(p) else None
+
+    def _show_scene_report(self, input_path: str):
+        """Per-scene report card: which scenes ate the bit budget.
+
+        Measured, not modelled - scene boundaries from the source, packet sizes
+        from the delivered file. Skipped for trimmed jobs, where the two no
+        longer share a timeline."""
+        out_path = self._scene_report_output_for(input_path)
+        if not out_path:
+            self.update_status("[Scenes] No delivered file to measure for "
+                               f"{os.path.basename(str(input_path))}.", level="INFO")
+            return
+        _per = (getattr(self, "per_file_opts", None) or {}).get(input_path, {}) or {}
+        if _per.get("trim_range") or _per.get("spotlight_range"):
+            self.update_status("[Scenes] Trimmed/spotlit jobs have no shared timeline "
+                               "with their source - report skipped.", level="INFO")
+            return
+
+        busy = tk.Toplevel(self.root)
+        busy.title(self._t("dlg.scene_report", "Scene Report"))
+        busy.transient(self.root)
+        busy.geometry("360x90")
+        ttk.Label(busy, text="Measuring per-scene bitrate...").pack(expand=True, pady=20)
+        busy.update_idletasks()
+
+        def _worker():
+            data, err = None, None
+            try:
+                from encode.ml_heuristics import analyze_scenes
+                from encode.scene_bits import (bucket_by_scenes, rank_scenes,
+                                               read_video_packets)
+                scenes = (analyze_scenes(input_path) or {}).get("scenes") or []
+                rows = bucket_by_scenes(read_video_packets(out_path), scenes)
+                data = (rows, rank_scenes(rows, top_n=3))
+            except Exception as e:
+                err = e
+            self._ui(self._present_scene_report, busy, input_path, out_path, data, err)
+
+        threading.Thread(target=_worker, name="bc_scene_report", daemon=True).start()
+
+    def _present_scene_report(self, busy_win, input_path, out_path, data, err=None):
+        """Main-thread continuation of _show_scene_report()."""
+        try:
+            busy_win.destroy()
+        except Exception:
+            pass
+        if err is not None:
+            self.update_status(f"[Scenes] Report failed: {err}", level="ERROR")
+            return
+        rows, ranked = data or ([], {})
+        if not rows or not ranked.get("total_bytes"):
+            messagebox.showinfo(self._t("dlg.scene_report", "Scene Report"),
+                                "No per-scene bitrate could be measured for this file.")
+            return
+
+        from ui import charts as _charts
+        win = tk.Toplevel(self.root)
+        win.title(f"Scene report - {os.path.basename(str(input_path))}")
+        win.transient(self.root)
+        win.geometry("760x520")
+        try:
+            win.configure(bg=APP_BG)
+        except Exception:
+            pass
+        muted = FG_SUB or "#8a8a96"
+
+        from encode.scene_bits import report_headline
+        ttk.Label(win, text=report_headline(ranked) or "Per-scene bit budget").pack(
+            anchor="w", padx=14, pady=(12, 2))
+        ttk.Label(win, text=f"{ranked['n_scenes']} scenes, "
+                            f"{human_bytes(ranked['total_bytes'])} of video packets",
+                  foreground=muted).pack(anchor="w", padx=14, pady=(0, 6))
+
+        # Bits per scene, one bar per scene in timeline order.
+        cw, ch = 720, 120
+        canvas = tk.Canvas(win, width=cw, height=ch, bg=APP_BG,
+                           highlightthickness=0, bd=0)
+        canvas.pack(padx=14, pady=(0, 4))
+        _top_idx = {r["index"] for r in ranked["top"]}
+        spec = _charts.bars([r["bits_per_s"] for r in rows], cw, ch)
+        for sh in spec["shapes"]:
+            if rows[sh["index"]]["index"] in _top_idx:
+                sh["role"] = "hot"
+        _charts.draw_on_canvas(canvas, spec,
+                               {"bar": (ACCENT or "#4caf7d"), "hot": (ERROR or "#d9655b")})
+        ttk.Label(win, text="Bitrate per scene in timeline order - red is a top spender",
+                  foreground=muted).pack(anchor="w", padx=14, pady=(0, 8))
+
+        cols = ("range", "seconds", "bitrate", "share")
+        tree = ttk.Treeview(win, columns=cols, show="headings", height=8)
+        for c, txt, w in (("range", "Scene", 150), ("seconds", "Length", 80),
+                          ("bitrate", "Bitrate", 110), ("share", "Share of bits", 110)):
+            tree.heading(c, text=txt)
+            tree.column(c, width=w, anchor="e", stretch=(c == "range"))
+        for r in sorted(rows, key=lambda x: x["bytes"], reverse=True):
+            tree.insert("", "end", values=(
+                f"{_fmt_ts(r['start'])}-{_fmt_ts(r['end'])}",
+                f"{r['seconds']:.1f}s",
+                f"{r['bits_per_s'] / 1000.0:.0f} kbps",
+                f"{r['share'] * 100:.1f}%"))
+        tree.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+
+        thumbs = tk.Frame(win, bg=APP_BG)
+        thumbs.pack(fill="x", padx=14, pady=(0, 4))
+        win._scene_thumbs = []   # keep references or Tk drops the images
+        try:
+            from learning.visual_compare import _grab_frame
+            for r in ranked["top"]:
+                img = _grab_frame(input_path, (r["start"] + r["end"]) / 2.0, scale_w=200)
+                if img is None:
+                    continue
+                photo = ImageTk.PhotoImage(img)
+                win._scene_thumbs.append(photo)
+                cell = tk.Frame(thumbs, bg=APP_BG)
+                cell.pack(side="left", padx=(0, 8))
+                tk.Label(cell, image=photo, bg=APP_BG).pack()
+                tk.Label(cell, text=f"{_fmt_ts(r['start'])}  {r['share'] * 100:.0f}%",
+                         bg=APP_BG, fg=muted).pack()
+        except Exception:
+            pass
+
+        ttk.Button(win, text="Close", command=win.destroy).pack(anchor="e", padx=14, pady=(0, 12))
+
     def _show_result_dashboard(self, input_path: str):
         """F3 result dashboard: VMAF-over-time sparkline with the worst window
         flagged + a codec-race scoreboard, for one finished file."""
@@ -9343,17 +10191,39 @@ class CompressorGUI:
         ttk.Label(busy, text=f"Hashing {len(files)} file(s)...").pack(expand=True, pady=20)
         busy.update_idletasks()
 
+        # Settings snapshot taken here, on the main thread: the worker cannot
+        # read Tk variables.
+        try:
+            _adv_base = self.gather_advanced_options()
+        except Exception:
+            _adv_base = {}
+        _po_snapshot = dict(getattr(self, "per_file_opts", {}) or {})
+        try:
+            _batch_target = int(self._get_target_bytes())
+        except Exception:
+            _batch_target = 0
+        _stats_dir = os.path.join(USER_SETTINGS_DIR, "stats")
+
         def _worker():
             try:
                 groups = _bc_dedup_index(files)
                 err = None
             except Exception as e:
                 groups, err = [], e
-            self._ui(self._present_dedup_review, busy, groups, err)
+            # A file that already has an in-batch canonical reuses that; only
+            # the rest are worth asking the ledger about.
+            _covered = {p for g in groups for p in g[1:]}
+            try:
+                priors = _prior_output_matches(
+                    [p for p in files if p not in _covered], _adv_base,
+                    _po_snapshot, _batch_target, _stats_dir)
+            except Exception:
+                priors = {}
+            self._ui(self._present_dedup_review, busy, groups, err, priors)
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _present_dedup_review(self, busy_win, groups, err=None):
+    def _present_dedup_review(self, busy_win, groups, err=None, priors=None):
         """Main-thread continuation of scan_for_duplicates(), invoked once
         background hashing completes."""
         try:
@@ -9364,8 +10234,13 @@ class CompressorGUI:
         if err is not None:
             messagebox.showerror(self._t("dlg.scan_dupes", "Scan for Duplicates"), f"Duplicate scan failed: {err}")
             return
-        if not groups:
-            messagebox.showinfo(self._t("dlg.scan_dupes", "Scan for Duplicates"), self._t("msg.no_dupes", "No byte-identical duplicates found in the queue."))
+        priors = dict(priors or {})
+        if not groups and not priors:
+            messagebox.showinfo(self._t("dlg.scan_dupes", "Scan for Duplicates"),
+                                self._t("msg.no_dupes",
+                                        "No byte-identical duplicates found in the queue, "
+                                        "and nothing in this queue has been encoded before "
+                                        "at these settings."))
             return
 
         win = tk.Toplevel(self.root)
@@ -9394,7 +10269,7 @@ class CompressorGUI:
         tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        row_info = {}  # item_id -> {"path", "canonical", "confirm"}
+        row_info = {}  # item_id -> {"path", "canonical"|"prior", "confirm"}
         for gi, grp in enumerate(groups, start=1):
             canonical, dupes = grp[0], grp[1:]
             for d in dupes:
@@ -9402,10 +10277,23 @@ class CompressorGUI:
                                    values=(gi, os.path.basename(canonical), "Skip"))
                 row_info[item] = {"path": d, "canonical": canonical, "confirm": False}
 
+        for p, hit in priors.items():
+            item = tree.insert("", "end", text=os.path.basename(p),
+                               values=("earlier",
+                                       f"{os.path.basename(hit['output_path'])} "
+                                       f"({str(hit.get('ts') or '')[:10]})", "Skip"))
+            row_info[item] = {"path": p, "prior": hit, "confirm": False}
+
         n_dupes = sum(len(g) - 1 for g in groups)
-        ttk.Label(win, text=f"{len(groups)} duplicate group(s) found ({n_dupes} file(s) "
-                            "could be skipped). Select rows, choose Confirm Reuse or Skip - "
-                            "nothing happens until Apply.").pack(anchor="w", padx=14, pady=(0, 8))
+        _msg = (f"{len(groups)} duplicate group(s) found ({n_dupes} file(s) "
+                "could be skipped)")
+        if priors:
+            _msg += (f"; {len(priors)} file(s) were already encoded in an earlier "
+                     "session at these exact settings")
+        _msg += (". Select rows, choose Confirm Reuse or Skip - "
+                 "nothing happens until Apply.")
+        ttk.Label(win, text=_msg, wraplength=700,
+                  justify="left").pack(anchor="w", padx=14, pady=(0, 8))
 
         def _set_action(action):
             sel = tree.selection()
@@ -9422,14 +10310,32 @@ class CompressorGUI:
         def _apply():
             if not hasattr(self, "per_file_opts") or not isinstance(getattr(self, "per_file_opts", None), dict):
                 self.per_file_opts = {}
-            n = 0
+            n = m = 0
             for info in row_info.values():
-                if info["confirm"]:
-                    cur = dict(self.per_file_opts.get(info["path"], {}) or {})
+                if not info["confirm"]:
+                    continue
+                cur = dict(self.per_file_opts.get(info["path"], {}) or {})
+                if info.get("prior"):
+                    hit = info["prior"]
+                    cur["_dedup_prior_output"] = {
+                        "output_path": hit["output_path"],
+                        "target": hit.get("target_bytes"),
+                        "encoder": hit.get("encoder"),
+                        # Re-checked at encode time so a source edited between
+                        # the scan and Start can never reuse a stale output.
+                        "content_sig": hit.get("content_sig"),
+                    }
+                    m += 1
+                else:
                     cur["_dedup_canonical_source"] = info["canonical"]
-                    self.per_file_opts[info["path"]] = cur
                     n += 1
-            self.update_status(f"[Dedup] {n} file(s) marked to reuse a canonical encode.", level="INFO")
+                self.per_file_opts[info["path"]] = cur
+            self.update_status(f"[Dedup] {n} file(s) marked to reuse a canonical encode; "
+                               f"{m} to reuse an earlier session's output.", level="INFO")
+            try:
+                self._save_queue()
+            except Exception:
+                pass
             win.destroy()
 
         btns = ttk.Frame(win)
@@ -9444,9 +10350,37 @@ class CompressorGUI:
     # at all (DictWriter(fieldnames=[])), and deriving from the first row also
     # let the schema shift between exports if that row happened to be a
     # dedup-reuse or a failure. A consumer can now rely on the columns.
+    # ("discord" was appended, not inserted - name-keyed CSV/JSON consumers
+    # keep working and positional ones keep their existing indices.)
     _BATCH_EXPORT_FIELDS = ("file", "path", "status", "input_bytes",
                             "output_bytes", "ratio_pct", "vmaf", "encoder",
-                            "seconds", "output_path", "reused_duplicate_of")
+                            "seconds", "output_path", "reused_duplicate_of",
+                            "discord")
+
+    # Probing every delivered file costs one (cached) ffprobe each. Fine for a
+    # normal batch, not for a thousand-file sweep, so the verdict column goes
+    # blank past this many rows rather than stalling the summary window.
+    _DISCORD_VERDICT_MAX_ROWS = 60
+
+    def _batch_discord_verdicts(self, results) -> dict:
+        """path -> measured verdict dict, for the delivered outputs of a batch.
+        Measured rather than planned: the codec race and audio stream-copy both
+        make the finished file differ from what was requested."""
+        out: dict = {}
+        if len(results) > self._DISCORD_VERDICT_MAX_ROWS:
+            return out
+        for r in results:
+            p = str(r.get("output_path") or "")
+            if not p or not r.get("ok") or p in out:
+                continue
+            try:
+                if os.path.exists(p):
+                    res = discord_verdict_for_output(p)
+                    if res.get("video"):
+                        out[p] = res
+            except Exception:
+                pass
+        return out
 
     def _export_batch_summary(self, results):
         """CSV/JSON export of the batch summary dialog's rows - format chosen
@@ -9462,10 +10396,12 @@ class CompressorGUI:
         if not path:
             return
         rows = []
+        _dv = self._batch_discord_verdicts(results)
         for r in results:
             i_b, o_b = int(r.get("in_bytes") or 0), int(r.get("out_bytes") or 0)
             v = r.get("vmaf")
             rows.append({
+                "discord": (_dv.get(str(r.get("output_path") or "")) or {}).get("verdict"),
                 "file": os.path.basename(str(r.get("path") or "")),
                 "path": str(r.get("path") or ""),
                 "status": ("ok" if r.get("ok") else (r.get("error") or "failed")),
@@ -9513,18 +10449,21 @@ class CompressorGUI:
         except Exception:
             pass
 
-        cols = ("in", "out", "ratio", "vmaf", "time")
+        cols = ("in", "out", "ratio", "vmaf", "time", "discord")
         tree = ttk.Treeview(win, columns=cols, show="tree headings", height=10)
         tree.heading("#0", text="File")
         tree.column("#0", width=250, stretch=True)
         for c, txt, w in (("in", "Input", 90), ("out", "Output", 90),
-                          ("ratio", "Ratio", 70), ("vmaf", "VMAF", 70), ("time", "Time", 70)):
+                          ("ratio", "Ratio", 70), ("vmaf", "VMAF", 70), ("time", "Time", 70),
+                          ("discord", "Discord", 76)):
             tree.heading(c, text=txt)
             tree.column(c, width=w, anchor="e", stretch=False)
 
         tot_in = tot_out = 0
         vmafs = []
         item_paths = {}
+        verdicts = self._batch_discord_verdicts(results)
+        verdict_cells = {"yes": "inline", "maybe": "maybe", "no": "no preview"}
         for r in results:
             i_b, o_b = int(r.get("in_bytes") or 0), int(r.get("out_bytes") or 0)
             if r.get("ok"):
@@ -9540,7 +10479,9 @@ class CompressorGUI:
                                 (human_bytes(o_b) if o_b else ("FAILED" if not r.get("ok") else "—")),
                                 (f"{o_b * 100.0 / i_b:.0f}%" if (i_b and o_b) else "—"),
                                 (f"{float(v):.1f}" if isinstance(v, (int, float)) else ("dedup" if _reused else "—")),
-                                ("reused" if _reused else f"{float(r.get('secs') or 0.0):.0f}s")))
+                                ("reused" if _reused else f"{float(r.get('secs') or 0.0):.0f}s"),
+                                verdict_cells.get(
+                                    (verdicts.get(str(r.get("output_path") or "")) or {}).get("verdict"), "—")))
             item_paths[_item] = str(r.get("path") or "")
         tree.pack(fill="both", expand=True, padx=12, pady=(12, 6))
 
@@ -9577,7 +10518,143 @@ class CompressorGUI:
                 self._show_result_dashboard(p)
         ttk.Button(btns, text="View Details",
                    command=_details_selected).pack(side="left", padx=(8, 0))
+
+        _by_path = {str(r.get("path") or ""): r for r in results}
+
+        def _encode_again():
+            p = item_paths.get(tree.focus())
+            if p:
+                self._encode_again_dialog(p, _by_path.get(p) or {})
+        ttk.Button(btns, text="Encode Again With...",
+                   command=_encode_again).pack(side="left", padx=(8, 0))
+
+        def _scene_report():
+            p = item_paths.get(tree.focus())
+            if p:
+                self._show_scene_report(p)
+        ttk.Button(btns, text="Scene Report",
+                   command=_scene_report).pack(side="left", padx=(8, 0))
         ttk.Button(btns, text="Close", command=win.destroy).pack(side="right")
+
+    def _encode_again_dialog(self, path, result=None):
+        """Requeue one finished file with its previous settings pre-filled and
+        one knob changed. Pre-fills the encoder that ACTUALLY ran, not the one
+        requested - after a codec race those differ, and the user is reacting
+        to what they were shown."""
+        result = dict(result or {})
+        prev = dict((getattr(self, "per_file_opts", None) or {}).get(path, {}) or {})
+
+        win = tk.Toplevel(self.root)
+        win.title(self._t("dlg.encode_again", "Encode Again With..."))
+        win.transient(self.root)
+        win.resizable(False, False)
+        try:
+            win.configure(bg=APP_BG)
+        except Exception:
+            pass
+
+        ttk.Label(win, text=os.path.basename(str(path)),
+                  style="Title.TLabel").grid(row=0, column=0, columnspan=2,
+                                             sticky="w", padx=12, pady=(12, 2))
+        _was = []
+        if isinstance(result.get("out_bytes"), int) and result["out_bytes"]:
+            _was.append(human_bytes(result["out_bytes"]))
+        if isinstance(result.get("vmaf"), (int, float)):
+            _was.append(f"VMAF {float(result['vmaf']):.1f}")
+        if result.get("encoder"):
+            _was.append(str(result["encoder"]))
+        if _was:
+            ttk.Label(win, text="Last run: " + ", ".join(_was),
+                      style="Sub.TLabel").grid(row=1, column=0, columnspan=2,
+                                               sticky="w", padx=12, pady=(0, 10))
+
+        # Target: whatever this file was actually encoded to, so "one knob
+        # changed" starts from the truth rather than the batch default.
+        _prev_mb = parse_target_mb(prev.get("target_mb"))
+        if _prev_mb is None and result.get("target_bytes"):
+            _prev_mb = float(result["target_bytes"]) / (1024.0 * 1024.0)
+        v_target = tk.StringVar(value=format_target_mb(_prev_mb))
+        v_encoder = tk.StringVar(value=str(prev.get("encoder")
+                                           or result.get("encoder") or ""))
+        v_discord = tk.IntVar(value=1 if prev.get("discord_compat") else 0)
+
+        ttk.Label(win, text="Target size (MB)").grid(row=2, column=0, sticky="e", padx=(12, 6), pady=4)
+        ttk.Entry(win, textvariable=v_target, width=12).grid(row=2, column=1, sticky="w", padx=(0, 12), pady=4)
+
+        ttk.Label(win, text="Encoder (pinned)").grid(row=3, column=0, sticky="e", padx=(12, 6), pady=4)
+        _enc_vals = ["", "x264", "x265", "svt-av1", "aom-av1", "vp9", "vvc",
+                     "h264_nvenc", "hevc_nvenc", "av1_nvenc",
+                     "h264_qsv", "hevc_qsv", "av1_qsv",
+                     "h264_amf", "hevc_amf", "av1_amf"]
+        ttk.Combobox(win, textvariable=v_encoder, values=_enc_vals,
+                     state="readonly", width=14).grid(row=3, column=1, sticky="w", padx=(0, 12), pady=4)
+
+        ttk.Checkbutton(win, text="Discord-compatible (H.264 + AAC, MP4)",
+                        variable=v_discord).grid(row=4, column=0, columnspan=2,
+                                                 sticky="w", padx=12, pady=(4, 2))
+        ttk.Label(win, text="Blank target or encoder = use the batch setting.",
+                  style="Sub.TLabel").grid(row=5, column=0, columnspan=2,
+                                           sticky="w", padx=12, pady=(0, 8))
+
+        def _apply(start_now):
+            if not self._requeue_with_changes(
+                    path, target_mb=v_target.get(), encoder=v_encoder.get(),
+                    discord_compat=bool(v_discord.get())):
+                return
+            win.destroy()
+            if start_now:
+                try:
+                    self.start_compression()
+                except Exception as e:
+                    self.update_status(f"[Queue] Could not start: {e}", level="ERROR")
+
+        row = ttk.Frame(win)
+        row.grid(row=6, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 12))
+        ttk.Button(row, text="Queue It", command=lambda: _apply(False)).pack(side="left")
+        ttk.Button(row, text="Queue and Start",
+                   command=lambda: _apply(True)).pack(side="left", padx=(8, 0))
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right")
+
+    def _requeue_with_changes(self, path, **changes) -> bool:
+        """Apply changed per-file overrides and put the file back in the queue
+        as pending. Returns False (with a status line) if nothing changed, so a
+        no-op dialog does not silently re-encode the same thing."""
+        if parse_target_mb(changes.get("target_mb")) is None and str(changes.get("target_mb") or "").strip():
+            self.update_status(f"[Queue] Could not read target "
+                               f"'{str(changes.get('target_mb')).strip()}'.", level="WARNING")
+            return False
+        if not hasattr(self, "per_file_opts") or self.per_file_opts is None:
+            self.per_file_opts = {}
+        prev = dict(self.per_file_opts.get(path, {}) or {})
+        opts, changed = reencode_overrides(prev, **changes)
+        already_queued = path in (getattr(self, "file_list", []) or [])
+        if not changed and already_queued and (getattr(self, "job_states", {}) or {}).get(path, {}).get("status") != "done":
+            self.update_status("[Queue] Nothing changed; file is already queued.", level="INFO")
+            return False
+        if opts:
+            self.per_file_opts[path] = opts
+        else:
+            self.per_file_opts.pop(path, None)
+        if not already_queued:
+            self.file_list.append(path)
+            self.queue_box.insert("end", path)
+        try:
+            self._record_job_state(path, "pending")
+            self._job_update(path, status="pending", progress=None, eta="",
+                             size=None, vmaf=None)
+        except Exception:
+            pass
+        try:
+            self.queue_box.set(path, "target", self._queue_target_cell(path))
+        except Exception:
+            pass
+        try:
+            self._save_queue()
+        except Exception:
+            pass
+        self.update_status(f"[Queue] Re-queued {os.path.basename(str(path))}"
+                           + (" - " + "; ".join(changed) if changed else "."))
+        return True
 
     # ---- Queue persistence ----------------------------------------------
     def _queue_json_path(self) -> str:
@@ -10400,6 +11477,10 @@ class CompressorGUI:
         _is_dup = lambda p: isinstance(_po_for_order.get(p), dict) and "_dedup_canonical_source" in _po_for_order[p]
         if any(_is_dup(p) for p in files):
             files = [p for p in files if not _is_dup(p)] + [p for p in files if _is_dup(p)]
+        # Same rule, expressed for the live picker: dispatch order is no longer
+        # fixed at Start, so it cannot rely on the sort above alone.
+        _deferred = {p: _po_for_order[p]["_dedup_canonical_source"]
+                     for p in files if _is_dup(p)}
         total = len(files)
 
         # Drop any leftover per-row state for the files THIS batch is about to
@@ -10668,18 +11749,20 @@ class CompressorGUI:
             _po = getattr(self, "per_file_opts", None)
             if isinstance(_po, dict) and path in _po:
                 adv.update(_po[path])
-                if "_dedup_canonical_source" in _po[path]:
+                if "_dedup_canonical_source" in _po[path] or "_dedup_prior_output" in _po[path]:
                     # Consume from the PERSISTENT store now, not just this local
                     # adv copy -- compress_file_task() independently re-merges
                     # per_file_opts[path] into adv_options, so leaving the key
                     # there would resurrect a stale marker on a future run.
-                    _po[path] = {k: v for k, v in _po[path].items() if k != "_dedup_canonical_source"}
+                    _po[path] = {k: v for k, v in _po[path].items()
+                                 if k not in ("_dedup_canonical_source", "_dedup_prior_output")}
             _dedup_canon_src = adv.pop("_dedup_canonical_source", None)
+            _dedup_prior = adv.pop("_dedup_prior_output", None)
             # One shared rate memory per file-job, so the also-target loop
             # below starts from what the primary encode measured.
             _attach_job_rate_memory(adv, adv.get("also_targets"))
-            # Watcher-rule per-file overrides (custom folder / target size for
-            # files brought in by the folder watcher or Send-To).
+            # Per-file overrides: custom folder (watcher rule) and size target
+            # (watcher rule or the queue's Target column).
             _file_target = tgt
             try:
                 _wsd = adv.pop("_watch_save_dir", None)
@@ -10690,11 +11773,53 @@ class CompressorGUI:
                         pass
                     if os.path.isdir(_wsd):
                         out_dir = _wsd
-                _wtb = adv.pop("_watch_target_bytes", None)
-                if _wtb and int(_wtb) > 0:
-                    _file_target = int(_wtb)
+                _file_target = _resolve_file_target_bytes(adv, tgt)
             except Exception:
                 _file_target = tgt
+
+            # Cross-session reuse: an earlier session already delivered this
+            # exact content at these settings. Every condition is re-verified
+            # here, not trusted from scan time.
+            if isinstance(_dedup_prior, dict):
+                _prior_out = str(_dedup_prior.get("output_path") or "")
+                try:
+                    from encode.ml_heuristics import content_signature as _prior_sig_fn
+                    _prior_target_ok = (_dedup_prior.get("target") is None
+                                        or int(_dedup_prior["target"]) == int(_file_target))
+                    _prior_sig_ok = (not _dedup_prior.get("content_sig")
+                                     or _prior_sig_fn(path) == _dedup_prior["content_sig"])
+                    if not os.path.isfile(_prior_out):
+                        self.update_status(f"[Dedup] Earlier output for {os.path.basename(path)} "
+                                           f"is gone - encoding normally.", level="INFO")
+                    elif not _prior_target_ok:
+                        self.update_status(f"[Dedup] {os.path.basename(path)}'s target changed "
+                                           f"since the scan - encoding normally.", level="INFO")
+                    elif not _prior_sig_ok:
+                        self.update_status(f"[Dedup] {os.path.basename(path)} changed since the "
+                                           f"scan - encoding normally.", level="INFO")
+                    else:
+                        _pri_out = _bc_build_output_path(
+                            path, out_dir, adv,
+                            default_ext=os.path.splitext(_prior_out)[1].lstrip("."))
+                        _pri_out = _dedup_safe_output_path(_pri_out, _prior_out)
+                        shutil.copyfile(_prior_out, _pri_out)
+                        in_b = os.path.getsize(path) if os.path.isfile(path) else 0
+                        out_b = os.path.getsize(_pri_out) if os.path.isfile(_pri_out) else 0
+                        self._ui(self._job_update, path, status="done", progress=100,
+                                 eta="", size=out_b)
+                        self.update_status(f"[Dedup] Reused an earlier session's output for "
+                                           f"{os.path.basename(path)}", level="INFO")
+                        _update_batch_eta(force=True)
+                        self._track_recent_output(_pri_out)
+                        return {"path": path, "ok": True, "in_bytes": in_b, "out_bytes": out_b,
+                                "vmaf": None, "encoder": None, "secs": 0.0, "error": None,
+                                "target_bytes": int(_file_target),
+                                "output_path": _pri_out,
+                                "reused_duplicate_of": _prior_out}
+                except Exception as _prior_e:
+                    self.update_status(f"[Dedup] Earlier-output reuse failed for "
+                                       f"{os.path.basename(path)} ({_prior_e}) - "
+                                       f"encoding normally instead.", level="WARN")
 
             if _dedup_canon_src and not _dedup_canonical_outputs.get(_dedup_canon_src) \
                     and _dedup_canon_src not in _dedup_failed:
@@ -10737,6 +11862,7 @@ class CompressorGUI:
                             self._track_recent_output(_dup_out)
                             return {"path": path, "ok": True, "in_bytes": in_b, "out_bytes": out_b,
                                    "vmaf": None, "encoder": None, "secs": 0.0, "error": None,
+                                   "target_bytes": int(_file_target),
                                    "output_path": _dup_out, "reused_duplicate_of": _dedup_canon_src}
                         else:
                             self.update_status(f"[Dedup] {os.path.basename(path)} no longer matches "
@@ -10793,6 +11919,7 @@ class CompressorGUI:
                            "out_bytes": int(w.get("out_bytes") or 0),
                            "vmaf": w.get("vmaf"), "encoder": w.get("encoder"),
                            "secs": w.get("secs") or (time.time() - t0),
+                           "target_bytes": int(_file_target),
                            "error": None if ok else (w.get("error") or "no output")}
                     _out_path = w.get("output_path")
                     if ok and _out_path:
@@ -10813,7 +11940,9 @@ class CompressorGUI:
                            "out_bytes": int(stats.get("compressed_size") or 0),
                            "vmaf": stats.get("vmaf"),
                            "encoder": stats.get("encoder"),
-                           "secs": time.time() - t0, "error": None if ok else "no output"}
+                           "secs": time.time() - t0,
+                           "target_bytes": int(_file_target),
+                           "error": None if ok else "no output"}
                     _out_path = stats.get("output_path") or stats.get("out_path") or stats.get("output")
                     if ok and _out_path:
                         res["output_path"] = _out_path
@@ -10879,8 +12008,19 @@ class CompressorGUI:
             return res
 
         results = []
+        # Dispatch order is decided one job at a time from the LIVE queue, so
+        # dragging a row while a batch runs actually moves it up the line.
+        # Files already started keep running; only what has not begun reorders.
+        _batch_done: set = set()
+        _batch_running: set = set()
+
+        def _next_path():
+            return next_pending_path(list(getattr(self, "file_list", []) or []),
+                                     files, _batch_done, _batch_running,
+                                     deferred=_deferred)
+
         if workers <= 1:
-            for idx, path in enumerate(files, start=1):
+            while True:
                 if self.compression_cancelled:
                     if getattr(self, "_single_file_cancel_only", False):
                         # cancel_single_file used the real cancel_event to
@@ -10898,24 +12038,54 @@ class CompressorGUI:
                             f"[Cancel] Stopped after {len(results)} of {total} file(s).",
                             level="INFO")
                         break
-                results.append(_run_one(idx, path))
+                path = _next_path()
+                if path is None:
+                    break
+                _batch_running.add(path)
+                try:
+                    results.append(_run_one(len(results) + 1, path))
+                finally:
+                    _batch_running.discard(path)
+                    _batch_done.add(path)
                 self._ui(self._bump_progress, len(results))
         else:
             self.update_status(f"[~] Concurrent mode: encoding up to {workers} files at once.", level="INFO")
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED, wait
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="bc_job") as pool:
-                futs = {pool.submit(_run_one, idx, path): path
-                        for idx, path in enumerate(files, start=1)}
+                futs: dict = {}
                 done_n = 0
-                for fut in as_completed(futs):
-                    try:
-                        results.append(fut.result())
-                    except Exception as e:
-                        results.append({"path": futs[fut], "ok": False, "in_bytes": 0,
-                                        "out_bytes": 0, "vmaf": None, "encoder": None,
-                                        "secs": 0.0, "error": str(e)})
-                    done_n += 1
-                    self._ui(self._bump_progress, done_n)
+                _idx = 0
+                while True:
+                    # Refill free slots from the live order, so a row dragged to
+                    # the top is picked up by the next worker that frees up.
+                    while len(futs) < workers and not self.compression_cancelled:
+                        nxt = _next_path()
+                        if nxt is None:
+                            break
+                        _batch_running.add(nxt)
+                        _idx += 1
+                        futs[pool.submit(_run_one, _idx, nxt)] = nxt
+                    if not futs:
+                        break
+                    finished, _ = wait(list(futs), return_when=FIRST_COMPLETED)
+                    for fut in finished:
+                        p = futs.pop(fut)
+                        _batch_running.discard(p)
+                        _batch_done.add(p)
+                        try:
+                            results.append(fut.result())
+                        except Exception as e:
+                            results.append({"path": p, "ok": False, "in_bytes": 0,
+                                            "out_bytes": 0, "vmaf": None, "encoder": None,
+                                            "secs": 0.0, "error": str(e)})
+                        done_n += 1
+                        self._ui(self._bump_progress, done_n)
+                if self.compression_cancelled and len(results) < total:
+                    # Matches the sequential path: what never started stays
+                    # pending and resumable rather than being badged cancelled.
+                    self.update_status(
+                        f"[Cancel] Stopped after {len(results)} of {total} file(s).",
+                        level="INFO")
 
         self.batch_results = results
         self._active_workers = 1
@@ -11036,6 +12206,48 @@ class CompressorGUI:
                     _tb_set(self.root.winfo_id(), int(v), int(self.progress["maximum"] or 1))
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+    # Chip verdict -> ttk label style. Same three colours the progress bar uses.
+    _DISCORD_CHIP_STYLES = {"yes": "Ok.TLabel", "maybe": "Warn.TLabel",
+                            "no": "Risk.TLabel"}
+
+    def _refresh_discord_chip(self):
+        """Re-derive the Discord inline-playback verdict from the current
+        settings. Purely advisory - nothing here feeds the encode."""
+        chip = getattr(self, "discord_chip", None)
+        if chip is None:
+            return
+        try:
+            if not chip.winfo_exists():
+                return
+        except Exception:
+            return
+        try:
+            res = discord_verdict_for_settings(self.gather_advanced_options())
+        except Exception:
+            return
+        self._discord_verdict = res
+        try:
+            chip.configure(text=str(res.get("label") or ""),
+                           style=self._DISCORD_CHIP_STYLES.get(res.get("verdict"), "Sub.TLabel"),
+                           cursor=("hand2" if res.get("reasons") else ""))
+            chip.bind("<Button-1>", lambda _e: self._show_discord_verdict_detail())
+        except Exception:
+            pass
+
+    def _show_discord_verdict_detail(self):
+        """Full reason list behind the chip, on click."""
+        res = getattr(self, "_discord_verdict", None) or {}
+        reasons = list(res.get("reasons") or [])
+        body = str(res.get("label") or "")
+        if reasons:
+            body += "\n\n" + "\n".join(f"- {r}" for r in reasons)
+            body += ("\n\nTurn on 'Discord-compatible' in Advanced to force "
+                     "H.264 + AAC (MP4).")
+        try:
+            messagebox.showinfo(self._t("dlg.discord_verdict", "Discord playback"), body)
         except Exception:
             pass
 
@@ -11372,6 +12584,16 @@ def _print_summary(stats_list):
                   f"({ratio*100:.1f}% of original)")
         except Exception:
             pass
+        # Measured, not planned: a codec race or an audio copy can make the
+        # delivered file differ from what was requested.
+        try:
+            _op = s.get("output_path")
+            if _op and os.path.exists(_op):
+                _dv = discord_verdict_for_output(_op)
+                if _dv.get("video"):
+                    print(f"  [Discord] {discord_verdict_text(_dv)}")
+        except Exception:
+            pass
 
 def build_arg_parser():
     p = argparse.ArgumentParser(
@@ -11458,8 +12680,10 @@ def build_arg_parser():
                         "(default trim is a zero-loss stream copy snapped to a keyframe)")
     p.add_argument("--suggest-trim", nargs="?", const=20.0, type=float, default=None,
                    metavar="CLIP_SECONDS",
-                   help="Analyze audio energy and print candidate trim ranges (default "
-                        "20s clips), then exit without compressing. Mic tracks weigh extra.")
+                   help="Print candidate trim ranges (default 20s clips), then exit "
+                        "without compressing. Uses the worst-scoring VMAF window from "
+                        "past encodes of this file when there is one, plus audio energy "
+                        "peaks (mic tracks weigh extra).")
     p.add_argument("--spotlight", default=None, metavar="START-END",
                    help="Keep the whole video but boost quality in this range via an "
                         "x264/x265 rate zone; the rest pays for it under the same cap.")
@@ -11501,6 +12725,30 @@ def build_arg_parser():
     p.add_argument("--enqueue", nargs="+", metavar="FILE",
                    help="Hand file(s) to a running BitCrusher window (used by 'Send to'); "
                         "launches the app if none is running")
+    p.add_argument("--serve", nargs="?", const=0, type=int, metavar="PORT",
+                   help="Run the remote-upload server (headless) so a phone on the "
+                        "same network can upload a file and get it back compressed. "
+                        "Off by default and bound to 127.0.0.1 unless the saved "
+                        "settings say otherwise; a non-loopback bind requires TLS "
+                        "and a password. Blocks until Ctrl+C. Each upload is "
+                        "compressed with the flags this invocation carried "
+                        "(-t, --encoder, ...); outputs land in -o, or the current "
+                        "directory. Needs: pip install -r requirements-remote.txt")
+    p.add_argument("--serve-bind", default=None, metavar="ADDR",
+                   help="With --serve: bind address override (default 127.0.0.1). "
+                        "Anything other than loopback needs a TLS certificate in "
+                        "settings and refuses to start without one.")
+    p.add_argument("--serve-set-password", action="store_true",
+                   help="Prompt for the remote-upload password, store its hash in "
+                        "user_settings/remote_auth.json, then exit")
+    p.add_argument("--serve-make-cert", action="store_true",
+                   help="Generate this machine's own self-signed TLS certificate "
+                        "into user_settings/, point the settings at it, then exit. "
+                        "Required for a non-loopback --serve. The key is generated "
+                        "per install and is never shipped: a certificate bundled in "
+                        "a release would share one private key across every user, "
+                        "which is worse than no TLS at all. Self-signed means "
+                        "encryption without authentication - browsers will warn once.")
     p.add_argument("--register-send-to", action="store_true",
                    help="Install the Explorer 'Send to > BitCrusher' shortcut, then exit")
     p.add_argument("--unregister-send-to", action="store_true",
@@ -11513,6 +12761,158 @@ def build_arg_parser():
                         "print one JSON array of per-file results to stdout at the end")
     p.add_argument("--version", action="store_true", help="Print version info and exit")
     return p
+
+class _CliRemoteSink:
+    """UploadSink for headless `--serve`.
+
+    The GUI sink hands files to the Tk queue; this one owns a small worker pool
+    that calls the same per-file encode the CLI already uses, so a headless box
+    behaves exactly like the window does.
+    """
+
+    def __init__(self, run_one, workers: int = 1, status_cb=None):
+        self.run_one = run_one
+        self.status_cb = status_cb or (lambda m, lvl="INFO": None)
+        self._queue: "queue.Queue" = queue.Queue()
+        self._states: dict = {}
+        self._lock = threading.Lock()
+        self._stop = False
+        self._workers = [
+            threading.Thread(target=self._work, name=f"bc_serve{i}", daemon=True)
+            for i in range(max(1, int(workers)))
+        ]
+        for t in self._workers:
+            t.start()
+
+    # -- UploadSink -------------------------------------------------------
+    def accept(self, path: str, meta: dict) -> str:
+        job_id = os.urandom(8).hex()
+        with self._lock:
+            self._states[job_id] = {"state": "queued", "pct": 0, "out_path": "",
+                                    "error": "",
+                                    "name": (meta or {}).get("display_name", "")}
+        self._queue.put((job_id, path))
+        return job_id
+
+    def status(self, job_id: str) -> dict:
+        with self._lock:
+            return dict(self._states.get(job_id)
+                        or {"state": "failed", "pct": 0, "out_path": "",
+                            "error": "unknown job"})
+
+    # -- worker -----------------------------------------------------------
+    def _set(self, job_id, **kw):
+        with self._lock:
+            self._states.setdefault(job_id, {}).update(kw)
+
+    def _work(self):
+        while not self._stop:
+            try:
+                item = self._queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            job_id, path = item
+            name = self.status(job_id).get("name") or os.path.basename(path)
+            self._set(job_id, state="running", pct=0)
+            self.status_cb(f"[Remote] Compressing {name} ...")
+            try:
+                s = self.run_one(path) or {}
+                out = s.get("output_path") or s.get("out_path") or ""
+                if out and os.path.isfile(out):
+                    self._set(job_id, state="done", pct=100, out_path=out)
+                    self.status_cb(f"[Remote] Done: {name} -> "
+                                   f"{os.path.basename(out)}")
+                else:
+                    err = str(s.get("error") or "encode produced no output")
+                    self._set(job_id, state="failed", error=err)
+                    self.status_cb(f"[Remote] Failed: {name} - {err}", "ERROR")
+            except Exception as e:
+                # The quarantine file is left in place so the upload can be
+                # retried without the phone re-sending it.
+                self._set(job_id, state="failed", error=str(e))
+                self.status_cb(f"[Remote] Failed: {name} - {e}", "ERROR")
+
+    def stop(self):
+        self._stop = True
+        for _ in self._workers:
+            self._queue.put(None)
+
+
+def _cli_serve(args, run_one, settings_dir: str) -> int:
+    """Blocking headless remote-upload server. Returns a process exit code."""
+    try:
+        from support import remote_server as _rs
+    except Exception as e:
+        print(f"[Remote] Server module unavailable: {e}")
+        return 1
+
+    missing = _rs.remote_deps_missing()
+    if missing:
+        print(_rs.remote_deps_message())
+        return 1
+
+    settings = {}
+    try:
+        with open(os.path.join(settings_dir, "settings.json"), "r",
+                  encoding="utf-8") as f:
+            settings = json.load(f) or {}
+    except Exception:
+        settings = {}
+    cfg = _rs.load_remote_config(settings)
+    # Flags win over the saved settings, but only for the two things the flags
+    # cover - TLS, the password requirement and the caps stay as configured.
+    if getattr(args, "serve", None):
+        cfg["port"] = int(args.serve)
+    if getattr(args, "serve_bind", None):
+        cfg["bind"] = str(args.serve_bind).strip()
+
+    reasons = _rs.validate_remote_config(cfg, settings_dir)
+    if reasons:
+        print("[Remote] Refusing to start:")
+        for r in reasons:
+            print(f"  - {r}")
+        if not _rs.has_password(settings_dir):
+            print("  Set one with: BitCrusherV9.py --serve-set-password")
+        return 1
+
+    sink = _CliRemoteSink(run_one, workers=max(1, int(getattr(args, "jobs", 1) or 1)),
+                          status_cb=_cli_status)
+    # Headless still paints the page in the saved theme - the phone sees the
+    # same colours whether the desktop window is open or not.
+    _theme = str(settings.get("theme") or settings.get("ui_theme") or "Dark")
+    srv = _rs.RemoteServer(sink, settings_dir, cfg, status_cb=_cli_status,
+                           palette=dict(THEMES.get(_theme) or THEMES["Dark"]))
+    try:
+        srv.start()
+    except _rs.RemoteError as e:
+        print(f"[Remote] Refusing to start: {e}")
+        sink.stop()
+        return 1
+
+    scope = ("loopback only - reachable from this machine"
+             if _rs.is_loopback_bind(cfg["bind"]) else "reachable from the LAN")
+    print(f"[Remote] Listening on {srv.url}  ({scope})")
+    if not srv.tls_enabled:
+        print("[Remote] Plaintext HTTP. Fine on loopback; on a network it is "
+              "sniffable - configure tls_cert/tls_key.")
+    print(f"[Remote] Quarantine: {srv.quarantine_dir}")
+    print(f"[Remote] Uploads compress to: {'-o directory' if args.output else os.getcwd()}"
+          f"  (target {args.target_size:g} MB)")
+    print("[Remote] Press Ctrl+C to stop.")
+
+    try:
+        while not _cli_cancel():
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.stop()
+        sink.stop()
+    print("[Remote] Stopped.")
+    return 0
+
 
 def _run_bc_worker(spec_path: str, result_path: str) -> int:
     """Hidden worker entrypoint for the process-based concurrency engine (see
@@ -11650,6 +13050,69 @@ def cli_main():
     if getattr(args, "vmaf_objective", None):
         set_vmaf_objective_pref(args.vmaf_objective)
 
+    # Remote-upload password: prompt, hash, exit. No input files required, and
+    # it must work before the server can ever be started.
+    if getattr(args, "serve_set_password", False):
+        from support.remote_server import set_password as _rs_set_password
+        import getpass
+        try:
+            pw = getpass.getpass("New remote-upload password: ")
+            again = getpass.getpass("Repeat: ")
+        except Exception as e:
+            print(f"[Remote] Could not read a password: {e}")
+            return 1
+        if not pw:
+            print("[Remote] Empty password - nothing was changed.")
+            return 1
+        if pw != again:
+            print("[Remote] Passwords did not match - nothing was changed.")
+            return 1
+        try:
+            _rs_set_password(USER_SETTINGS_DIR, pw)
+        except Exception as e:
+            print(f"[Remote] Could not store the password: {e}")
+            return 1
+        print(f"[Remote] Password stored in "
+              f"{os.path.join(USER_SETTINGS_DIR, 'remote_auth.json')}")
+        return 0
+
+    if getattr(args, "serve_make_cert", False):
+        from support import remote_server as _rs
+        try:
+            cert, key = _rs.generate_self_signed_cert(USER_SETTINGS_DIR)
+        except _rs.RemoteDependencyError as e:
+            print(f"[Remote] {e}")
+            return 1
+        except Exception as e:
+            print(f"[Remote] Could not create a certificate: {e}")
+            return 1
+        # Persist the paths so --serve picks them up without a manual edit.
+        _settings_path = os.path.join(USER_SETTINGS_DIR, "settings.json")
+        try:
+            with open(_settings_path, "r", encoding="utf-8") as f:
+                _s = json.load(f) or {}
+        except Exception:
+            _s = {}
+        _ru = dict(_s.get("remote_upload") or {})
+        _ru["tls_cert"], _ru["tls_key"] = cert, key
+        _s["remote_upload"] = _ru
+        try:
+            _tmp = _settings_path + ".tmp"
+            with open(_tmp, "w", encoding="utf-8") as f:
+                json.dump(_s, f, indent=2)
+            os.replace(_tmp, _settings_path)
+        except Exception as e:
+            print(f"[Remote] Certificate written, but settings.json could not be "
+                  f"updated ({e}). Set tls_cert/tls_key by hand.")
+        print(f"[Remote] Certificate: {cert}")
+        print(f"[Remote] Private key: {key}   (stays on this machine)")
+        print(f"[Remote] {_rs.describe_cert(cert)}")
+        print("[Remote] Self-signed: encrypts the connection, does not prove the "
+              "server is yours. Your browser will warn once - that is expected.")
+        print("[Remote] Now set 'bind' to 0.0.0.0 in settings.json (or use "
+              "--serve-bind 0.0.0.0) to accept connections from the network.")
+        return 0
+
     # Explorer "Send to" integration management.
     if getattr(args, "register_send_to", False):
         ok, msg = register_send_to()
@@ -11722,12 +13185,17 @@ def cli_main():
         globals()["_BC_STARTUP_TARGET"] = _enq_target
         return None
 
-    if not args.inputs:
+    # --serve is the one CLI mode with no inputs of its own: the files arrive
+    # over the socket. Everything below still runs (tool checks, adv build,
+    # _one) so an upload takes the identical encode path a local file does.
+    _serving = getattr(args, "serve", None) is not None
+
+    if not args.inputs and not _serving:
 
         return None
 
     files = _expand_inputs(args.inputs)
-    if not files:
+    if not files and not _serving:
         print("No matching files found.")
         return 1
 
@@ -11773,9 +13241,11 @@ def cli_main():
         _any = False
         for src in files:
             print(f"{os.path.basename(src)}:")
-            cands = suggest_trim_ranges(src, clip_seconds=_clip_s)
+            cands = suggest_trim_ranges(src, clip_seconds=_clip_s,
+                                        worst_rows=_worst_windows_for(src))
             if not cands:
-                print("  no clear audio peaks found - set the trim manually (--trim START-END)")
+                print("  no clear audio peaks or measured worst window - "
+                      "set the trim manually (--trim START-END)")
                 continue
             _any = True
             for i, c in enumerate(cands, 1):
@@ -11901,7 +13371,11 @@ def cli_main():
             files = [f for f in files if f not in _confirmed_reuse] + \
                     [f for f in files if f in _confirmed_reuse]
 
-    out_dir = _infer_save_dir(args.output, files[0])
+    # Serving with no local inputs has no "first input" to sit beside, so
+    # outputs go to -o or the working directory - never the quarantine folder,
+    # which the janitor sweeps.
+    out_dir = _infer_save_dir(args.output, files[0] if files
+                              else os.path.join(os.getcwd(), "x"))
     adv = _build_adv_from_args(args)
     target_mb = max(1, int(round(args.target_size)))
     stats_all = []
@@ -12103,6 +13577,11 @@ def cli_main():
                     _cli_status(f"[MultiTarget] {_mb:g} MB export failed: {_me}",
                                 level="ERROR")
         return s
+
+    # Headless remote upload: same _one, same adv, same target - the only
+    # difference is where the file came from. Blocks until Ctrl+C.
+    if _serving:
+        return _cli_serve(args, _one, USER_SETTINGS_DIR)
 
     jobs = max(1, int(getattr(args, "jobs", 1) or 1))
     if jobs > 1 and len(files) > 1:
