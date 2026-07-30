@@ -10,6 +10,7 @@ import tempfile
 import encode.ffmpeg_exec as ffmpeg_exec
 from encode.ffmpeg_exec import si, NO_WIN, _ffmpeg_has_filter
 from encode.encoder_caps import best_av1_encoder
+import encode.media_probe as media_probe
 from encode.media_probe import _probe_video_stream
 from encode.quality_metrics import _vmaf_model_opt
 
@@ -92,28 +93,79 @@ def _probe_film_grain(input_path: str, *, scale_width: int, duration_s: float,
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _probe_codec_args(codec_tag: str, av1_enc: str | None, video_bps: int):
+# Production parameter strings, mirrored into the probe so the race measures
+# the encoder each candidate will ACTUALLY be driven with (see _probe_codec_args).
+_PROBE_X264_PARAMS = ("aq-mode=3:aq-strength=1.00:mbtree=1:deblock=-1,-1:psy-rd=1.10,0.15"
+                      ":rc-lookahead=80:qcomp=0.70:ipratio=1.30:pbratio=1.20:trellis=2:bframes=8:ref=5")
+_PROBE_X265_PARAMS = "log-level=none:rc-lookahead=80:bframes=8:ref=5"
+# 2-pass-safe SVT params (enable-overlays is rejected in multi-pass mode, and
+# the production encode for a size-targeted job is two-pass).
+_PROBE_SVT_PARAMS = "tune=0:scd=1"
+
+_NULL_DEV = "NUL" if os.name == "nt" else "/dev/null"
+
+
+def _needs_two_pass_probe(cargs: list[str]) -> bool:
+    """SVT-AV1 is the only probe encoder that can't be held to -b:v in one pass."""
+    return "libsvtav1" in cargs
+
+
+def _probe_codec_args(codec_tag: str, av1_enc: str | None, video_bps: int, *,
+                      preset: str | None = None, quality_mode: str = "",
+                      duration_s: float = 0.0):
     """
     Probe-encode args (codec, ffmpeg_args, suffix) for codec ranking.
 
-    Fairness matters more than speed here: x264/x265 single-pass ABR on a short
-    clip can blow 30-40% past the budget (measured: x264 used 38% more bits than
-    SVT-AV1 at the same -b:v and "won" the race with them), so the x26x probes
-    get a maxrate/bufsize cap. AV1 probes now go into .mp4 — the .mkv container
-    produced non-monotonic timestamps that broke VMAF frame alignment.
+    Fairness matters more than speed here, in two directions:
+
+    Bit fairness — x264/x265 single-pass ABR on a short clip can blow 30-40%
+    past the budget (measured: x264 used 38% more bits than SVT-AV1 at the same
+    -b:v and "won" the race with them), so the x26x probes get a maxrate/bufsize
+    cap.
+
+    Settings fairness — the probe must run each candidate at the settings the
+    real encode will use. It used to pit SVT-AV1 at a hardcoded preset 6 with
+    bare `tune=0` and 8-bit against x264 `medium`, while production ran SVT at
+    preset <=4 with scd/film-grain in 10-bit: the probe measured an encoder that
+    never ships, and x264 won races it would have lost on the full encode.
+    Presets, params and bit depth now come from the same sources the production
+    command builder uses.
+
+    AV1 probes go into .mp4 — the .mkv container produced non-monotonic
+    timestamps that broke VMAF frame alignment.
     """
     t = (codec_tag or "").lower()
     bps = int(video_bps)
     cap = ["-maxrate", str(int(bps * 1.10)), "-bufsize", str(int(bps * 2))]
+    _preset_name = str(preset or "medium").strip().lower()
     if t in ("av1", "svt-av1", "aom-av1") and av1_enc:
         if av1_enc == "libsvtav1":
-            return av1_enc, ["-c:v", "libsvtav1", "-preset", "6", "-svtav1-params", "tune=0"], ".mp4"
+            _p = media_probe._svt_preset_num(_preset_name)
+            if str(quality_mode or "").strip().lower() == "max":
+                _p = str(min(int(_p), 4))
+            _p = str(media_probe._svt_preset_for_duration(_p, duration_s))
+            # Film-grain synthesis is intentionally absent — see
+            # choose_best_codec_by_vmaf's docstring.
+            return av1_enc, ["-c:v", "libsvtav1", "-preset", _p,
+                             "-svtav1-params",
+                             media_probe.svt_params_with_quality(_PROBE_SVT_PARAMS),
+                             "-pix_fmt", "yuv420p10le"], ".mp4"
         if av1_enc == "libaom-av1":
-            return av1_enc, ["-c:v", "libaom-av1", "-cpu-used", "6", "-row-mt", "1", "-tile-columns", "1"], ".mp4"
+            _cpu = media_probe._AOM_CPU_USED_MAP.get(_preset_name, "6")
+            # Iterative size-targeting re-encodes the whole file many times, so
+            # production floors libaom at cpu-used 6 in bitrate mode; match it.
+            _cpu = str(max(int(_cpu), 6))
+            return av1_enc, ["-c:v", "libaom-av1", "-cpu-used", _cpu,
+                             "-row-mt", "1", "-tile-columns", "1"], ".mp4"
         return av1_enc, ["-c:v", av1_enc, "-preset", "p5"], ".mp4"
+    # x26x reject SVT's numeric presets; fall back if an AV1 preset leaked in.
+    if _preset_name.isdigit():
+        _preset_name = "medium"
     if t in ("x265", "hevc", "libx265"):
-        return "libx265", ["-c:v", "libx265", "-preset", "medium", "-x265-params", "log-level=none"] + cap, ".mp4"
-    return "libx264", ["-c:v", "libx264", "-preset", "medium"] + cap, ".mp4"
+        return "libx265", ["-c:v", "libx265", "-preset", _preset_name,
+                           "-x265-params", _PROBE_X265_PARAMS] + cap, ".mp4"
+    return "libx264", ["-c:v", "libx264", "-preset", _preset_name,
+                       "-x264-params", _PROBE_X264_PARAMS] + cap, ".mp4"
 
 
 def _probe_vmaf_fullrate(ff: str, ref_path: str, dist_path: str) -> float | None:
@@ -205,7 +257,9 @@ def choose_best_codec_by_vmaf(input_path: str, *, duration_s: float, video_bps: 
                               incumbent: str | None = None, switch_margin: float = 0.75,
                               status_cb=None, result_sink: dict | None = None,
                               ref_cache: dict | None = None,
-                              ref_cache_dir: str | None = None) -> str | None:
+                              ref_cache_dir: str | None = None,
+                              preset: str | None = None,
+                              quality_mode: str = "") -> str | None:
     """
     Probe short representative clips with each candidate codec at the SAME video
     bitrate and return the codec tag with the highest VMAF (best quality for the
@@ -217,6 +271,12 @@ def choose_best_codec_by_vmaf(input_path: str, *, duration_s: float, video_bps: 
     scored (early + late) so a single unlucky scene can't decide the winner, and
     an incumbent is only dethroned when the challenger wins by switch_margin —
     re-running the same job should not flip-flop between codecs on noise.
+
+    preset/quality_mode are the settings the real encode will run with; they are
+    threaded into _probe_codec_args so the race compares shipping configurations
+    rather than an arbitrary probe-only one. Film-grain synthesis is excluded on
+    purpose — it measures LOWER on VMAF than the grain it replaces, so mirroring
+    it here would cost AV1 races it deserves to win.
     """
     ff = ffmpeg_exec.FFMPEG
     if not ff or not _ffmpeg_has_filter("libvmaf"):
@@ -254,11 +314,30 @@ def choose_best_codec_by_vmaf(input_path: str, *, duration_s: float, video_bps: 
             if not ref_clip:
                 continue
             for tag in cand:
-                enc_name, cargs, suffix = _probe_codec_args(tag, av1_enc, int(video_bps))
+                enc_name, cargs, suffix = _probe_codec_args(
+                    tag, av1_enc, int(video_bps), preset=preset,
+                    quality_mode=quality_mode, duration_s=dur)
                 clip = os.path.join(work, f"cand_{tag}_{si_n}{suffix}")
-                cmd = [ff, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{t0:.3f}", "-t", f"{seg:.3f}",
-                       "-i", os.path.abspath(input_path), "-an"] + _scale_vf + ["-pix_fmt", "yuv420p"] + \
-                      cargs + ["-b:v", str(int(video_bps)), clip]
+                head = [ff, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{t0:.3f}", "-t", f"{seg:.3f}",
+                        "-i", os.path.abspath(input_path), "-an"] + _scale_vf + ["-pix_fmt", "yuv420p"] + \
+                       cargs + ["-b:v", str(int(video_bps))]
+                # SVT-AV1 single-pass VBR is wildly loose (measured 2x target on
+                # probe segments), and the bit-normalizer below then docked AV1
+                # ~4 VMAF for an overshoot that only exists in the probe —
+                # production runs it two-pass and holds the budget. x26x hit the
+                # target on one pass thanks to their maxrate cap, which SVT
+                # rejects outside CRF mode, so only SVT needs the second pass.
+                if _needs_two_pass_probe(cargs):
+                    plog = os.path.join(work, f"p2p_{tag}_{si_n}")
+                    r1 = subprocess.run(head + ["-pass", "1", "-passlogfile", plog,
+                                                "-f", "null", _NULL_DEV],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                        startupinfo=si, creationflags=NO_WIN)
+                    if r1.returncode != 0:
+                        continue
+                    cmd = head + ["-pass", "2", "-passlogfile", plog, clip]
+                else:
+                    cmd = head + [clip]
                 r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                    startupinfo=si, creationflags=NO_WIN)
                 if r.returncode != 0 or not os.path.exists(clip) or os.path.getsize(clip) == 0:
@@ -303,7 +382,9 @@ def choose_best_codec_by_vmaf(input_path: str, *, duration_s: float, video_bps: 
                 for k in sorted(results, key=lambda kk: -results[kk]))
             status_cb(f"[Codec] VMAF probe @ {int(video_bps)//1000}kbps, "
                       f"{int(scale_width) if scale_width else 'src'}w, {len(starts)} segment(s), "
-                      f"bit-normalized → {tbl}. Picking {winner}.", "INFO")
+                      f"preset {preset or 'medium'}"
+                      + (f"/{quality_mode}" if quality_mode else "")
+                      + f", bit-normalized -> {tbl}. Picking {winner}.", "INFO")
         return winner
     except Exception:
         return None
