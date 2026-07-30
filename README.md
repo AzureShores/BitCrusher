@@ -10,24 +10,60 @@ past encodes to make better first-attempt decisions over time.
 > "Add python.exe to PATH" during install. `BitCrusher.bat` will tell you
 > if it's missing.
 
-![BitCrusher GUI](assets/screenshot.png)
+![BitCrusher GUI](assets/screenshot-queue.png)
 
 ## Features
 
 - Video, audio, image, and PDF compression in one queue, routed automatically.
 - Measured codec race: your requested encoder vs AV1, picked by actual VMAF.
+  Every candidate is probed with the settings its real encode would use — same
+  preset, same parameters, same bit depth, and AV1 probed two-pass the way it
+  actually ships — so the race can't crown a configuration that never runs.
 - Two-pass rate control, per-scene bitrate zones, artifact-aware prefiltering
   (deband/deblock/denoise — kept only when it measurably beats the plain
   encode, never applied blind).
+- `--quality max` spends encode time where it pays: slow SVT-AV1 presets on
+  short clips with variance boost enabled, and longer clips automatically
+  floored to a preset that still finishes. The size ceiling holds either way.
 - Quality floor (min VMAF) and Spotlight mode (boost quality in just one
   time range, e.g. the play everyone's clipping, while the rest compresses
   normally).
-- Trim-aware compression, folder watcher with per-file rules and a custom
-  save folder, pipeline mode (watch → compress → webhook, zero-touch),
-  Explorer "Send to", Discord webhook.
-- Duplicate-file scan, save/load profiles, dashboard with a VMAF sparkline
-  + codec-race scoreboard, side-by-side visual quality compare.
-- System tray minimize, multi-language UI, custom themes.
+- Multi-target exports — `-t 8 --also-target 25 --also-target 50` delivers one
+  file per cap in a single run, reusing the analysis and probes the first
+  target already paid for instead of starting over.
+- Parallel encoding (`-j N`), each job in its own process.
+- A queue that stays editable while it runs: a per-file `Target` column you
+  double-click and type into (`10`, `8.5`, `700kb`), drag-to-reorder that
+  actually changes what encodes next, and "Encode Again With…" to re-run a
+  finished file with one knob changed — pre-filled with what the last run
+  really used, including the encoder that won the codec race.
+- Reports for a finished file: scene report card (per-scene bitrate measured
+  from the delivered file's own packets, ranked by share of the budget, with
+  thumbnails of the top spenders), Discord playback verdict (whether it will
+  inline-play, and why not), and `--estimate` for what the ledger already
+  knows about a file without encoding anything.
+- Trim-aware compression, `--suggest-trim` (candidate ranges built from the
+  measured worst-quality window when a past encode exists, audio-energy peaks
+  otherwise), folder watcher with per-file rules and a custom save folder,
+  pipeline mode (watch → compress → webhook, zero-touch), Explorer "Send to",
+  Discord webhook.
+- Duplicate-file scan, in the queue and across sessions — offers to reuse an
+  earlier delivered output when the content, the size ceiling and any pinned
+  encoder all match, re-verified before it actually skips the encode.
+- `--name-template` for full control of output filenames.
+- Optional remote upload: send a file from your phone, get it back compressed.
+  Off by default, loopback-only unless you deliberately open it up — see
+  [Remote upload](#remote-upload-optional) below.
+- Save/load profiles, dashboard with a VMAF sparkline + codec-race scoreboard,
+  side-by-side visual quality compare.
+- System tray minimize, multi-language UI, and a Theme Lab for building your
+  own themes — live preview, a randomizer that only produces palettes you can
+  actually read, and a contrast check on every colour pair (queue rows and log
+  lines included, since those are the ones that go invisible first).
+- Workflow niceties: clipboard paste-in, keyboard shortcuts (Ctrl+O / Ctrl+Enter
+  / Esc / Delete), Retry Failed, before/after size chip in the queue, completion
+  toast, optional auto-open of the output folder, and a startup self-check that
+  verifies ffmpeg/ffprobe and a writable output folder before you queue anything.
 - A learning system that seeds future encodes from measured past outcomes.
 - Fully offline core — no data leaves your machine during a compression job.
 - Opt-in update check against GitHub Releases (asked once on first launch,
@@ -35,6 +71,42 @@ past encodes to make better first-attempt decisions over time.
 - Advanced Options > Export Sanitized Logs makes a redacted copy of the
   learning ledger, recent job logs, and settings — safe to paste into a bug
   report (strips your home path and any saved webhook URL).
+
+## Themes
+
+<div align="center">
+<table>
+<tr>
+<td></td>
+<td><img src="assets/theme-1.png" alt="Randomized theme 1" width="140"></td>
+<td><img src="assets/theme-2.png" alt="Randomized theme 2" width="140"></td>
+<td></td>
+</tr>
+<tr>
+<td><img src="assets/theme-8.png" alt="Randomized theme 8" width="140"></td>
+<td colspan="2" rowspan="2" align="center"><img src="assets/icon.png" alt="BitCrusher" width="96"></td>
+<td><img src="assets/theme-3.png" alt="Randomized theme 3" width="140"></td>
+</tr>
+<tr>
+<td><img src="assets/theme-7.png" alt="Randomized theme 7" width="140"></td>
+<td><img src="assets/theme-4.png" alt="Randomized theme 4" width="140"></td>
+</tr>
+<tr>
+<td></td>
+<td><img src="assets/theme-6.png" alt="Randomized theme 6" width="140"></td>
+<td><img src="assets/theme-5.png" alt="Randomized theme 5" width="140"></td>
+<td></td>
+</tr>
+</table>
+</div>
+
+Eight consecutive clicks of **Themes > Theme Lab > Randomize** — no hand-picking,
+no retries, nothing thrown away. The randomizer keeps the background out of the
+mid-grey band where no text can reach a readable contrast, then pushes every
+colour until it clears WCAG AA against each surface it actually sits on —
+including the queue's status rows and the log's warnings, which are the first
+things to go invisible. Worst contrast pair across all eight: 4.58:1, against a
+4.5:1 readable minimum.
 
 ## Help translate it
 
@@ -111,6 +183,55 @@ python BitCrusherV9.py clip.mp4 -t 8    # CLI — any argument switches to CLI m
 ```
 
 > macOS/Linux support is new — if you hit a snag, please open an issue.
+
+## Remote upload (optional)
+
+Send a file from your phone to the PC that's already running BitCrusher, and get
+it back compressed. **Off by default**, and when you turn it on it binds
+`127.0.0.1` — enabling the feature does not by itself put anything on your
+network. Exposing it to the LAN is a separate setting that additionally requires
+a TLS certificate and a password; without them the server refuses to start
+rather than serving plaintext.
+
+```
+pip install -r requirements-remote.txt   # extras, not part of the base install
+python BitCrusherV9.py --serve-set-password
+python BitCrusherV9.py --serve -t 8      # headless on 127.0.0.1, Ctrl+C to stop
+```
+
+To reach it from your phone, set `bind` to `0.0.0.0` and give it a certificate —
+BitCrusher makes one for you:
+
+```
+python BitCrusherV9.py --serve-make-cert          # writes it into user_settings/
+python BitCrusherV9.py --serve --serve-bind 0.0.0.0 -t 8
+```
+
+Then open `https://<your-pc-ip>:8420` on the phone. You may also need to allow
+the port through your firewall.
+
+Or do all of it in **Settings > Watcher > Remote Upload**: hit **Install
+dependencies…** (it lists every package and asks twice before downloading
+anything), set a password, pick the bind address, hit **Create certificate…**,
+tick Enable. That panel also mints one-time pairing links (with a QR code) so a
+new device signs in by scanning instead of typing.
+
+![Remote Upload settings, in a custom Theme Lab theme](assets/screenshot-watcher.png)
+
+The page your phone sees is painted in whatever theme the app is using, so a
+theme switch on the desktop shows up on the next page load.
+
+**About the certificate.** It is generated on your machine, for your machine,
+and the private key never leaves it — no certificate is shipped in a release,
+because one key shared by every user would be worse than no encryption at all.
+Being self-signed, it encrypts the connection but cannot prove the server is
+yours, so your phone shows a warning the first time. Accept it once. If that
+trade isn't good enough for the network you're on, leave the bind on
+`127.0.0.1` and reach it through a tunnel (Tailscale, SSH forward) instead.
+
+Uploads are checked against known media signatures. That filters out an obvious
+`.exe` or `.zip`; it is **not** protection against a maliciously crafted media
+file, and it is not described as such anywhere in the app.
 
 ## Docs
 
