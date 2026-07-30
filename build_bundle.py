@@ -29,6 +29,11 @@ Usage:
   python build_bundle.py --os win          # just the local machine's target
   python build_bundle.py --version 1.2.0 --os linux
   python build_bundle.py --os win --portable   # + win64-portable.zip
+  python build_bundle.py --os win --portable --with-remote  # + remote upload
+
+Remote upload's server stack (requirements-remote.txt) is NOT bundled unless
+--with-remote is passed: the feature is opt-in and off by default, so a normal
+build should not carry fastapi/uvicorn for everyone who never turns it on.
 """
 from __future__ import annotations
 
@@ -168,7 +173,7 @@ def find_tkinter_donor() -> Path:
     return Path(out.stdout.strip())
 
 
-def embed_python(runtime: Path, tmp: Path) -> None:
+def embed_python(runtime: Path, tmp: Path, with_remote: bool = False) -> None:
     """Assemble a self-contained Python runtime: python.org embeddable build
     + tkinter grafted in from a local donor + pip + requirements.txt deps."""
     runtime.mkdir(parents=True, exist_ok=True)
@@ -212,10 +217,20 @@ def embed_python(runtime: Path, tmp: Path) -> None:
                      "--no-warn-script-location", "-q",
                      "-r", str(ROOT / "requirements.txt")], check=True)
 
+    # Remote upload is opt-in: its server stack is a real weight increase and
+    # most people never turn the feature on, so it is NOT bundled by default.
+    if with_remote:
+        log("pip install requirements-remote.txt (opt-in remote upload)")
+        subprocess.run([str(python_exe), "-m", "pip", "install",
+                         "--no-warn-script-location", "-q",
+                         "-r", str(ROOT / "requirements-remote.txt")], check=True)
+
     log("sanity-check runtime imports")
-    check_mods = ("tkinter", "numpy", "scipy", "sklearn", "cv2", "PIL",
+    check_mods = ["tkinter", "numpy", "scipy", "sklearn", "cv2", "PIL",
                   "psutil", "requests", "watchdog", "yt_dlp",
-                  "tkinterdnd2", "pystray", "plyer")
+                  "tkinterdnd2", "pystray", "plyer"]
+    if with_remote:
+        check_mods += ["fastapi", "uvicorn", "multipart", "argon2", "qrcode"]
     subprocess.run([str(python_exe), "-c",
                      "import " + ", ".join(check_mods)], check=True)
 
@@ -229,7 +244,7 @@ endlocal
 """
 
 
-def build_portable_win(version: str) -> Path:
+def build_portable_win(version: str, with_remote: bool = False) -> Path:
     log("=== building win64-portable ===")
     workroot = DIST / "stage-win64-portable"
     if workroot.exists():
@@ -239,7 +254,7 @@ def build_portable_win(version: str) -> Path:
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         place_win(stage / "tools", False, tmp)
-        embed_python(stage / "runtime", tmp)
+        embed_python(stage / "runtime", tmp, with_remote=with_remote)
     (stage / "BitCrusher-Portable.bat").write_text(PORTABLE_LAUNCHER)
     out_zip = DIST / f"BitCrusher-{version}-win64-portable.zip"
     out_zip.unlink(missing_ok=True)
@@ -312,6 +327,11 @@ def main() -> int:
     ap.add_argument("--portable", action="store_true",
                     help="also build BitCrusher-<ver>-win64-portable.zip "
                          "(embedded Python runtime, no install required)")
+    ap.add_argument("--with-remote", action="store_true",
+                    help="bundle the optional remote-upload server stack "
+                         "(requirements-remote.txt) into the portable runtime. "
+                         "Off by default - the feature is opt-in and most "
+                         "builds should not carry fastapi/uvicorn.")
     args = ap.parse_args()
 
     version = args.version or read_version()
@@ -327,7 +347,7 @@ def main() -> int:
     total = len(targets) + (1 if args.portable else 0)
     if args.portable:
         try:
-            built.append(build_portable_win(version))
+            built.append(build_portable_win(version, args.with_remote))
         except Exception as exc:
             log(f"FAILED portable: {exc}")
     log("built: " + ", ".join(p.name for p in built) if built else "nothing built")
