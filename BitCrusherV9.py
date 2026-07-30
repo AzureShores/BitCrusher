@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from ui.ui_aesthetics import init_aesthetics, animated_retheme, open_theme_lab
+from ui.window_fit import fit_window_later
 import queue
 import types
 import webbrowser
@@ -543,13 +544,17 @@ def bridge_gui_logger_color(widget):
         # direction reads as inverted - brighter dividers than the text
         # they're supposed to sit quietly beneath).
         _div_fg = _hsl_shift(_debug_fg, l_mul=(1.15 if _is_light_color(CARD_BG) else 0.65))
+        # WARN and ERROR come straight from the palette, and a palette is free
+        # to hold an amber that vanishes on its own light card. Judge them
+        # against the log's real background, not the card's.
+        _log_bg = _hsl_shift(CARD_BG, l_mul=0.98)
         widget.tag_configure("INFO",    foreground=FG)
         widget.tag_configure("DEBUG",   foreground=_debug_fg)
-        widget.tag_configure("WARNING", foreground=WARN)
-        widget.tag_configure("ERROR",   foreground=ERROR)
+        widget.tag_configure("WARNING", foreground=ensure_contrast(WARN, _log_bg))
+        widget.tag_configure("ERROR",   foreground=ensure_contrast(ERROR, _log_bg))
         widget.tag_configure("CRITICAL",foreground="#ffffff", background="#b00020")
         widget.tag_configure("DIV",     foreground=_div_fg)
-        widget.configure(background=_hsl_shift(CARD_BG, l_mul=0.98), fg=FG, insertbackground=FG)
+        widget.configure(background=_log_bg, fg=FG, insertbackground=FG)
     except Exception:
         pass
 
@@ -1132,7 +1137,8 @@ load_user_themes_at_startup()
 
 APP_BG=CARD_BG=FG=FG_SUB=ACCENT=ACCENT_2=ERROR=WARN=TITLE=None
 
-from ui.color_utils import _hsl_shift, _is_light_color, _contrast_fg
+from ui.color_utils import (_hsl_shift, _is_light_color, _contrast_fg,
+                            ensure_contrast)
 
 def _use_palette(name: str):
     
@@ -1358,6 +1364,20 @@ def retheme_runtime(self, style: ttk.Style, theme_name: str):
         # was first built, which can go straight to unreadable against the
         # new background.
         bridge_gui_logger_color(self.log_text)
+    except Exception:
+        pass
+    try:
+        # Same reason as the log tags above: the queue's status-row tags out-
+        # rank the Treeview style, so they need re-tinting for the new palette.
+        self.queue_box.apply_status_tags()
+    except Exception:
+        pass
+    try:
+        # And the plain-language feed's quality-score tag, set once at build
+        # time from the palette's accent - stale after any theme switch.
+        _feed_bg = _hsl_shift(CARD_BG, l_mul=0.98)
+        self.stage_text.tag_configure("QSCORE",
+                                      foreground=ensure_contrast(ACCENT, _feed_bg))
     except Exception:
         pass
     try:
@@ -2235,12 +2255,17 @@ def compress_video(input_path: str, save_path: str, status_cb,
             fps=float(fps or fr or 30.0),
             budget_kbps=float(target_bitrate) / 1000.0,
             conservative_bias=0.5,
+            quality_mode=str((advanced_options or {}).get("quality_mode") or "balanced"),
         )
         if isinstance(_prof, dict):
             _ppreset = _prof.get("preset")
             _ptune = _prof.get("tune")
             if _ppreset and not (advanced_options or {}).get("preset"):
                 advanced_options["preset"] = str(_ppreset)
+                # Remember that this preset came from the profile model, not the
+                # user: if the codec race later switches encoders, an x264 preset
+                # name must not be carried over to AV1 (see the re-profile below).
+                advanced_options["_preset_from_profile"] = True
             if _ptune and not (advanced_options or {}).get("tune"):
                 tune = str(_ptune)
             # x264-only AQ/psy-RD tuning from select_profile(); x265's equivalent
@@ -2489,6 +2514,13 @@ def compress_video(input_path: str, save_path: str, status_cb,
                 result_sink=_race_sink,
                 ref_cache=_probe_ref_cache,
                 ref_cache_dir=_probe_ref_dir,
+                # Race the settings that will actually ship, not probe-only ones.
+                # Film-grain synthesis is deliberately NOT mirrored: it measures
+                # LOWER on VMAF (synthesized grain isn't the source's grain) even
+                # though it improves picture-per-byte, so feeding it to the race
+                # would make AV1 lose races it deserves to win.
+                preset=str((advanced_options or {}).get("preset") or "medium"),
+                quality_mode=str((advanced_options or {}).get("quality_mode") or ""),
             )
             if _race_sink.get("scores"):
                 advanced_options["_race_scores"] = _race_sink["scores"]
@@ -2509,6 +2541,29 @@ def compress_video(input_path: str, save_path: str, status_cb,
                     new_w = _new_w2
                     new_h = int(round(h * (new_w / max(1.0, float(w)))))
                     new_h -= new_h % 2
+                # Re-run the profile model for the winner: it was computed for the
+                # incumbent, and preset scales are not shared across encoders (an
+                # x264 "slow" carried into SVT-AV1 means preset 4, by accident).
+                # Only a profile-derived preset is replaced; an explicit user
+                # preset still wins.
+                if (advanced_options or {}).get("_preset_from_profile"):
+                    try:
+                        _prof2 = select_profile(
+                            content=_content,
+                            encoder=str(encoder),
+                            width=int(new_w or w or 0),
+                            fps=float(fps or fr or 30.0),
+                            budget_kbps=float(target_bitrate) / 1000.0,
+                            conservative_bias=0.5,
+                            quality_mode=str((advanced_options or {}).get("quality_mode") or "balanced"),
+                        )
+                        _pp2 = (_prof2 or {}).get("preset")
+                        if _pp2 and str(_pp2) != str(advanced_options.get("preset")):
+                            status_cb(f"[Codec] Preset re-profiled for {encoder}: "
+                                      f"{advanced_options.get('preset')} -> {_pp2}.", "DEBUG")
+                            advanced_options["preset"] = str(_pp2)
+                    except Exception as _rp_e:
+                        status_cb(f"Re-profile skipped: {type(_rp_e).__name__}", "DEBUG")
         except Exception as _ac_e:
             status_cb(f"Auto-codec skipped: {type(_ac_e).__name__}", "DEBUG")
 
@@ -4812,11 +4867,27 @@ class QueueTree(ttk.Treeview):
         ):
             self.heading(col, text=txt)
             self.column(col, width=w, minwidth=mw, stretch=stretch, anchor=anchor)
-        # Status-tinted rows.
+        self.apply_status_tags()
+
+    def apply_status_tags(self):
+        """Re-tint the status rows for the current theme.
+
+        These three were hardcoded to colours picked against the dark theme,
+        which is fine there and unreadable anywhere else: on a light custom
+        theme "done" (#3DDC97 on lime) measured 1.53:1 against the row
+        background, where 4.5:1 is the readable minimum. They now come from the
+        palette and every one is pushed until it clears AA against the row
+        background it actually sits on.
+
+        Called again on every theme switch, for the same reason
+        bridge_gui_logger_color is: a tag's foreground always wins over the
+        widget's, so restyling the Treeview does not touch tagged rows.
+        """
+        row_bg = _hsl_shift(CARD_BG, l_mul=(0.98 if _is_light_color(APP_BG) else 1.06))
         try:
-            self.tag_configure("done", foreground="#3DDC97")
-            self.tag_configure("failed", foreground="#FF6B6B")
-            self.tag_configure("active", foreground="#58A6FF")
+            self.tag_configure("done", foreground=ensure_contrast(ACCENT_2, row_bg))
+            self.tag_configure("failed", foreground=ensure_contrast(ERROR, row_bg))
+            self.tag_configure("active", foreground=ensure_contrast(ACCENT, row_bg))
         except Exception:
             pass
 
@@ -5689,10 +5760,20 @@ class CompressorGUI:
 
         self.root.title("BitCrusher V9")
 
-        self.root.geometry("1400x820")
         self.root.minsize(1180, 650)
         self.root.resizable(True, True)
-        self.root.geometry("1200x800")
+        # 1400x820 is what the three-pane layout wants; a second geometry()
+        # call used to stomp it back to 1200x800, which left the middle
+        # notebook's tabs and the right panel clipped. Clamped to the screen
+        # so the window still fits a 1366x768 laptop.
+        try:
+            _sw = self.root.winfo_screenwidth()
+            _sh = self.root.winfo_screenheight()
+        except Exception:
+            _sw, _sh = 1400, 900
+        _w = min(1400, max(1180, _sw - 80))
+        _h = min(820, max(650, _sh - 120))
+        self.root.geometry(f"{_w}x{_h}")
         # setup_ui() (build_main_view) already applied the real theme's bg
         # here via apply_theme()+configure(bg=APP_BG) - do not stomp it back
         # to a hardcoded Discord-gray, or every non-default theme shows a
@@ -7424,6 +7505,7 @@ class CompressorGUI:
         except Exception:
             pass
         top.geometry("1200x700")
+        fit_window_later(top, 1200, 700)
 
         left = tk.Label(top, bg="#000")
         right = tk.Label(top, bg="#000")
@@ -7722,6 +7804,7 @@ class CompressorGUI:
         win = tk.Toplevel(self.root)
         win.title(self._t("dlg.language_manager", "Language Manager"))
         win.geometry("720x420")
+        fit_window_later(win, 720, 420)
         win.transient(self.root)
         try:
             win.configure(bg=APP_BG)
@@ -7809,7 +7892,10 @@ class CompressorGUI:
         self._dash_win = win
         win.title(self._t("dlg.dashboard_full", "BitCrusher - Dashboard"))
         win.geometry("520x360")
-        win.resizable(False, False)
+        # Was resizable(False, False): eight metric rows plus the button need
+        # more than 360px once Tk scales the font, and locking the frame left
+        # no way to see the rest.
+        fit_window_later(win, 520, 360)
 
         container = ttk.Frame(win, padding=12)
         container.pack(fill="both", expand=True)
@@ -8714,6 +8800,9 @@ class CompressorGUI:
         win = tk.Toplevel(self.root)
         win.title(self._t("dlg.settings", "Configure Paths"))
         win.geometry("450x300")
+        # Three grid columns (label + 40-char entry + Browse) already overflow
+        # 450px, and the Save/Cancel row falls off the bottom.
+        fit_window_later(win, 450, 300)
         win.transient(self.root)
         win.grab_set()
         try:
@@ -9169,7 +9258,10 @@ class CompressorGUI:
 
         win = tk.Toplevel(self.root)
         win.title(self._t("dlg.self_check", "Startup Self-Check"))
-        win.resizable(False, False)
+        # Auto-sized from its rows, so it fits by construction - but it was
+        # also resizable(False, False), which meant a long check list running
+        # off the bottom of the screen had no recourse. Clamp instead.
+        fit_window_later(win)
         try:
             win.configure(bg=APP_BG)
         except Exception:
@@ -9834,6 +9926,7 @@ class CompressorGUI:
         win.title(self._t("dlg.preflight", "Pre-flight estimate (from the ledger)"))
         win.transient(self.root)
         win.geometry("640x360")
+        fit_window_later(win, 640, 360)
         try:
             win.configure(bg=APP_BG)
         except Exception:
@@ -9967,6 +10060,7 @@ class CompressorGUI:
         win.title(f"Scene report - {os.path.basename(str(input_path))}")
         win.transient(self.root)
         win.geometry("760x520")
+        fit_window_later(win, 760, 520)
         try:
             win.configure(bg=APP_BG)
         except Exception:
@@ -10052,6 +10146,7 @@ class CompressorGUI:
         win.title(f"Result — {os.path.basename(str(input_path))}")
         win.transient(self.root)
         win.geometry("720x430")
+        fit_window_later(win, 720, 430)
         win.configure(bg=APP_BG)
         accent = ACCENT or "#4caf7d"
         danger = ERROR or "#d9655b"
@@ -10252,6 +10347,7 @@ class CompressorGUI:
             pass
         win.grab_set()  # modal: queue edits mid-review would orphan row_info's path keys
         win.geometry("740x400")
+        fit_window_later(win, 740, 400)
 
         tree_frame = ttk.Frame(win)
         tree_frame.pack(fill="both", expand=True, padx=12, pady=(12, 6))
@@ -10444,6 +10540,7 @@ class CompressorGUI:
         win.title(self._t("dlg.batch_summary", "Batch Summary"))
         win.transient(self.root)
         win.geometry("720x380")
+        fit_window_later(win, 720, 380)
         try:
             win.configure(bg=APP_BG)
         except Exception:
@@ -10547,7 +10644,7 @@ class CompressorGUI:
         win = tk.Toplevel(self.root)
         win.title(self._t("dlg.encode_again", "Encode Again With..."))
         win.transient(self.root)
-        win.resizable(False, False)
+        fit_window_later(win)
         try:
             win.configure(bg=APP_BG)
         except Exception:
@@ -10777,6 +10874,7 @@ class CompressorGUI:
         win.title("Load Saved Queue")
         win.transient(self.root)
         win.geometry("360x320")
+        fit_window_later(win, 360, 320)
         try:
             win.configure(bg=APP_BG)
         except Exception:
@@ -11429,6 +11527,17 @@ class CompressorGUI:
         ttk.Button(btnbar, text=self._t("btn.cancel", "Cancel"), style="Ghost.TButton", command=adv.destroy).pack(side="right")
 
         _on_body_config()
+        # The canvas pins the inner container to the canvas width, so a row
+        # wider than the dialog is clipped and there is no horizontal
+        # scrollbar to reach it. Height was already screen-fit; widen to what
+        # the widest row actually asks for, clamped the same way.
+        try:
+            adv.update_idletasks()
+            _need_w = container.winfo_reqwidth() + _vsb.winfo_reqwidth() + 24
+            _max_w = max(600, adv.winfo_screenwidth() - 80)
+            adv.geometry(f"{max(600, min(_need_w, _max_w))}x{_h}")
+        except Exception:
+            pass
         adv.wait_window()
 
 

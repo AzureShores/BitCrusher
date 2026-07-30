@@ -1050,8 +1050,14 @@ def build_main_view(gui):
     # Make the quality score stand out in the plain-language feed so a
     # non-technical user skimming a long batch can't miss it.
     try:
+        # A palette's accent is not guaranteed readable on the feed's own
+        # background (an amber accent on a light card measures under 2:1), so
+        # it goes through the same guard the queue and log tags use.
+        # retheme_runtime re-applies this on every theme switch.
+        _feed_bg = _hsl_shift(globals().get("CARD_BG") or "#14161A", l_mul=0.98)
         gui.stage_text.tag_configure(
-            "QSCORE", foreground=(globals().get("ACCENT") or "#4caf7d"),
+            "QSCORE",
+            foreground=ensure_contrast(globals().get("ACCENT") or "#4caf7d", _feed_bg),
             font=("Segoe UI", 10, "bold"), spacing1=4, spacing3=4)
     except Exception:
         pass
