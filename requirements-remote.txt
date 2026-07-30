@@ -1,0 +1,21 @@
+# BitCrusher remote-upload extras - OPTIONAL, opt-in only.
+#
+# Nothing in requirements.txt depends on these. Install them only if you turn
+# on Settings > Remote upload (or run `BitCrusherV9.py --serve`); the base
+# install and the per-OS bundles are unaffected if you never do.
+#
+#   pip install -r requirements-remote.txt
+#
+# Remote upload is off by default and binds to 127.0.0.1 unless you explicitly
+# change it. A LAN bind additionally requires a TLS certificate and a password.
+
+fastapi>=0.110          # HTTP layer
+uvicorn[standard]>=0.27 # ASGI server
+python-multipart>=0.0.9 # streamed multipart parsing (size cap during the read)
+argon2-cffi>=21.3       # password hashing (falls back to hashlib.scrypt if absent)
+qrcode[pil]>=7.4        # pairing QR code (falls back to a plain URL if absent)
+cryptography>=41.0      # generates this machine's own self-signed TLS cert
+                        # NOTE: the certificate and private key are generated
+                        # per-install into user_settings/ and are NEVER shipped.
+                        # A key bundled in a release would be shared by every
+                        # user, which is worse than no TLS at all.
