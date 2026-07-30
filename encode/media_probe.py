@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 from fractions import Fraction
 
@@ -177,6 +178,83 @@ _SVT_PRESET_MAP = {
 }
 
 
+# SVT-AV1 quality params that earned their place in a per-param ablation
+# (3 clips, two-pass, matched bitrate, bit-normalized VMAF):
+#   enable-variance-boost=1   +1.01 mean, positive on every clip, and it fixes a
+#                             42%-over-budget two-pass rate-control blowout on
+#                             noisy content. Costs ~2% encode time.
+# Rejected there: lookahead=120 (+0.06) and aq-mode=2 (+0.01, SVT already
+# defaults to 2) were inside the noise; enable-qm helped noisy content but hurt
+# clean synthetic content, so it is not a safe default.
+_SVT_QUALITY_PARAMS = ("enable-variance-boost=1",)
+
+
+def _svt_param_supported(param: str) -> bool:
+    """
+    Whether this ffmpeg's SVT-AV1 accepts a -svtav1-params key. Unknown keys are
+    logged as "Error parsing option <key>" and then IGNORED (ffmpeg still exits
+    0), so a param that only exists in newer builds would silently do nothing
+    rather than fail loudly. Probed once per key with a throwaway 1-frame
+    encode, then cached for the process.
+    """
+    cache = getattr(_svt_param_supported, "_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(_svt_param_supported, "_cache", cache)
+    if param in cache:
+        return cache[param]
+    ok = False
+    ff = ffmpeg_exec.FFMPEG
+    key = str(param).split("=", 1)[0]
+    if ff and key:
+        try:
+            null_dev = "NUL" if os.name == "nt" else "/dev/null"
+            r = subprocess.run(
+                [ff, "-hide_banner", "-loglevel", "info", "-f", "lavfi",
+                 "-i", "color=c=black:s=64x64:r=1:d=1", "-c:v", "libsvtav1",
+                 "-preset", "12", "-crf", "60", "-svtav1-params", param,
+                 "-f", "null", null_dev],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                startupinfo=si, creationflags=NO_WIN)
+            ok = (r.returncode == 0
+                  and f"Error parsing option {key}" not in (r.stderr or ""))
+        except Exception:
+            ok = False
+    cache[param] = ok
+    return ok
+
+
+def svt_quality_params() -> str:
+    """Colon-joined _SVT_QUALITY_PARAMS this build actually supports (cached)."""
+    cached = getattr(svt_quality_params, "_cache", None)
+    if cached is None:
+        cached = ":".join(p for p in _SVT_QUALITY_PARAMS if _svt_param_supported(p))
+        setattr(svt_quality_params, "_cache", cached)
+    return cached
+
+
+def svt_params_with_quality(base: str) -> str:
+    """Append the supported quality params to an -svtav1-params string."""
+    extra = svt_quality_params()
+    base = str(base or "")
+    if not extra:
+        return base
+    return f"{base}:{extra}" if base else extra
+
+
+def _svt_preset_num(preset) -> str:
+    """
+    SVT-AV1 preset from either a numeric preset ("4") or an x264-style name.
+    select_profile() returns SVT presets as numbers, but the bare
+    _SVT_PRESET_MAP lookup missed those and fell back to "6", so the profile
+    model's AV1 preset never actually reached the encoder.
+    """
+    s = str(preset if preset is not None else "").strip().lower()
+    if s.isdigit():
+        return str(max(0, min(13, int(s))))
+    return _SVT_PRESET_MAP.get(s, "6")
+
+
 def _svt_preset_for_duration(preset_num, duration_s: float) -> int:
     """
     Clamp an SVT-AV1 preset (higher number = faster) to a speed FLOOR based on
@@ -196,6 +274,8 @@ def _svt_preset_for_duration(preset_num, duration_s: float) -> int:
     if d > 1200:   floor = 7   # >20 min
     elif d > 600:  floor = 6   # 10-20 min
     elif d > 240:  floor = 5   # 4-10 min
+    elif d > 90:   floor = 3   # 1.5-4 min: preset 2 is ~4x preset 4 per encode,
+                               # and size targeting runs several of them
     else:          floor = 2   # short clips: any preset is fine
     return max(p, floor)
 
@@ -277,7 +357,7 @@ def _codec_video_args(
     _max_mode = str(opts.get("quality_mode") or "").lower() == "max"
 
     if vcodec == "libsvtav1":
-        _svt_p = _SVT_PRESET_MAP.get(str(preset).lower(), "6")
+        _svt_p = _svt_preset_num(preset)
         if _max_mode:
             _svt_p = str(min(int(_svt_p), 4))
         # Never let a long clip run a glacial preset (see _svt_preset_for_duration).
@@ -290,6 +370,7 @@ def _codec_video_args(
         _fg_lvl = int((opts.get("_film_grain") or {}).get("level") or 0)
         if _fg_lvl > 0:
             _svt_params += f":film-grain={_fg_lvl}:film-grain-denoise=1"
+        _svt_params = svt_params_with_quality(_svt_params)
         v = ["-preset", _svt_p, "-g", str(g_frames), "-svtav1-params", _svt_params]
         if ten_bit:
             v += pix10
