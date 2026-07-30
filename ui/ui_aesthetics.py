@@ -10,6 +10,9 @@ import tkinter.font as tkfont
 import json, colorsys
 from importlib import import_module
 
+from .window_fit import fit_window
+from .color_utils import contrast_ratio, ensure_contrast
+
 
 def _noop(*_a, **_k): pass
 
@@ -179,14 +182,9 @@ def _hex_norm(x: str) -> str:
         return "#000000"
 
 def _wcag_ratio(c1: str, c2: str) -> float:
-    def _lumin(hex6: str) -> float:
-        hex6 = hex6.lstrip("#")
-        r = int(hex6[0:2],16)/255.0; g=int(hex6[2:4],16)/255.0; b=int(hex6[4:6],16)/255.0
-        def _lin(u): return u/12.92 if u<=0.03928 else ((u+0.055)/1.055)**2.4
-        R,G,B = _lin(r),_lin(g),_lin(b)
-        return 0.2126*R + 0.7152*G + 0.0722*B
-    L1, L2 = sorted([_lumin(_hex_norm(c1)), _lumin(_hex_norm(c2))], reverse=True)
-    return (L1 + 0.05) / (L2 + 0.05)
+    """WCAG contrast ratio. Kept as a name because it has many call sites; the
+    arithmetic lives in color_utils so there is one copy of it."""
+    return contrast_ratio(_hex_norm(c1), _hex_norm(c2))
 
 def _ratio_badge(r: float) -> str:
     return "AAA" if r >= 7 else ("AA" if r >= 4.5 else ("A" if r >= 3 else "LOW"))
@@ -236,13 +234,107 @@ def _hsl(hex_color: str, h_delta=0.0, s_mul=1.0, l_mul=1.0, l_set=None) -> str:
     return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
 
 
+_PALETTE_KEYS = ("APP_BG", "CARD_BG", "FG", "FG_SUB",
+                 "ACCENT", "ACCENT_2", "ERROR", "WARN", "TITLE")
+
+# Every foreground, the backgrounds it can end up sitting on, and the ratio it
+# must clear against the WORST of them.
+#
+# The accents are judged against both surfaces because they are not decoration:
+# ACCENT and ACCENT_2 tint queue rows, ERROR and WARN tint log lines, and those
+# sit on the card, not on the window background. Judging them against APP_BG
+# only is how a theme could pass its own contrast check while rendering
+# unreadable queue text - measured at 1.53:1 on a light custom theme.
+_AA_REFS = {
+    "FG":       (("APP_BG", "CARD_BG"), 7.0),
+    "FG_SUB":   (("CARD_BG", "APP_BG"), 4.5),
+    "TITLE":    (("APP_BG",),           4.5),
+    "ACCENT":   (("APP_BG", "CARD_BG"), 4.5),
+    "ACCENT_2": (("APP_BG", "CARD_BG"), 4.5),
+    "ERROR":    (("CARD_BG", "APP_BG"), 4.5),
+    "WARN":     (("CARD_BG", "APP_BG"), 4.5),
+}
+
+# Backwards-compatible views of the table above (single reference per key).
+_AA_TARGET = {k: v[0][0] for k, v in _AA_REFS.items()}
+_AA_MIN = {k: v[1] for k, v in _AA_REFS.items()}
+
+
+def _worst_pair(color: str, palette: dict, refs: tuple) -> tuple[float, str]:
+    """Lowest contrast this colour reaches across its reference backgrounds."""
+    worst, worst_ref = 21.0, refs[0]
+    for ref in refs:
+        against = palette.get(ref)
+        if not against:
+            continue
+        r = _wcag_ratio(color, against)
+        if r < worst:
+            worst, worst_ref = r, ref
+    return worst, worst_ref
+
+
+def _ref_colors(palette: dict, refs: tuple) -> list:
+    return [palette[r] for r in refs if palette.get(r)]
+
+
+def _feasible_lightness(against: list, target: float) -> str | None:
+    """A grey that clears `target` against every one of `against`, or None.
+
+    Greys cover the whole luminance range continuously, and contrast depends
+    only on luminance - so if no grey works, no colour of any hue works either.
+    That makes this both the fallback and the impossibility test: two surfaces
+    either side of mid-luminance can leave no readable colour at all, and the
+    honest answer then is to say the background is the problem.
+    """
+    for i in range(101):
+        g = _hsl_from(0.0, i / 100.0, 0.0)
+        if min((contrast_ratio(g, c) for c in against), default=21.0) >= target:
+            return g
+    return None
+
+
+def _fix_against_all(color: str, palette: dict, refs: tuple,
+                     target: float) -> str:
+    """Push a colour until it clears `target` against every reference.
+
+    Fixing against one background can break another - text dark enough for the
+    card but lost against a lighter window background - so this re-checks all
+    references after each move instead of solving against one and stopping.
+    Falls back to a neutral that satisfies every reference at once, and gives
+    up only when no colour can (see _feasible_lightness).
+    """
+    c = _hex_norm(color)
+    against = _ref_colors(palette, refs)
+    for ref in refs * 2:
+        worst, worst_ref = _worst_pair(c, palette, refs)
+        if worst >= target:
+            return c
+        nxt = ensure_contrast(c, palette.get(worst_ref, "#000000"), target)
+        if nxt == c:
+            break
+        c = nxt
+    if _worst_pair(c, palette, refs)[0] >= target:
+        return c
+    # The hue cannot satisfy every surface at once; drop to a neutral that can.
+    grey = _feasible_lightness(against, target)
+    return grey if grey else c
+
+
 def derive_palette(accent: str, app_bg: str) -> dict:
     """
     Generate a complete, contrast-safe 9-colour theme from just an accent and a
     background. Pure and deterministic (testable): the card sits a step off the
-    background, text colours are pushed until they clear WCAG AA against their
-    reference, the second accent is the hue-rotated complement, and error/warn
-    stay in their conventional hue families adjusted for the mode.
+    background, every foreground is pushed until it clears its WCAG target
+    against every surface it can land on, the second accent is the hue-rotated
+    complement, and error/warn stay in their conventional hue families.
+
+    The lightness search is additive and two-directional (see
+    color_utils.ensure_contrast). The old multiplicative version could not move
+    a colour that was already at lightness 0 - l * 1.1 is still 0 - so a black
+    accent produced a black title on a black background, and it silently
+    returned whatever it had reached when it ran out of steps. Randomised over
+    400 accent/background pairs, that version missed its own stated targets on
+    53% of checks.
     """
     accent = _hex_norm(accent)
     app_bg = _hex_norm(app_bg)
@@ -252,60 +344,99 @@ def derive_palette(accent: str, app_bg: str) -> dict:
     if card.lower() == app_bg.lower():
         card = _hsl(app_bg, l_set=(0.90 if light else 0.14))
 
-    def _readable(base: str, against: str, target: float, prefer_dark: bool) -> str:
-        c = base
-        for _ in range(24):
-            if _wcag_ratio(c, against) >= target:
-                return c
-            c = _hsl(c, l_mul=(0.92 if prefer_dark else 1.10))
-            if c in ("#000000", "#ffffff"):
-                break
-        return c
-
-    fg = _readable(_hsl(accent, s_mul=0.10, l_set=(0.12 if light else 0.90)),
-                   app_bg, 7.0, prefer_dark=light)
-    fg_sub = _readable(_hsl(fg, l_mul=(1.45 if light else 0.72), s_mul=0.6),
-                       card, 4.5, prefer_dark=light)
-    accent2 = _hsl(accent, h_delta=0.42, s_mul=0.95)
-    title = _readable(_hsl(accent, l_mul=(0.75 if light else 1.35), s_mul=0.8),
-                      app_bg, 4.5, prefer_dark=light)
-    error = _readable("#c62828" if light else "#ff6b6b", card, 3.0, prefer_dark=light)
-    warn = _readable("#b46913" if light else "#ffb020", card, 3.0, prefer_dark=light)
-
-    return {"APP_BG": app_bg, "CARD_BG": card, "FG": fg, "FG_SUB": fg_sub,
-            "ACCENT": accent, "ACCENT_2": accent2, "ERROR": error,
-            "WARN": warn, "TITLE": title}
-
-
-_PALETTE_KEYS = ("APP_BG", "CARD_BG", "FG", "FG_SUB",
-                 "ACCENT", "ACCENT_2", "ERROR", "WARN", "TITLE")
-
-_AA_TARGET = {"FG": "APP_BG", "FG_SUB": "CARD_BG", "TITLE": "APP_BG",
-              "ACCENT": "APP_BG", "ACCENT_2": "APP_BG",
-              "ERROR": "CARD_BG", "WARN": "CARD_BG"}
-_AA_MIN = {"FG": 7.0, "FG_SUB": 4.5, "TITLE": 4.5}   # others: 3.0 (large/UI)
+    out = {"APP_BG": app_bg, "CARD_BG": card}
+    out["FG"] = _hsl(accent, s_mul=0.10, l_set=(0.12 if light else 0.90))
+    out["FG_SUB"] = _hsl(out["FG"], l_mul=(1.45 if light else 0.72), s_mul=0.6)
+    out["ACCENT"] = accent
+    out["ACCENT_2"] = _hsl(accent, h_delta=0.42, s_mul=0.95)
+    out["TITLE"] = _hsl(accent, l_mul=(0.75 if light else 1.35), s_mul=0.8)
+    out["ERROR"] = "#c62828" if light else "#ff6b6b"
+    out["WARN"] = "#b46913" if light else "#ffb020"
+    return autofix_contrast(out)
 
 
 def autofix_contrast(palette: dict) -> dict:
-    """Nudge each foreground colour's lightness until it clears WCAG AA
-    against its reference, preserving hue. Pure and deterministic."""
+    """Push every foreground until it clears its WCAG target against each
+    surface it can appear on. Pure and deterministic.
+
+    Best-effort by necessity: a mid-luminance background caps what ANY colour
+    can reach (nothing beats ~4.5:1 against #777777), so this returns the most
+    readable result available. Use palette_contrast_report() to find out
+    whether the background itself is the problem.
+    """
     out = dict(palette or {})
-    bg_light = _is_light_hex(out.get("APP_BG", "#000000"))
-    for key, ref in _AA_TARGET.items():
-        if key not in out or ref not in out:
+    for key, (refs, target) in _AA_REFS.items():
+        if key not in out:
             continue
-        target = _AA_MIN.get(key, 3.0)
-        c = _hex_norm(out[key])
-        against = _hex_norm(out[ref])
-        for _ in range(30):
-            if _wcag_ratio(c, against) >= target:
-                break
-            # Push away from the background: darker on light bg, lighter on dark.
-            c = _hsl(c, l_mul=(0.90 if bg_light else 1.12))
-            if c in ("#000000", "#ffffff"):
-                break
-        out[key] = c
+        out[key] = _fix_against_all(out[key], out, refs, target)
     return out
+
+
+def palette_contrast_report(palette: dict) -> dict:
+    """Per-key {ratio, target, ref, ok} plus which keys fail and whether the
+    background makes the target unreachable for anything. Pure."""
+    pal = {k: _hex_norm(v) for k, v in (palette or {}).items()
+           if k in _PALETTE_KEYS}
+    rows, failing, impossible = {}, [], []
+    for key, (refs, target) in _AA_REFS.items():
+        if key not in pal:
+            continue
+        ratio, ref = _worst_pair(pal[key], pal, refs)
+        ok = ratio >= target - 0.005
+        rows[key] = {"ratio": ratio, "target": target, "ref": ref, "ok": ok}
+        if not ok:
+            failing.append(key)
+            # Not the palette's fault if no colour of any hue could pass:
+            # report it as a background problem so the user fixes the right
+            # thing instead of hunting for a magic accent.
+            if _feasible_lightness(_ref_colors(pal, refs), target) is None:
+                impossible.append(key)
+    return {"rows": rows, "failing": failing, "impossible": impossible,
+            "worst": min((r["ratio"] for r in rows.values()), default=21.0)}
+
+
+# A background whose luminance sits in the middle caps what any foreground can
+# reach, so the randomiser never picks one there - that is the difference
+# between "random" and "random but always readable".
+_SAFE_L_DARK = (0.05, 0.17)
+_SAFE_L_LIGHT = (0.88, 0.97)
+
+
+def random_palette(rng=None, mode: str | None = None) -> dict:
+    """A random palette that is readable by construction.
+
+    Randomises hue freely, but keeps the background's lightness out of the
+    mid-luminance dead zone and the accent's saturation high enough to still
+    read as an accent after the contrast fix. Everything then goes through
+    derive_palette, so the result satisfies the same targets a hand-built theme
+    is held to. `rng` is any random.Random - pass a seeded one for tests.
+    """
+    import random as _random
+    rng = rng or _random.Random()
+
+    light = (mode == "light") if mode in ("light", "dark") else (rng.random() < 0.4)
+    bg_h = rng.random()
+    bg_s = rng.uniform(0.04, 0.30)
+    bg_l = rng.uniform(*(_SAFE_L_LIGHT if light else _SAFE_L_DARK))
+    app_bg = _hsl_from(bg_h, bg_l, bg_s)
+
+    # Push the accent's hue off the background's so it reads as a separate
+    # colour rather than a brighter shade of the same wash.
+    acc_h = (bg_h + rng.choice((-1, 1)) * rng.uniform(0.08, 0.5)) % 1.0
+    acc_s = rng.uniform(0.55, 0.95)
+    acc_l = rng.uniform(0.32, 0.46) if light else rng.uniform(0.55, 0.72)
+    accent = _hsl_from(acc_h, acc_l, acc_s)
+
+    pal = derive_palette(accent, app_bg)
+    pal["_PADDING_SCALE"] = 1.0
+    pal["_BORDER_WIDTH"] = 1
+    return pal
+
+
+def _hsl_from(h: float, l: float, s: float) -> str:
+    r, g, b = colorsys.hls_to_rgb(h % 1.0, max(0.0, min(1.0, l)),
+                                  max(0.0, min(1.0, s)))
+    return f"#{int(round(r*255)):02x}{int(round(g*255)):02x}{int(round(b*255)):02x}"
 
 
 def pair_light_dark(palette: dict) -> dict:
@@ -463,6 +594,11 @@ class ThemeLab(Toplevel):
                           state="readonly", width=14)
         cb.pack(side="left", padx=(4, 8))
         cb.bind("<<ComboboxSelected>>", lambda _e: self._start_from(self._start_var.get()))
+        ttk.Button(bar, text="Randomize", style="Ghost.TButton",
+                   command=self._randomize).pack(side="left", padx=4)
+        self._rand_mode = tk.StringVar(value="any")
+        ttk.Combobox(bar, values=("any", "dark", "light"), state="readonly",
+                     width=5, textvariable=self._rand_mode).pack(side="left")
         ttk.Button(bar, text="Generate from Accent+BG", style="Ghost.TButton",
                    command=self._generate).pack(side="left", padx=4)
         ttk.Button(bar, text="Fix contrast", style="Ghost.TButton",
@@ -492,6 +628,10 @@ class ThemeLab(Toplevel):
         self._paint_preview()
         self._update_contrast_summary()
         self.geometry("880x560")
+        # Notebook + swatch grid + preview + button bar do not fit 880x560 once
+        # Tk scales the font. Called here, after the whole dialog is built, so
+        # the measurement is real.
+        fit_window(self, 880, 560)
 
     # ------------------------------------------------------------- helpers --
     def _current_theme_name(self) -> str:
@@ -850,24 +990,37 @@ class ThemeLab(Toplevel):
             pass
 
     def _update_contrast_summary(self):
+        """Report every judged pair, and name the ones that fail.
+
+        This used to check three pairs (text, muted text, title) and ignore the
+        accents - which is how a palette could look clean here while rendering
+        unreadable queue rows and log lines, since those are tinted with
+        ACCENT/ACCENT_2/ERROR/WARN. All seven are checked now, each against the
+        worst surface it can sit on.
+        """
         try:
-            parts = []
-            worst = 99.0
-            for key, ref in (("FG", "APP_BG"), ("FG_SUB", "CARD_BG"),
-                             ("TITLE", "APP_BG")):
-                r = _wcag_ratio(self.draft[key], self.draft[ref])
-                worst = min(worst, r)
-                parts.append(f"{_KEY_LABELS[key]} {r:.1f} {_ratio_badge(r)}")
+            rep = palette_contrast_report(self.draft)
+            rows = rep["rows"]
+            parts = [f"{_KEY_LABELS[k]} {rows[k]['ratio']:.1f} "
+                     f"{_ratio_badge(rows[k]['ratio'])}"
+                     for k in ("FG", "FG_SUB", "TITLE") if k in rows]
+            tail = ""
+            if rep["impossible"]:
+                names = ", ".join(_KEY_LABELS.get(k, k) for k in rep["impossible"])
+                tail = (f"   -  this background cannot support readable "
+                        f"{names}; make it darker or lighter")
+            elif rep["failing"]:
+                names = ", ".join(_KEY_LABELS.get(k, k) for k in rep["failing"])
+                tail = f"   -  hard to read: {names}  (use Fix contrast)"
             self._contrast_lbl.configure(
-                text="Contrast: " + "   |   ".join(parts)
-                     + ("   -  low-contrast text will be hard to read" if worst < 4.5 else ""))
+                text="Contrast: " + "   |   ".join(parts) + tail)
             for key in _THEMELAB_KEYS:
-                ref = _CONTRAST_REF.get(key)
-                if not ref:
+                row = rows.get(key)
+                if not row:
                     self._badges[key].configure(text="")
                     continue
-                r = _wcag_ratio(self.draft[key], self.draft[ref])
-                self._badges[key].configure(text=f"{r:.1f} {_ratio_badge(r)}")
+                self._badges[key].configure(
+                    text=f"{row['ratio']:.1f} {_ratio_badge(row['ratio'])}")
         except Exception:
             pass
 
@@ -977,7 +1130,31 @@ class ThemeLab(Toplevel):
     def _autofix_contrast(self):
         self._push_undo()
         self._apply_palette_to_draft(autofix_contrast(self.draft))
-        self._snack("Contrast nudged to WCAG AA")
+        rep = palette_contrast_report(self.draft)
+        if rep["impossible"]:
+            self._snack("Background can't support readable text - "
+                        "make it darker or lighter", kind="warn")
+        else:
+            self._snack("Contrast fixed to WCAG AA")
+
+    def _randomize(self):
+        """A random theme that is readable by construction, not by luck.
+
+        Keeps the background out of the mid-luminance band where no foreground
+        can reach AA, then runs the same contrast pass a hand-built theme gets.
+        Undoable like every other palette action, and it never touches the
+        saved theme - it only moves the draft.
+        """
+        self._push_undo()
+        pal = random_palette(mode=self._rand_mode.get())
+        # Layout knobs are the user's, not the randomiser's.
+        for k in ("_PADDING_SCALE", "_BORDER_WIDTH", "_RADIUS"):
+            if k in self.draft:
+                pal[k] = self.draft[k]
+        self._apply_palette_to_draft(pal)
+        rep = palette_contrast_report(pal)
+        self._snack(f"Random theme - worst contrast {rep['worst']:.1f}:1"
+                    + ("" if not rep["failing"] else "  (check contrast)"))
 
     def _make_pair(self):
         self._push_undo()

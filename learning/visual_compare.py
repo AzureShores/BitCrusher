@@ -59,6 +59,13 @@ def open_compare_viewer(root, original_path: str, compressed_path: str, duration
 
     win = tk.Toplevel(root); win.title("Compare: Original vs. Output")
     win.geometry("1320x520"); win.transient(root)
+    # Two frames side by side plus a 900px slider overflow 1320 on a scaled
+    # display; grow to fit, then clamp to the screen.
+    try:
+        from ui.window_fit import fit_window_later
+        fit_window_later(win, 1320, 520)
+    except Exception:
+        pass
     main = ttk.Frame(win, padding=10); main.pack(fill="both", expand=True)
 
     left = tk.Label(main); left.grid(row=0, column=0, padx=(0,6))
