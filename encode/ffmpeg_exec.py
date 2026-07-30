@@ -718,7 +718,7 @@ def _ffmpeg_two_pass_encode(
             # SVT-AV1 1-pass VBR is wildly loose on hard-cut content (measured
             # 2x target, unresponsive to rate drops). 2-pass measures whole-file
             # complexity in pass 1 and actually holds the budget in pass 2.
-            _svt_p = media_probe._SVT_PRESET_MAP.get(str(preset).lower(), "6")
+            _svt_p = media_probe._svt_preset_num(preset)
             _svt_max = str((_adv or {}).get("quality_mode") or "").lower() == "max"
             if _svt_max:
                 _svt_p = str(min(int(_svt_p), 4))
@@ -735,7 +735,12 @@ def _ffmpeg_two_pass_encode(
             _fg_lvl2 = int(((_adv or {}).get("_film_grain") or {}).get("level") or 0)
             if _fg_lvl2 > 0:
                 _svt_params += f":film-grain={_fg_lvl2}:film-grain-denoise=1"
-            _svt_v = ["-c:v", "libsvtav1", "-preset", _svt_p, "-g", "300",
+            _svt_params = media_probe.svt_params_with_quality(_svt_params)
+            # GOP by frame rate, matching the single-pass path (_codec_video_args):
+            # a fixed 300 was ~12.5s of keyframe distance at 24fps and only 5s at
+            # 60fps, so the same flag meant two different things per source.
+            _svt_g = max(48, min(300, int(round(float(fps or 30.0) * 10))))
+            _svt_v = ["-c:v", "libsvtav1", "-preset", _svt_p, "-g", str(_svt_g),
                       "-svtav1-params", _svt_params, "-pix_fmt", "yuv420p10le"]
             # SVT rejects -maxrate/-bufsize with -b:v (VBR); target bitrate only.
             rc_svt = ["-b:v", str(int(bitrate))]
