@@ -12,7 +12,29 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return float(lo if x < lo else hi if x > hi else x)
 
 
-def select_profile(content: dict, encoder: str, width: int, fps: float, budget_kbps: float, conservative_bias: float) -> Dict[str, Any]:
+# SVT-AV1 preset window per quality mode (lower = slower/better). The upper
+# bound is the historical effective preset (6), so no content ever encodes
+# FASTER than before; only hard content is allowed to go slower.
+#
+# Max mode's window is deliberately narrow. Measured against a hand-tuned
+# SVT-AV1 preset-3 encode at matched size (3 clips, bit-normalized VMAF), the
+# preset is monotone: preset 4 loses by 0.28, preset 3 draws, preset 2 WINS on
+# every clip by 0.23 mean. There is no content for which a faster preset scores
+# better - only cheaper - so adaptivity inside max mode would buy nothing but
+# time, which is the one thing max mode has already opted out of.
+# _svt_preset_for_duration still keeps preset 2 off anything but short clips.
+_SVT_PRESET_RANGE = {
+    "max": (2.0, 3.0),
+    "balanced": (4.0, 6.0),
+    "fast": (6.0, 10.0),
+}
+# Reachable span of the SVT preset formula below (diff/tight/bias all in 0..1).
+_SVT_BASE_LO = 9.0 - 2.5   # hardest content, loosest budget, least conservative
+_SVT_BASE_HI = 9.0 + 2.0 + 1.5  # easiest content, tightest budget, most conservative
+
+
+def select_profile(content: dict, encoder: str, width: int, fps: float, budget_kbps: float,
+                   conservative_bias: float, quality_mode: str = "balanced") -> Dict[str, Any]:
     """
     Deterministic content-aware encoder parameters.
 
@@ -119,12 +141,33 @@ def select_profile(content: dict, encoder: str, width: int, fps: float, budget_k
         )
         return params
 
-    if "svt" in enc and "av1" in enc or "libsvtav1" in enc:
+    # Hardware AV1 (nvenc/qsv/amf/vaapi) uses its own preset scale — neither the
+    # SVT numbers nor libaom's cpu-used apply, so emit only the common params.
+    if any(k in enc for k in ("nvenc", "qsv", "amf", "vaapi")):
+        return params
+
+    # The codec race and the CLI both hand this a bare "av1" tag; SVT-AV1 is the
+    # AV1 encoder BitCrusher actually drives (libaom is a slow fallback, and is
+    # matched explicitly below). Requiring "svt" in the name sent every bare-av1
+    # job into the libaom branch, which returns no preset at all.
+    if "av1" in enc and "aom" not in enc:
         # SVT-AV1: lower preset = better quality/slower; higher preset = faster/lower quality.
         # Tight budget → use faster preset (higher number) to keep encode tractable.
         # High difficulty → use slower preset (lower number) for better compression efficiency.
-        base = 9.0 - 2.5 * diff + 2.0 * tight
-        preset_i = int(_clamp(base + 1.5 * bias, 6.0, 10.0))
+        base = 9.0 - 2.5 * diff + 2.0 * tight + 1.5 * bias
+        _lo, _hi = _SVT_PRESET_RANGE.get(str(quality_mode or "").strip().lower(),
+                                         _SVT_PRESET_RANGE["balanced"])
+        if _hi >= 10.0:
+            # Fast mode keeps the original speed-first mapping unchanged.
+            preset_i = int(_clamp(base, _lo, _hi))
+        else:
+            # `base` only ever spans _SVT_BASE_LO.._SVT_BASE_HI, which sits
+            # entirely above the quality windows — clamping it there pinned every
+            # job to the fastest allowed preset and made difficulty irrelevant.
+            # Normalize instead, so content difficulty picks a point INSIDE the
+            # window. Truncating (not rounding) biases toward the slower preset.
+            frac = _clamp((base - _SVT_BASE_LO) / (_SVT_BASE_HI - _SVT_BASE_LO), 0.0, 1.0)
+            preset_i = int(_lo + frac * (_hi - _lo))
         params["preset"] = str(preset_i)
         # Keep film-grain tools conservative; don't enable heavy synthesis.
         params["svtav1-params"] = "tune=0"
